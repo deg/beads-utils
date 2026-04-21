@@ -20,11 +20,17 @@ COLUMNS = [
     "dependency_count", "dependent_count", "comment_count",
 ]
 
+SORT_KEYS = {
+    "id", "title", "type", "status", "priority",
+    "assignee", "owner",
+    "created_at", "updated_at", "closed_at",
+}
+
 
 def run_bd_export(project_path: Path) -> str:
     try:
         result = subprocess.run(
-            ["bd", "export", "--no-memories"],
+            ["bd", "export", "--all", "--no-memories"],
             cwd=project_path,
             capture_output=True,
             text=True,
@@ -89,6 +95,28 @@ def derive_prefix(issues: list[dict], fallback: str) -> str:
     return fallback
 
 
+def parse_sortby(spec: str) -> list[tuple[str, bool]]:
+    keys: list[tuple[str, bool]] = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        desc = token.startswith("-")
+        key = token.lstrip("-+")
+        if key not in SORT_KEYS:
+            sys.exit(
+                f"error: --sortby: unknown key {key!r} "
+                f"(valid: {', '.join(sorted(SORT_KEYS))})"
+            )
+        keys.append((key, desc))
+    return keys
+
+
+def apply_sort(rows: list[dict], keys: list[tuple[str, bool]]) -> None:
+    for key, desc in reversed(keys):
+        rows.sort(key=lambda r, k=key: str(r[k]), reverse=desc)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Export a beads project to CSV for project review."
@@ -101,7 +129,19 @@ def main() -> int:
         "-o", "--output", default=None,
         help="Output CSV path (default: <prefix>-issues-<YYYY-MM-DD>.csv in cwd)",
     )
+    parser.add_argument(
+        "--sortby", default=None, metavar="KEYS",
+        help=(
+            "Comma-separated sort keys; prefix with '-' for descending "
+            "(e.g., 'priority,-created_at'). "
+            "Use '--sortby=-key,...' (with '=') when the first key is "
+            "descending, so argparse doesn't treat it as a flag. "
+            "Keys: " + ", ".join(sorted(SORT_KEYS))
+        ),
+    )
     args = parser.parse_args()
+
+    sort_keys = parse_sortby(args.sortby) if args.sortby else []
 
     project_path = Path(args.project_path).expanduser().resolve()
     if not (project_path / ".beads").is_dir():
@@ -120,11 +160,14 @@ def main() -> int:
     else:
         output = Path.cwd() / f"{prefix}-issues-{today}.csv"
 
+    rows = [issue_to_row(issue) for issue in issues]
+    if sort_keys:
+        apply_sort(rows, sort_keys)
+
     with output.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
-        for issue in issues:
-            writer.writerow(issue_to_row(issue))
+        writer.writerows(rows)
 
     print(output.resolve())
     return 0
