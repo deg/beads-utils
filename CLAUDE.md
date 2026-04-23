@@ -54,8 +54,11 @@ Current scripts:
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
 - `bd-log` — Shows recently closed beads in a git-log-style view. Wraps
-  `bd list --status=closed --sort=closed --reverse --json`. Supports `-n/--limit`
-  (default 10) and `--since DATE` (passed through as `--closed-after`).
+  `bd list --status=closed --sort=closed --json` (newest first). Supports
+  `-n/--limit` (default 0 = unlimited, like `git log`) and `--since DATE`
+  (passed through as `--closed-after`). Pages through `$PAGER` (or `less -FRX`)
+  when stdout is a tty — `-F` makes short output indistinguishable from
+  direct-to-stdout. `--no-pager` disables.
 
 Shared helper:
 

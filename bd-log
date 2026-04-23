@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -58,6 +61,30 @@ def collapse(s: str) -> str:
     return " ".join(s.split())
 
 
+def open_pager() -> subprocess.Popen[str] | None:
+    """Return a Popen writing to $PAGER (or 'less -FRX'), or None if not paging.
+
+    Pages only when stdout is a tty. '-F' makes less exit immediately when
+    content fits on one screen, so short output is indistinguishable from
+    direct-to-stdout.
+    """
+    if not sys.stdout.isatty():
+        return None
+    pager_env = os.environ.get("PAGER", "").strip()
+    if pager_env:
+        cmd = shlex.split(pager_env)
+    elif shutil.which("less"):
+        cmd = ["less", "-FRX"]
+    else:
+        return None
+    env = os.environ.copy()
+    env.setdefault("LESS", "FRX")
+    try:
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, env=env)
+    except OSError:
+        return None
+
+
 def render(issue: dict) -> list[str]:
     ts = format_ts(issue.get("closed_at", ""))
     iid = issue.get("id", "?")
@@ -82,10 +109,14 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  bd-log                         Last 10 closed issues in cwd\n"
-            "  bd-log -n 25                   Last 25 closed\n"
+            "  bd-log                         All closures in cwd (paged)\n"
+            "  bd-log -n 10                   Last 10 closures\n"
             "  bd-log --since 2026-04-01      Closures on/after date\n"
             "  bd-log /path/to/project        Check a different project\n"
+            "\n"
+            "Output is paged through $PAGER (or 'less -FRX') when stdout is a\n"
+            "tty; -F makes less exit immediately when content fits one screen,\n"
+            "so short output looks direct. Use --no-pager to disable.\n"
         ),
     )
     parser.add_argument(
@@ -93,18 +124,22 @@ def main() -> int:
         help="Path to the beads project (default: current directory)",
     )
     parser.add_argument(
-        "-n", "--limit", type=int, default=10,
-        help="Maximum entries to show (default: 10)",
+        "-n", "--limit", type=int, default=0,
+        help="Maximum entries to show (default: 0 = unlimited, like 'git log')",
     )
     parser.add_argument(
         "--since", default=None, metavar="DATE",
         help="Show only closures on/after DATE (YYYY-MM-DD or RFC3339); "
              "passed through to 'bd list --closed-after'.",
     )
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
+    )
     args = parser.parse_args()
 
-    if args.limit <= 0:
-        error("--limit must be a positive integer")
+    if args.limit < 0:
+        error("--limit must be >= 0 (0 means unlimited)")
 
     project_path = resolve_project_path(args.project_path)
 
@@ -119,11 +154,24 @@ def main() -> int:
         return 0
 
     blocks = [render(issue) for issue in issues]
-    for i, block in enumerate(blocks):
-        if i:
-            print()
-        for line in block:
-            print(line)
+    pager = None if args.no_pager else open_pager()
+    out = pager.stdin if pager else sys.stdout
+
+    try:
+        for i, block in enumerate(blocks):
+            if i:
+                print(file=out)
+            for line in block:
+                print(line, file=out)
+    except BrokenPipeError:
+        pass
+    finally:
+        if pager is not None:
+            try:
+                pager.stdin.close()
+            except BrokenPipeError:
+                pass
+            pager.wait()
 
     return 0
 
