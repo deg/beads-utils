@@ -1,6 +1,6 @@
-# Project Instructions for AI Agents
+# CLAUDE.md
 
-This file provides instructions and context for AI coding agents working on this project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
@@ -50,20 +50,48 @@ bd close <id>         # Complete work
 <!-- END BEADS INTEGRATION -->
 
 
-## Build & Test
+## What This Is
 
-_Add your build and test commands here_
+A collection of standalone utility scripts that augment the **beads** (`bd`) issue tracker
+and its Dolt-backed storage. Each script is a single self-contained executable at the
+repo root — there is no package, no build step, and no installer. To use, run them in
+place or symlink into `~/bin/`.
+
+Current scripts:
+
+- `bd-export-csv` — Python 3 CLI. Shells out to `bd export --all --no-memories`, parses
+  the JSONL, and writes a flat CSV suitable for spreadsheet review. Supports
+  `--sortby` with comma-separated keys and `-`-prefixed descending order.
+- `dolt-remote-check` — Bash script. Verifies that a beads repo's Dolt data (stored under
+  `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been pushed.
+  Compares `.beads/push-state.json` against `git ls-remote` and the local
+  `.dolt/repo_state.json` / `dolt log`.
+
+Both scripts accept an optional project path argument (default: cwd) and print a
+user-facing summary to stdout / errors to stderr with non-zero exit on failure.
+
+## Running & Testing
+
+No build system. There are no automated tests — verify manually against a real beads
+project (this repo itself is one):
 
 ```bash
-# Example:
-# npm install
-# npm test
+./bd-export-csv .                             # Export this repo to CSV in cwd
+./bd-export-csv . --sortby=-priority,created_at
+./dolt-remote-check .                          # Check Dolt sync state
 ```
 
-## Architecture Overview
+The `dolt-remote-check` script assumes the `dolt` CLI is installed for its richest output
+but degrades gracefully when it isn't. `bd-export-csv` requires only Python 3 stdlib and
+`bd` on `PATH`.
 
-_Add a brief overview of your project architecture_
+## Conventions
 
-## Conventions & Patterns
-
-_Add your project-specific conventions here_
+- **Shebangs**: `#!/usr/bin/env python3` and `#!/usr/bin/env bash` — no hardcoded paths.
+- **Bash scripts**: always `set -euo pipefail` at the top.
+- **Python**: `from __future__ import annotations`; stdlib only; no third-party deps.
+- **Argument parsing**: Python uses `argparse`; Bash uses a manual `case` block with
+  `-h|--help` support and a `show_help()` heredoc.
+- **Errors**: exit with a non-zero code and a short `error:` / `Error:` prefixed message
+  to stderr — do not raise tracebacks.
+- **No config files, no state** beyond what `bd` / Dolt already manage under `.beads/`.
