@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Find the ID of an old Claude Code session by searching its transcript.
+
+Scans ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl for a substring and
+prints matching session IDs. By default searches the current project only
+and only human-typed user messages; --global / --all widen the scope.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from bdutils import error, paged_output, warn
+
+
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+
+
+def mangle_cwd(cwd: Path) -> str:
+    """Claude encodes project cwd as the path with '/' and '.' replaced by '-'."""
+    return re.sub(r"[/.]", "-", str(cwd))
+
+
+def find_project_dir(cwd: Path) -> Path | None:
+    """Return the ~/.claude/projects/<mangled> dir for cwd, or None if missing.
+
+    Tries the direct mangled lookup first; on miss, scans every project dir
+    and returns the one whose first-entry 'cwd' matches (belt-and-suspenders
+    in case Claude's encoding rules change).
+    """
+    direct = CLAUDE_PROJECTS / mangle_cwd(cwd)
+    if direct.is_dir():
+        return direct
+    target = str(cwd)
+    for pdir in CLAUDE_PROJECTS.iterdir():
+        if not pdir.is_dir():
+            continue
+        for jsonl in pdir.glob("*.jsonl"):
+            recorded = first_cwd(jsonl)
+            if recorded and recorded == target:
+                return pdir
+            break  # one file is enough to identify the project
+    return None
+
+
+def first_cwd(jsonl: Path) -> str | None:
+    """Return the 'cwd' field from the first conversational entry of a session."""
+    try:
+        with jsonl.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and "cwd" in obj:
+                    return obj["cwd"]
+    except OSError:
+        return None
+    return None
+
+
+def extract_text(content, include_tool_content: bool) -> str:
+    """Flatten a message.content value to searchable plain text.
+
+    When include_tool_content is False, only string content and 'text' blocks
+    contribute — so tool-result-carried user messages become empty.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            t = block.get("text")
+            if isinstance(t, str):
+                parts.append(t)
+        elif include_tool_content:
+            if btype == "thinking":
+                t = block.get("thinking")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif btype == "tool_use":
+                inp = block.get("input")
+                if inp is not None:
+                    try:
+                        parts.append(json.dumps(inp, ensure_ascii=False))
+                    except (TypeError, ValueError):
+                        pass
+            elif btype == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, str):
+                    parts.append(inner)
+                elif isinstance(inner, list):
+                    for sub in inner:
+                        if isinstance(sub, dict) and sub.get("type") == "text":
+                            t = sub.get("text")
+                            if isinstance(t, str):
+                                parts.append(t)
+    return "\n".join(parts)
+
+
+def iter_session_text(jsonl: Path, search_all: bool):
+    """Yield searchable text strings from a session file, one per message.
+
+    Default (search_all=False): only type=='user' entries, human-typed text only.
+    search_all=True: all user+assistant entries, including tool inputs/outputs.
+    """
+    try:
+        f = jsonl.open("r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        warn(f"could not open {jsonl.name}: {exc}")
+        return
+    with f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            etype = obj.get("type")
+            if search_all:
+                if etype not in ("user", "assistant"):
+                    continue
+            else:
+                if etype != "user":
+                    continue
+            msg = obj.get("message")
+            if not isinstance(msg, dict):
+                continue
+            text = extract_text(msg.get("content"), include_tool_content=search_all)
+            if text:
+                yield text
+
+
+def find_snippets(text: str, needle_lower: str, needle_len: int,
+                  max_snips: int, context: int) -> list[str]:
+    """Return up to max_snips whitespace-collapsed snippets showing the match."""
+    hay = text.lower()
+    snips: list[str] = []
+    start = 0
+    while len(snips) < max_snips:
+        idx = hay.find(needle_lower, start)
+        if idx == -1:
+            break
+        a = max(0, idx - context)
+        b = min(len(text), idx + needle_len + context)
+        piece = " ".join(text[a:b].split())
+        if a > 0:
+            piece = "…" + piece
+        if b < len(text):
+            piece = piece + "…"
+        snips.append(piece)
+        start = idx + needle_len
+    return snips
+
+
+def scan_session(jsonl: Path, needle: str, search_all: bool,
+                 max_snips: int, context: int) -> tuple[int, list[str]]:
+    """Return (total_hit_count, snippets) for a single session file."""
+    needle_lower = needle.lower()
+    needle_len = len(needle)
+    total = 0
+    snips: list[str] = []
+    for text in iter_session_text(jsonl, search_all):
+        hay = text.lower()
+        # Quick count without overlapping
+        count = 0
+        pos = 0
+        while True:
+            idx = hay.find(needle_lower, pos)
+            if idx == -1:
+                break
+            count += 1
+            pos = idx + needle_len
+        if count == 0:
+            continue
+        total += count
+        if len(snips) < max_snips:
+            snips.extend(find_snippets(
+                text, needle_lower, needle_len,
+                max_snips - len(snips), context,
+            ))
+    return total, snips[:max_snips]
+
+
+def project_label(jsonl: Path) -> str:
+    """Short label for a session's project — prefer the recorded cwd's basename."""
+    cwd = first_cwd(jsonl)
+    if cwd:
+        base = os.path.basename(cwd.rstrip("/")) or cwd
+        return base
+    return jsonl.parent.name
+
+
+def format_mtime(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Find old Claude Code session IDs by searching transcripts.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  find-claude-session 'bd-log'                   Search cwd's sessions\n"
+            "  find-claude-session -g 'paged_output'          Search all projects\n"
+            "  find-claude-session -a 'dolt push'             Include tool I/O\n"
+            "  find-claude-session -q 'search string'         UUIDs only, pipe-friendly\n"
+            "  claude --resume $(find-claude-session -q foo | head -1)\n"
+            "\n"
+            "Session data lives under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl.\n"
+            "Default scope = current project (cwd); -g/--global spans all projects.\n"
+            "Default search domain = human-typed user messages; -a/--all also includes\n"
+            "assistant text, thinking, and tool inputs/outputs.\n"
+        ),
+    )
+    parser.add_argument("query", help="substring to search for (case-insensitive)")
+    parser.add_argument(
+        "-g", "--global", dest="global_", action="store_true",
+        help="Search all projects under ~/.claude/projects (default: cwd only)",
+    )
+    parser.add_argument(
+        "-a", "--all", action="store_true",
+        help="Search assistant text, thinking, and tool inputs/outputs too "
+             "(default: human-typed user messages only)",
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Print only matching session IDs, one per line",
+    )
+    parser.add_argument(
+        "-n", "--limit", type=int, default=0,
+        help="Maximum matching sessions to show (default: 0 = unlimited)",
+    )
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
+    )
+    args = parser.parse_args()
+
+    if args.limit < 0:
+        error("--limit must be >= 0 (0 means unlimited)")
+    if not args.query:
+        error("query string must be non-empty")
+    if not CLAUDE_PROJECTS.is_dir():
+        error(f"no such directory: {CLAUDE_PROJECTS}")
+
+    if args.global_:
+        project_dirs = [p for p in CLAUDE_PROJECTS.iterdir() if p.is_dir()]
+        if not project_dirs:
+            error(f"no project subdirs in {CLAUDE_PROJECTS}")
+    else:
+        cwd = Path.cwd().resolve()
+        pdir = find_project_dir(cwd)
+        if pdir is None:
+            error(f"no Claude sessions recorded for {cwd} (try --global)")
+        project_dirs = [pdir]
+
+    sessions: list[Path] = []
+    for pdir in project_dirs:
+        sessions.extend(pdir.glob("*.jsonl"))
+    if not sessions:
+        error("no session files found")
+
+    # Newest first by mtime
+    sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    max_snips = 3
+    context = 80
+    hits: list[tuple[Path, int, list[str]]] = []
+    for jsonl in sessions:
+        total, snips = scan_session(
+            jsonl, args.query, args.all, max_snips, context,
+        )
+        if total == 0:
+            continue
+        hits.append((jsonl, total, snips))
+        if args.limit and len(hits) >= args.limit:
+            break
+
+    if not hits:
+        print("no matching sessions", file=sys.stderr)
+        return 1
+
+    # paged_output(no_pager=True) gives us BrokenPipeError safety on plain
+    # stdout without invoking a pager — critical for `… -q | head -1` pipelines.
+    no_pager = True if args.quiet else args.no_pager
+    with paged_output(no_pager=no_pager) as out:
+        for i, (jsonl, total, snips) in enumerate(hits):
+            if args.quiet:
+                print(jsonl.stem, file=out)
+                continue
+            if i:
+                print(file=out)
+            ts = format_mtime(jsonl.stat().st_mtime)
+            label = project_label(jsonl)
+            uuid = jsonl.stem
+            hits_word = "hit" if total == 1 else "hits"
+            print(f"{ts}  {label}  {uuid}  ({total} {hits_word})", file=out)
+            for s in snips:
+                print(f'  "{s}"', file=out)
+        out.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

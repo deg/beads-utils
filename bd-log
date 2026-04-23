@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
-import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from bdutils import error, resolve_project_path
+from bdutils import error, paged_output, resolve_project_path
 
 
 def run_bd_list(project_path: Path, limit: int, since: str | None) -> str:
@@ -59,30 +56,6 @@ def format_priority(p) -> str:
 
 def collapse(s: str) -> str:
     return " ".join(s.split())
-
-
-def open_pager() -> subprocess.Popen[str] | None:
-    """Return a Popen writing to $PAGER (or 'less -FRX'), or None if not paging.
-
-    Pages only when stdout is a tty. '-F' makes less exit immediately when
-    content fits on one screen, so short output is indistinguishable from
-    direct-to-stdout.
-    """
-    if not sys.stdout.isatty():
-        return None
-    pager_env = os.environ.get("PAGER", "").strip()
-    if pager_env:
-        cmd = shlex.split(pager_env)
-    elif shutil.which("less"):
-        cmd = ["less", "-FRX"]
-    else:
-        return None
-    env = os.environ.copy()
-    env.setdefault("LESS", "FRX")
-    try:
-        return subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, env=env)
-    except OSError:
-        return None
 
 
 def render(issue: dict) -> list[str]:
@@ -154,24 +127,12 @@ def main() -> int:
         return 0
 
     blocks = [render(issue) for issue in issues]
-    pager = None if args.no_pager else open_pager()
-    out = pager.stdin if pager else sys.stdout
-
-    try:
+    with paged_output(no_pager=args.no_pager) as out:
         for i, block in enumerate(blocks):
             if i:
                 print(file=out)
             for line in block:
                 print(line, file=out)
-    except BrokenPipeError:
-        pass
-    finally:
-        if pager is not None:
-            try:
-                pager.stdin.close()
-            except BrokenPipeError:
-                pass
-            pager.wait()
 
     return 0
 

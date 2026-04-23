@@ -56,14 +56,23 @@ Current scripts:
 - `bd-log` — Shows recently closed beads in a git-log-style view. Wraps
   `bd list --status=closed --sort=closed --json` (newest first). Supports
   `-n/--limit` (default 0 = unlimited, like `git log`) and `--since DATE`
-  (passed through as `--closed-after`). Pages through `$PAGER` (or `less -FRX`)
-  when stdout is a tty — `-F` makes short output indistinguishable from
-  direct-to-stdout. `--no-pager` disables.
+  (passed through as `--closed-after`). Pages through `bdutils.paged_output()`
+  (`$PAGER` or `less -FRX` when stdout is a tty). `--no-pager` disables.
+- `find-claude-session` — Finds the UUID of an old Claude Code session by
+  grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
+  (mangling = `/` and `.` → `-`). Defaults to the current project and
+  human-typed user messages only; `-g/--global` spans all projects,
+  `-a/--all` also searches assistant text, thinking, and tool inputs/outputs.
+  Git-log-style output with timestamp, project label, full UUID, match count,
+  and up to 3 snippets per session; `-q/--quiet` prints only UUIDs
+  (pipe-friendly for `claude --resume`). Pages via `bdutils.paged_output()`.
 
 Shared helper:
 
-- `bdutils.py` — `error()`, `warn()`, and `resolve_project_path()`. Imported by every
-  script; keep small and stdlib-only.
+- `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`, and
+  `paged_output()` (context manager that pipes through `$PAGER` or `less -FRX`
+  when stdout is a tty; `-F` makes short output indistinguishable from
+  direct-to-stdout). Imported by scripts in this repo; keep small and stdlib-only.
 
 All scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
@@ -79,6 +88,10 @@ project (this repo itself is one):
 ./dolt-remote-check .                          # Check Dolt sync state
 ./bd-log                                       # Last 10 recently closed beads
 ./bd-log -n 25 --since 2026-04-01              # 25 closures on/after date
+./find-claude-session 'bd-log'                 # Sessions in this project matching
+./find-claude-session -g 'paged_output'        # All projects
+./find-claude-session -a 'dolt push'           # Include assistant/tool content
+./find-claude-session -q foo | head -1         # UUID only (for `claude --resume`)
 ```
 
 `dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
