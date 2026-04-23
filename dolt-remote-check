@@ -1,167 +1,203 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Verify that a beads project's Dolt data has been pushed to the remote.
 
-show_help() {
-  cat <<'EOF'
-dolt-remote-check
-=================
+Dolt stores its data under refs/dolt/data in the Git remote — invisible in
+GitHub's web UI but durable alongside your normal branches. This script
+compares local Dolt state (embedded or server mode) against what's on the
+remote and reports whether they're in sync.
+"""
+from __future__ import annotations
 
-Verify that Beads/Dolt data has been pushed to the GitHub remote.
+import argparse
+import functools
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-Dolt stores its data under refs/dolt/data in the Git remote — invisible
-in GitHub's web UI but durable alongside your normal branches.
+from bdutils import error, resolve_project_path
 
-This script compares local Dolt state (embedded or server mode)
-against what's on the remote and reports whether they're in sync.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-Usage:
-  dolt-remote-check          Run in current directory
-  dolt-remote-check <path>   Run against a specific repo
 
-Options:
-  -h, --help    Show this help and exit
-EOF
-}
+def strip_ansi(s: str) -> str:
+    return ANSI_RE.sub("", s)
 
-case "${1:-}" in
-  -h|--help) show_help; exit 0 ;;
-  "") ;;
-  *)
-    if [[ -d "$1" ]]; then
-      cd "$1"
-    else
-      echo "Error: '$1' is not a directory" >&2
-      exit 1
-    fi
-    ;;
-esac
 
-# --- Verify we're in a git repo ---
+def run(cmd: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
 
-if ! git rev-parse --show-toplevel &>/dev/null; then
-  echo "Error: not inside a git repository" >&2
-  exit 1
-fi
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-BEADS_DIR="$REPO_ROOT/.beads"
+def read_metadata(beads_dir: Path) -> tuple[str, str]:
+    path = beads_dir / "metadata.json"
+    if not path.is_file():
+        error(f"no metadata.json in {beads_dir}")
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        error(f"could not read {path}: {exc}")
+    db_name = data.get("dolt_database", "unknown")
+    dolt_mode = data.get("dolt_mode", "unknown")
+    return db_name, dolt_mode
 
-# --- Verify beads is set up ---
 
-if [[ ! -d "$BEADS_DIR" ]]; then
-  echo "Error: no .beads directory found in $REPO_ROOT" >&2
-  exit 1
-fi
+def get_remote_url(project_path: Path) -> str:
+    result = run(["git", "remote", "get-url", "origin"], cwd=project_path)
+    url = result.stdout.strip()
+    return url if url else "(no remote)"
 
-METADATA="$BEADS_DIR/metadata.json"
-if [[ ! -f "$METADATA" ]]; then
-  echo "Error: no metadata.json in $BEADS_DIR" >&2
-  exit 1
-fi
 
-# --- Gather info ---
+def get_remote_dolt_ref(project_path: Path) -> str | None:
+    result = run(["git", "ls-remote", "origin", "refs/dolt/data"], cwd=project_path)
+    line = result.stdout.strip()
+    if not line:
+        return None
+    return line.split()[0]
 
-REPO_NAME="$(basename "$REPO_ROOT")"
-REMOTE_URL="$(git remote get-url origin 2>/dev/null || echo "(no remote)")"
-DB_NAME="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['dolt_database'])" "$METADATA" 2>/dev/null || echo "unknown")"
-DOLT_MODE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('dolt_mode','unknown'))" "$METADATA" 2>/dev/null || echo "unknown")"
 
-echo "Repository:  $REPO_ROOT"
-echo "Remote:      $REMOTE_URL"
-echo "Dolt DB:     $DB_NAME (mode: $DOLT_MODE)"
-echo ""
+def read_push_state(beads_dir: Path) -> tuple[str | None, str | None]:
+    path = beads_dir / "push-state.json"
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    return data.get("last_push"), data.get("last_commit")
 
-# --- Check remote ref ---
 
-REMOTE_REF="$(git ls-remote origin refs/dolt/data 2>/dev/null | awk '{print $1}')"
+def locate_dolt_db(beads_dir: Path, db_name: str) -> Path | None:
+    for candidate in (beads_dir / "embeddeddolt" / db_name, beads_dir / "dolt" / db_name):
+        if (candidate / ".dolt").is_dir():
+            return candidate
+    return None
 
-if [[ -z "$REMOTE_REF" ]]; then
-  echo "Remote:  refs/dolt/data NOT FOUND"
-  echo ""
-  echo "Dolt data has never been pushed, or the remote has no dolt ref."
-  echo "Run 'bd dolt push' to push."
-  exit 1
-fi
 
-echo "Remote:  refs/dolt/data = ${REMOTE_REF:0:12}..."
+def read_dolt_remotes(dolt_db_dir: Path) -> dict[str, str]:
+    repo_state = dolt_db_dir / ".dolt" / "repo_state.json"
+    if not repo_state.is_file():
+        return {}
+    try:
+        data = json.loads(repo_state.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    remotes = data.get("remotes", {}) or {}
+    return {name: r.get("url", "?") for name, r in remotes.items()}
 
-# --- Check local push state ---
 
-PUSH_STATE="$BEADS_DIR/push-state.json"
-if [[ -f "$PUSH_STATE" ]]; then
-  LAST_PUSH="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('last_push','unknown'))" "$PUSH_STATE" 2>/dev/null)"
-  LAST_COMMIT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('last_commit','unknown'))" "$PUSH_STATE" 2>/dev/null)"
-  echo "Pushed:  $LAST_PUSH"
-  echo "Commit:  $LAST_COMMIT"
-else
-  LAST_COMMIT=""
-  echo "Pushed:  (no push-state.json found)"
-fi
+def get_local_dolt_head(dolt_db_dir: Path) -> str | None:
+    if not _have_dolt():
+        return None
+    result = run(["dolt", "log", "--oneline", "-n", "1"], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return None
+    first = strip_ansi(result.stdout).strip().splitlines()
+    if not first:
+        return None
+    return first[0].split()[0] if first[0] else None
 
-# --- Locate local Dolt database ---
-# Embedded mode: .beads/embeddeddolt/<db>/
-# Server mode:   .beads/dolt/<db>/
 
-DOLT_DB_DIR=""
-for candidate in "$BEADS_DIR/embeddeddolt/$DB_NAME" "$BEADS_DIR/dolt/$DB_NAME"; do
-  if [[ -d "$candidate/.dolt" ]]; then
-    DOLT_DB_DIR="$candidate"
-    break
-  fi
-done
+def get_recent_dolt_log(dolt_db_dir: Path, n: int = 5) -> list[str]:
+    if not _have_dolt():
+        return []
+    result = run(["dolt", "log", "--oneline", "-n", str(n)], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return []
+    return [strip_ansi(line) for line in result.stdout.splitlines() if line.strip()]
 
-if [[ -n "$DOLT_DB_DIR" ]]; then
-  MANIFEST="$DOLT_DB_DIR/.dolt/noms/manifest"
-  if [[ -f "$MANIFEST" ]]; then
-    # Manifest format: version:magic:lock:root:...
-    # The Dolt HEAD commit is in repo_state.json
-    REPO_STATE="$DOLT_DB_DIR/.dolt/repo_state.json"
-    if [[ -f "$REPO_STATE" ]]; then
-      LOCAL_REMOTE_REF="$(python3 -c "
-import json, sys
-rs = json.load(open(sys.argv[1]))
-remotes = rs.get('remotes', {})
-for name, r in remotes.items():
-    print(f\"  {name}: {r.get('url', '?')}\")
-" "$REPO_STATE" 2>/dev/null)"
-      echo ""
-      echo "Dolt remotes configured:"
-      echo "$LOCAL_REMOTE_REF"
-    fi
-  fi
 
-  # Show recent dolt log if dolt CLI is available
-  if command -v dolt &>/dev/null; then
-    echo ""
-    echo "Recent Dolt commits (local):"
-    (cd "$DOLT_DB_DIR" && dolt log --oneline -n 5 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed 's/^/  /')
-  fi
-else
-  echo ""
-  echo "Warning: Dolt database directory not found"
-  echo "  Checked: $BEADS_DIR/embeddeddolt/$DB_NAME"
-  echo "           $BEADS_DIR/dolt/$DB_NAME"
-fi
+@functools.cache
+def _have_dolt() -> bool:
+    return shutil.which("dolt") is not None
 
-# --- Sync check ---
 
-echo ""
-if [[ -n "$LAST_COMMIT" ]]; then
-  # Check if dolt CLI can tell us the current HEAD
-  if command -v dolt &>/dev/null && [[ -d "$DOLT_DB_DIR" ]]; then
-    LOCAL_HEAD="$(cd "$DOLT_DB_DIR" && dolt log --oneline -n 1 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $1}')"
-    if [[ "$LOCAL_HEAD" == "$LAST_COMMIT" ]]; then
-      echo "Status:  IN SYNC (local HEAD matches last push)"
-    else
-      echo "Status:  OUT OF SYNC"
-      echo "  Local HEAD:  $LOCAL_HEAD"
-      echo "  Last pushed: $LAST_COMMIT"
-      echo ""
-      echo "Run 'bd dolt push' to sync."
-    fi
-  else
-    echo "Status:  remote ref exists (install dolt CLI for full sync check)"
-  fi
-else
-  echo "Status:  remote ref exists (no local push state to compare)"
-fi
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  dolt-remote-check          Check the current directory\n"
+            "  dolt-remote-check <path>   Check a specific beads repo\n"
+        ),
+    )
+    parser.add_argument(
+        "project_path", nargs="?", default=".",
+        help="Path to the beads project (default: current directory)",
+    )
+    args = parser.parse_args()
+
+    project_path = resolve_project_path(args.project_path)
+    beads_dir = project_path / ".beads"
+
+    db_name, dolt_mode = read_metadata(beads_dir)
+    remote_url = get_remote_url(project_path)
+
+    print(f"Repository:  {project_path}")
+    print(f"Remote:      {remote_url}")
+    print(f"Dolt DB:     {db_name} (mode: {dolt_mode})")
+    print()
+
+    remote_ref = get_remote_dolt_ref(project_path)
+    if remote_ref is None:
+        print("Remote:  refs/dolt/data NOT FOUND")
+        print()
+        print("Dolt data has never been pushed, or the remote has no dolt ref.")
+        print("Run 'bd dolt push' to push.")
+        return 1
+
+    print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
+
+    last_push, last_commit = read_push_state(beads_dir)
+    if last_push is not None:
+        print(f"Pushed:  {last_push}")
+        print(f"Commit:  {last_commit}")
+    else:
+        print("Pushed:  (no push-state.json found)")
+
+    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
+    if dolt_db_dir is not None:
+        remotes = read_dolt_remotes(dolt_db_dir)
+        if remotes:
+            print()
+            print("Dolt remotes configured:")
+            for name, url in remotes.items():
+                print(f"  {name}: {url}")
+        recent = get_recent_dolt_log(dolt_db_dir, n=5)
+        if recent:
+            print()
+            print("Recent Dolt commits (local):")
+            for line in recent:
+                print(f"  {line}")
+    else:
+        print()
+        print("Warning: Dolt database directory not found")
+        print(f"  Checked: {beads_dir / 'embeddeddolt' / db_name}")
+        print(f"           {beads_dir / 'dolt' / db_name}")
+
+    print()
+    if last_commit is None:
+        print("Status:  remote ref exists (no local push state to compare)")
+        return 0
+
+    if dolt_db_dir is None or not _have_dolt():
+        print("Status:  remote ref exists (install dolt CLI for full sync check)")
+        return 0
+
+    local_head = get_local_dolt_head(dolt_db_dir)
+    if local_head == last_commit:
+        print("Status:  IN SYNC (local HEAD matches last push)")
+        return 0
+
+    print("Status:  OUT OF SYNC")
+    print(f"  Local HEAD:  {local_head}")
+    print(f"  Last pushed: {last_commit}")
+    print()
+    print("Run 'bd dolt push' to sync.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

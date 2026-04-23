@@ -10,6 +10,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from bdutils import error, resolve_project_path, warn
+
 COLUMNS = [
     "id", "title", "type", "status", "priority",
     "assignee", "owner",
@@ -37,11 +39,11 @@ def run_bd_export(project_path: Path) -> str:
             check=True,
         )
     except FileNotFoundError:
-        sys.exit("error: 'bd' not found on PATH")
+        error("'bd' not found on PATH")
     except subprocess.CalledProcessError as exc:
         if exc.stderr:
             sys.stderr.write(exc.stderr)
-        sys.exit(f"error: bd export failed (exit {exc.returncode})")
+        error(f"bd export failed (exit {exc.returncode})")
     return result.stdout
 
 
@@ -104,8 +106,8 @@ def parse_sortby(spec: str) -> list[tuple[str, bool]]:
         desc = token.startswith("-")
         key = token.lstrip("-+")
         if key not in SORT_KEYS:
-            sys.exit(
-                f"error: --sortby: unknown key {key!r} "
+            error(
+                f"--sortby: unknown key {key!r} "
                 f"(valid: {', '.join(sorted(SORT_KEYS))})"
             )
         keys.append((key, desc))
@@ -143,15 +145,13 @@ def main() -> int:
 
     sort_keys = parse_sortby(args.sortby) if args.sortby else []
 
-    project_path = Path(args.project_path).expanduser().resolve()
-    if not (project_path / ".beads").is_dir():
-        sys.exit(f"error: no .beads/ directory at {project_path}")
+    project_path = resolve_project_path(args.project_path)
 
     jsonl = run_bd_export(project_path)
     issues = [json.loads(line) for line in jsonl.splitlines() if line.strip()]
 
     if not issues:
-        sys.stderr.write("warning: no issues in project; writing header-only CSV\n")
+        warn("no issues in project; writing header-only CSV")
 
     prefix = derive_prefix(issues, fallback=project_path.name)
     today = date.today().isoformat()
