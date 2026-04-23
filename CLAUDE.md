@@ -53,6 +53,9 @@ Current scripts:
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
+- `bd-log` — Shows recently closed beads in a git-log-style view. Wraps
+  `bd list --status=closed --sort=closed --reverse --json`. Supports `-n/--limit`
+  (default 10) and `--since DATE` (passed through as `--closed-after`).
 
 Shared helper:
 
@@ -71,6 +74,8 @@ project (this repo itself is one):
 ./bd-export-csv .                             # Export this repo to CSV in cwd
 ./bd-export-csv . --sortby=-priority,created_at
 ./dolt-remote-check .                          # Check Dolt sync state
+./bd-log                                       # Last 10 recently closed beads
+./bd-log -n 25 --since 2026-04-01              # 25 closures on/after date
 ```
 
 `dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
