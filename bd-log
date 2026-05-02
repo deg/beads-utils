@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show recently closed beads in a git-log-style view."""
+"""Show recent beads events (create/start/close) in a git-log-style view."""
 from __future__ import annotations
 
 import argparse
@@ -11,17 +11,18 @@ from pathlib import Path
 
 from bdutils import error, paged_output, resolve_project_path
 
+EVENT_KINDS = ("create", "start", "close")
+EVENT_TS_FIELD = {
+    "create": "created_at",
+    "start": "started_at",
+    "close": "closed_at",
+}
+EVENT_GLYPH = {"create": "+", "start": "▶", "close": "✓"}
+EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
 
-def run_bd_list(project_path: Path, limit: int, since: str | None) -> str:
-    cmd = [
-        "bd", "list",
-        "--status=closed",
-        "--sort=closed",
-        "--limit", str(limit),
-        "--json",
-    ]
-    if since:
-        cmd.append(f"--closed-after={since}")
+
+def run_bd_list(project_path: Path) -> str:
+    cmd = ["bd", "list", "--all", "--limit", "0", "--json"]
     try:
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=True,
@@ -58,33 +59,70 @@ def collapse(s: str) -> str:
     return " ".join(s.split())
 
 
-def render(issue: dict) -> list[str]:
-    ts = format_ts(issue.get("closed_at", ""))
+def synthesize_events(issues: list[dict], kinds: set[str]) -> list[tuple[str, str, dict]]:
+    events: list[tuple[str, str, dict]] = []
+    for issue in issues:
+        for kind in kinds:
+            ts = issue.get(EVENT_TS_FIELD[kind]) or ""
+            if ts:
+                events.append((ts, kind, issue))
+    return events
+
+
+def event_actor(kind: str, issue: dict) -> str:
+    if kind == "create":
+        return issue.get("created_by") or issue.get("owner") or ""
+    return issue.get("assignee") or issue.get("owner") or ""
+
+
+def render(ts: str, kind: str, issue: dict) -> list[str]:
+    glyph = EVENT_GLYPH[kind]
     iid = issue.get("id", "?")
     prio = format_priority(issue.get("priority"))
     itype = issue.get("issue_type", "") or ""
-    actor = issue.get("assignee") or issue.get("owner") or ""
+    actor = event_actor(kind, issue)
     title = collapse(issue.get("title") or "(no title)")
-    reason = collapse(issue.get("close_reason") or "")
 
-    head_bits = [f"✓ {ts}", iid, f"{prio} {itype}".strip()]
+    head_bits = [f"{glyph} {format_ts(ts)}", iid, f"{prio} {itype}".strip()]
     if actor:
         head_bits.append(actor)
     lines = ["  ".join(head_bits), f"  {title}"]
-    if reason:
-        lines.append(f"  {reason}")
+    if kind == "close":
+        reason = collapse(issue.get("close_reason") or "")
+        if reason:
+            lines.append(f"  {reason}")
     return lines
+
+
+def parse_only(value: str) -> set[str]:
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        error("--only must list at least one event kind")
+    unknown = [p for p in parts if p not in EVENT_KINDS]
+    if unknown:
+        error(
+            f"unknown event kind(s): {', '.join(unknown)} "
+            f"(known: {', '.join(EVENT_KINDS)})"
+        )
+    return set(parts)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Show recently closed beads in a git-log-style view.",
+        description="Show recent beads events (create/start/close) in a git-log-style view.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "Event kinds (default: all three):\n"
+            "  + create   issue was created\n"
+            "  ▶ start    issue was claimed / moved to in_progress\n"
+            "  ✓ close    issue was closed\n"
+            "\n"
             "Examples:\n"
-            "  bd-log                         All closures in cwd (paged)\n"
-            "  bd-log -n 10                   Last 10 closures\n"
-            "  bd-log --since 2026-04-01      Closures on/after date\n"
+            "  bd-log                         All events in cwd (paged)\n"
+            "  bd-log -n 10                   Last 10 events\n"
+            "  bd-log --only=close            Closures only (previous default)\n"
+            "  bd-log --only=create,close     Narrow to two kinds\n"
+            "  bd-log --since 2026-04-01      Events on/after date\n"
             "  bd-log /path/to/project        Check a different project\n"
             "\n"
             "Output is paged through $PAGER (or 'less -FRX') when stdout is a\n"
@@ -98,12 +136,17 @@ def main() -> int:
     )
     parser.add_argument(
         "-n", "--limit", type=int, default=0,
-        help="Maximum entries to show (default: 0 = unlimited, like 'git log')",
+        help="Maximum events to show (default: 0 = unlimited, like 'git log')",
+    )
+    parser.add_argument(
+        "--only", default=None, metavar="KINDS",
+        help="Comma-separated event kinds to include "
+             f"(known: {', '.join(EVENT_KINDS)}). Default: all.",
     )
     parser.add_argument(
         "--since", default=None, metavar="DATE",
-        help="Show only closures on/after DATE (YYYY-MM-DD or RFC3339); "
-             "passed through to 'bd list --closed-after'.",
+        help="Show only events on/after DATE (YYYY-MM-DD or RFC3339, UTC). "
+             "Applies to every event kind, not just closures.",
     )
     parser.add_argument(
         "--no-pager", action="store_true",
@@ -114,19 +157,32 @@ def main() -> int:
     if args.limit < 0:
         error("--limit must be >= 0 (0 means unlimited)")
 
+    kinds = parse_only(args.only) if args.only else set(EVENT_KINDS)
+
     project_path = resolve_project_path(args.project_path)
 
-    raw = run_bd_list(project_path, args.limit, args.since)
+    raw = run_bd_list(project_path)
     try:
         issues = json.loads(raw) if raw.strip() else []
     except json.JSONDecodeError as exc:
         error(f"could not parse bd list JSON output: {exc}")
 
-    if not issues:
-        print("no recently closed issues")
+    events = synthesize_events(issues, kinds)
+
+    if args.since:
+        since = args.since
+        events = [e for e in events if e[0] >= since]
+
+    events.sort(key=lambda e: (e[0], -EVENT_ORDER[e[1]], e[2].get("id", "")), reverse=True)
+
+    if args.limit > 0:
+        events = events[:args.limit]
+
+    if not events:
+        print("no matching events")
         return 0
 
-    blocks = [render(issue) for issue in issues]
+    blocks = [render(ts, kind, issue) for ts, kind, issue in events]
     with paged_output(no_pager=args.no_pager) as out:
         for i, block in enumerate(blocks):
             if i:
