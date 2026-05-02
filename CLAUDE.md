@@ -66,16 +66,28 @@ Current scripts:
   Git-log-style output with timestamp, project label, full UUID, match count,
   and up to 3 snippets per session; `-q/--quiet` prints only UUIDs
   (pipe-friendly for `claude --resume`). Pages via `bdutils.paged_output()`.
+- `bd-view` — Pretty-prints a single bead with rendered Markdown. Where `bd
+  show` dumps fields as plain text and `bd edit` shows raw markdown one
+  section at a time, this renders the full bead (header metadata,
+  description, design, notes, acceptance criteria, dependencies, comments)
+  with proper formatting via the `rich` library. Subclasses
+  `rich.markdown.Markdown` to disable raw HTML so placeholder text like
+  `<id>` survives. Single positional arg: `bd-view <issue-id>`. Pages via
+  `bdutils.paged_output()`. Falls back to a plain-text dump (with a
+  `warning:`) if `rich` isn't installed.
 
 Shared helper:
 
-- `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`, and
-  `paged_output()` (context manager that pipes through `$PAGER` or `less -FRX`
-  when stdout is a tty; `-F` makes short output indistinguishable from
-  direct-to-stdout). Imported by scripts in this repo; keep small and stdlib-only.
+- `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
+  `format_ts()`, `format_priority()`, and `paged_output()` (context manager
+  that pipes through `$PAGER` or `less -FRX` when stdout is a tty; `-F` makes
+  short output indistinguishable from direct-to-stdout). Imported by scripts
+  in this repo; keep small and stdlib-only.
 
 All scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
+(`bd-view` is the exception: it takes an issue id, not a project path, and
+relies on `bd`'s own `.beads/` auto-discovery from the current directory.)
 
 ## Running & Testing
 
@@ -92,16 +104,20 @@ project (this repo itself is one):
 ./find-claude-session -g 'paged_output'        # All projects
 ./find-claude-session -a 'dolt push'           # Include assistant/tool content
 ./find-claude-session -q foo | head -1         # UUID only (for `claude --resume`)
+./bd-view beads-utils-s4s                      # Pretty-print a single bead
 ```
 
 `dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
-degrades gracefully when it isn't. All scripts require only Python 3 stdlib and `bd`
-on `PATH`.
+degrades gracefully when it isn't. `bd-view` requires the `rich` Python library
+for Markdown rendering (already installed system-wide) and falls back to plain
+text if missing. All other scripts require only Python 3 stdlib and `bd` on `PATH`.
 
 ## Conventions
 
 - **Shebang**: `#!/usr/bin/env python3` — no hardcoded paths.
-- **Python**: `from __future__ import annotations`; stdlib only; no third-party deps.
+- **Python**: `from __future__ import annotations`; stdlib only by default. Third-party
+  deps allowed where they're load-bearing for the script's purpose (e.g. `bd-view`
+  needs `rich` for Markdown rendering); `bdutils.py` itself stays stdlib-only.
 - **Argument parsing**: `argparse`. Use `RawDescriptionHelpFormatter` with
   `description=` and `epilog=` when a richer help block is warranted.
 - **Errors**: use `bdutils.error(msg)` — exits non-zero with a lowercase `error: ...`

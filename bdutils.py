@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
@@ -24,6 +25,28 @@ def error(msg: str) -> NoReturn:
 def warn(msg: str) -> None:
     """Write a 'warning: ...' line to stderr without exiting."""
     sys.stderr.write(f"warning: {msg}\n")
+
+
+def format_ts(iso: str) -> str:
+    """Format an ISO-8601 (UTC, 'Z'-suffixed) timestamp as 'YYYY-MM-DD HH:MM' in
+    local time. Empty input returns ''; unparseable input is returned as-is."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def format_priority(p) -> str:
+    """Render a beads priority value as 'P0'..'P4'. None/'' becomes 'P?'."""
+    if p is None or p == "":
+        return "P?"
+    try:
+        return f"P{int(p)}"
+    except (TypeError, ValueError):
+        return str(p)
 
 
 def resolve_project_path(arg: str) -> Path:

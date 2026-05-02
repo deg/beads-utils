@@ -6,10 +6,9 @@ import argparse
 import json
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
-from bdutils import error, paged_output, resolve_project_path
+from bdutils import error, format_priority, format_ts, paged_output, resolve_project_path
 
 EVENT_KINDS = ("create", "start", "close")
 EVENT_TS_FIELD = {
@@ -34,25 +33,6 @@ def run_bd_list(project_path: Path) -> str:
             sys.stderr.write(exc.stderr)
         error(f"bd list failed (exit {exc.returncode})")
     return result.stdout
-
-
-def format_ts(iso: str) -> str:
-    if not iso:
-        return "?"
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    except ValueError:
-        return iso
-    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
-
-
-def format_priority(p) -> str:
-    if p is None or p == "":
-        return "P?"
-    try:
-        return f"P{int(p)}"
-    except (TypeError, ValueError):
-        return str(p)
 
 
 def collapse(s: str) -> str:

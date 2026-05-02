@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Pretty-print a beads issue with rendered Markdown."""
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+
+from bdutils import error, format_priority, format_ts, paged_output, warn
+
+try:
+    from markdown_it import MarkdownIt
+    from rich.console import Console
+    from rich.markdown import Markdown as _RichMarkdown
+    from rich.rule import Rule
+    from rich.text import Text
+    HAVE_RICH = True
+
+    class Markdown(_RichMarkdown):
+        """Markdown renderer with raw HTML disabled.
+
+        rich's default parser allows raw HTML, which silently eats any
+        '<word>' substring (e.g. placeholder text like '<id>') and can cause
+        odd block-level whitespace. Beads prose is plain-text-with-markdown,
+        not HTML, so we re-parse with html=False.
+        """
+        def __init__(self, markup: str, **kwargs) -> None:
+            super().__init__(markup, **kwargs)
+            parser = (
+                MarkdownIt("commonmark", {"html": False})
+                .enable("strikethrough")
+                .enable("table")
+            )
+            self.parsed = parser.parse(markup)
+except ImportError:
+    HAVE_RICH = False
+
+
+def with_hard_breaks(text: str) -> str:
+    """Append two trailing spaces to non-empty lines so single newlines
+    render as visible line breaks (CommonMark otherwise collapses them to
+    spaces). Lines inside fenced code blocks are left untouched."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or not line.strip() or line.endswith("  "):
+            out.append(line)
+        else:
+            out.append(line + "  ")
+    return "\n".join(out)
+
+
+STATUS_GLYPH = {
+    "open": "○",
+    "in_progress": "◐",
+    "blocked": "●",
+    "deferred": "❄",
+    "closed": "✓",
+    "pinned": "📌",
+    "hooked": "◇",
+}
+
+STATUS_STYLE = {
+    "open": "yellow",
+    "in_progress": "cyan",
+    "blocked": "red",
+    "deferred": "blue",
+    "closed": "green",
+    "pinned": "magenta",
+    "hooked": "magenta",
+}
+
+
+def run_bd_json(args: list[str]) -> object:
+    cmd = ["bd"] + args
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        error("'bd' not found on PATH")
+    if result.returncode != 0:
+        msg = ""
+        try:
+            payload = json.loads(result.stdout)
+            if isinstance(payload, dict) and "error" in payload:
+                msg = payload["error"]
+        except json.JSONDecodeError:
+            pass
+        if not msg and result.stderr.strip():
+            msg = result.stderr.strip().splitlines()[0]
+        if not msg:
+            msg = f"bd {' '.join(args)} failed (exit {result.returncode})"
+        error(msg)
+    if not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        error(f"could not parse bd output as JSON: {exc}")
+
+
+def fetch_issue(issue_id: str) -> dict:
+    data = run_bd_json(["show", issue_id, "--long", "--json"])
+    if not isinstance(data, list) or not data:
+        error(f"no data returned for {issue_id}")
+    return data[0]
+
+
+def fetch_deps(issue_id: str, direction: str) -> list[dict]:
+    data = run_bd_json(["dep", "list", issue_id, f"--direction={direction}", "--json"])
+    return data if isinstance(data, list) else []
+
+
+def fetch_comments(issue_id: str) -> list[dict]:
+    data = run_bd_json(["comments", issue_id, "--json"])
+    return data if isinstance(data, list) else []
+
+
+def make_console(out) -> Console:
+    width = shutil.get_terminal_size((100, 24)).columns
+    return Console(file=out, force_terminal=True, width=width, soft_wrap=False)
+
+
+def render_header(console: Console, issue: dict) -> None:
+    iid = issue.get("id", "?")
+    title = issue.get("title") or "(no title)"
+    status = issue.get("status") or ""
+    glyph = STATUS_GLYPH.get(status, "·")
+    style = STATUS_STYLE.get(status, "white")
+    prio = format_priority(issue.get("priority"))
+    itype = issue.get("issue_type") or ""
+
+    head = Text()
+    head.append(f"{glyph} ", style=style)
+    head.append(iid, style="bold")
+    head.append("  ")
+    head.append(title, style="bold white")
+    console.print(head)
+
+    meta = Text()
+    meta.append("status: ")
+    meta.append(status or "?", style=style)
+    meta.append(f"  ·  priority: {prio}  ·  type: {itype}", style="dim")
+    console.print(meta)
+
+    owner = issue.get("owner") or ""
+    assignee = issue.get("assignee") or ""
+    bits = []
+    if owner:
+        bits.append(f"owner: {owner}")
+    if assignee:
+        bits.append(f"assignee: {assignee}")
+    if bits:
+        console.print(Text("  ·  ".join(bits), style="dim"))
+
+    date_bits = []
+    for label, key in (("created", "created_at"),
+                       ("started", "started_at"),
+                       ("updated", "updated_at"),
+                       ("closed", "closed_at")):
+        ts = issue.get(key)
+        if ts:
+            date_bits.append(f"{label}: {format_ts(ts)}")
+    if date_bits:
+        console.print(Text("  ·  ".join(date_bits), style="dim"))
+
+    close_reason = issue.get("close_reason")
+    if close_reason:
+        console.print(Text(f"close reason: {close_reason}", style="dim"))
+
+    created_by = issue.get("created_by")
+    if created_by and created_by not in (owner, assignee):
+        console.print(Text(f"created by: {created_by}", style="dim"))
+
+
+def render_section(console: Console, title: str, body: str) -> None:
+    if not body or not body.strip():
+        return
+    console.print()
+    console.print(Rule(title, style="dim", align="left"))
+    console.print(Markdown(with_hard_breaks(body)))
+
+
+def render_deps(console: Console, deps: list[dict], dependents: list[dict]) -> None:
+    if not deps and not dependents:
+        return
+    console.print()
+    console.print(Rule("Dependencies", style="dim", align="left"))
+
+    def render_list(label: str, items: list[dict]) -> None:
+        if not items:
+            return
+        console.print(Text(label, style="bold"))
+        for d in items:
+            status = d.get("status") or ""
+            glyph = STATUS_GLYPH.get(status, "·")
+            style = STATUS_STYLE.get(status, "white")
+            iid = d.get("id", "?")
+            title = d.get("title") or "(no title)"
+            prio = format_priority(d.get("priority"))
+            itype = d.get("issue_type") or ""
+            extra = " ".join(s for s in (prio, status, itype) if s)
+            line = Text("  ")
+            line.append(f"{glyph} ", style=style)
+            line.append(iid, style="bold")
+            line.append("  ")
+            line.append(title)
+            if extra:
+                line.append(f"  ({extra})", style="dim")
+            console.print(line)
+
+    render_list("Depends on:", deps)
+    render_list("Blocks:", dependents)
+
+
+def render_comments(console: Console, comments: list[dict]) -> None:
+    if not comments:
+        return
+    console.print()
+    console.print(Rule("Comments", style="dim", align="left"))
+    for i, c in enumerate(comments):
+        if i:
+            console.print()
+        author = c.get("author") or "(unknown)"
+        ts = format_ts(c.get("created_at") or "")
+        head = Text()
+        head.append(author, style="bold")
+        if ts:
+            head.append(f"  ·  {ts}", style="dim")
+        console.print(head)
+        text = c.get("text") or ""
+        if text.strip():
+            console.print(Markdown(with_hard_breaks(text)))
+
+
+def render_with_rich(out, issue: dict, deps: list[dict],
+                     dependents: list[dict], comments: list[dict]) -> None:
+    console = make_console(out)
+    render_header(console, issue)
+    render_section(console, "Description", issue.get("description") or "")
+    render_section(console, "Design", issue.get("design") or "")
+    render_section(console, "Notes", issue.get("notes") or "")
+    render_section(console, "Acceptance Criteria", issue.get("acceptance_criteria") or "")
+    render_deps(console, deps, dependents)
+    render_comments(console, comments)
+
+
+def render_plain(out, issue: dict, deps: list[dict],
+                 dependents: list[dict], comments: list[dict]) -> None:
+    def w(s: str = "") -> None:
+        print(s, file=out)
+
+    iid = issue.get("id", "?")
+    title = issue.get("title") or "(no title)"
+    w(f"{iid}  {title}")
+
+    status = issue.get("status") or "?"
+    prio = format_priority(issue.get("priority"))
+    itype = issue.get("issue_type") or ""
+    w(f"status: {status}  priority: {prio}  type: {itype}")
+
+    owner = issue.get("owner") or ""
+    assignee = issue.get("assignee") or ""
+    bits = []
+    if owner:
+        bits.append(f"owner: {owner}")
+    if assignee:
+        bits.append(f"assignee: {assignee}")
+    if bits:
+        w("  ".join(bits))
+
+    date_bits = []
+    for label, key in (("created", "created_at"),
+                       ("started", "started_at"),
+                       ("updated", "updated_at"),
+                       ("closed", "closed_at")):
+        ts = issue.get(key)
+        if ts:
+            date_bits.append(f"{label}: {format_ts(ts)}")
+    if date_bits:
+        w("  ".join(date_bits))
+
+    if issue.get("close_reason"):
+        w(f"close reason: {issue['close_reason']}")
+
+    def section(name: str, body: str) -> None:
+        if body and body.strip():
+            w()
+            w(f"== {name} ==")
+            w(body)
+
+    section("DESCRIPTION", issue.get("description") or "")
+    section("DESIGN", issue.get("design") or "")
+    section("NOTES", issue.get("notes") or "")
+    section("ACCEPTANCE CRITERIA", issue.get("acceptance_criteria") or "")
+
+    if deps or dependents:
+        w()
+        w("== DEPENDENCIES ==")
+        if deps:
+            w("Depends on:")
+            for d in deps:
+                w(f"  {d.get('id', '?')}  {d.get('status', '')}  {d.get('title', '')}")
+        if dependents:
+            w("Blocks:")
+            for d in dependents:
+                w(f"  {d.get('id', '?')}  {d.get('status', '')}  {d.get('title', '')}")
+
+    if comments:
+        w()
+        w("== COMMENTS ==")
+        for i, c in enumerate(comments):
+            if i:
+                w()
+            author = c.get("author") or "(unknown)"
+            ts = format_ts(c.get("created_at") or "")
+            w(f"-- {author}  {ts} --")
+            w(c.get("text") or "")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Pretty-print a beads issue with rendered Markdown.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Renders a single bead's full content (description, design, notes,\n"
+            "acceptance criteria, dependencies, comments) with proper Markdown\n"
+            "formatting via the 'rich' library. Output is paged through $PAGER\n"
+            "(or 'less -FRX') when stdout is a tty.\n"
+            "\n"
+            "Examples:\n"
+            "  bd-view beads-utils-s4s\n"
+        ),
+    )
+    parser.add_argument("issue_id", help="Issue id to view (e.g. beads-utils-s4s)")
+    args = parser.parse_args()
+
+    issue = fetch_issue(args.issue_id)
+    deps = fetch_deps(args.issue_id, "down")
+    dependents = fetch_deps(args.issue_id, "up")
+    comments = fetch_comments(args.issue_id)
+
+    if not HAVE_RICH:
+        warn("'rich' not installed; falling back to plain text "
+             "(install with: pip install rich)")
+
+    with paged_output() as out:
+        if HAVE_RICH:
+            render_with_rich(out, issue, deps, dependents, comments)
+        else:
+            render_plain(out, issue, deps, dependents, comments)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
