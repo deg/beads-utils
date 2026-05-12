@@ -87,6 +87,25 @@ def read_dolt_remotes(dolt_db_dir: Path) -> dict[str, str]:
     return {name: r.get("url", "?") for name, r in remotes.items()}
 
 
+def derive_dolt_remote_url(git_url: str) -> str | None:
+    """Best-effort: turn a git origin URL into a `bd dolt remote add` URL.
+
+    `bd dolt push` needs a Dolt-flavored remote (git+ssh://, git+https://,
+    az://, or DoltHub). It does not reuse the project's git origin, so we
+    suggest the matching Dolt URL for the user to register manually.
+    """
+    if not git_url or git_url == "(no remote)":
+        return None
+    m = re.match(r"^(git@[^:]+):(.+)$", git_url)
+    if m:
+        return f"git+ssh://{m.group(1)}/{m.group(2)}"
+    if git_url.startswith(("http://", "https://")):
+        return f"git+{git_url}"
+    if git_url.startswith(("git+ssh://", "git+https://", "az://")):
+        return git_url
+    return None
+
+
 def get_local_dolt_head(dolt_db_dir: Path) -> str | None:
     if not _have_dolt():
         return None
@@ -140,12 +159,34 @@ def main() -> int:
     print(f"Dolt DB:     {db_name} (mode: {dolt_mode})")
     print()
 
+    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
+    dolt_remotes = read_dolt_remotes(dolt_db_dir) if dolt_db_dir else {}
+
     remote_ref = get_remote_dolt_ref(project_path)
     if remote_ref is None:
         print("Remote:  refs/dolt/data NOT FOUND")
         print()
-        print("Dolt data has never been pushed, or the remote has no dolt ref.")
-        print("Run 'bd dolt push' to push.")
+        if not dolt_remotes:
+            print("No Dolt remote is configured for this beads project.")
+            print("(`bd dolt push` uses remotes registered via `bd dolt remote add`;")
+            print(" it does NOT auto-derive from your git `origin`.)")
+            print()
+            suggested = derive_dolt_remote_url(remote_url)
+            if suggested:
+                print("To configure (matching your git origin):")
+                print(f"  bd dolt remote add origin {suggested}")
+                print("  bd dolt push")
+            else:
+                print("To configure, run:")
+                print("  bd dolt remote add origin <url>")
+                print("  bd dolt push")
+        else:
+            print("A Dolt remote is configured, but data has never been pushed.")
+            print("Configured Dolt remotes:")
+            for name, url in dolt_remotes.items():
+                print(f"  {name}: {url}")
+            print()
+            print("Run 'bd dolt push' to push.")
         return 1
 
     print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
@@ -155,20 +196,18 @@ def main() -> int:
         print(f"Pushed:  {last_push}")
         print(f"Commit:  {last_commit}")
     else:
-        print("Pushed:  (no push-state.json found)")
+        print("Last push:  not tracked (beads does not write push-state.json)")
 
-    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
     if dolt_db_dir is not None:
-        remotes = read_dolt_remotes(dolt_db_dir)
-        if remotes:
+        if dolt_remotes:
             print()
             print("Dolt remotes configured:")
-            for name, url in remotes.items():
+            for name, url in dolt_remotes.items():
                 print(f"  {name}: {url}")
         recent = get_recent_dolt_log(dolt_db_dir, n=5)
         if recent:
             print()
-            print("Recent Dolt commits (local):")
+            print("Recent Dolt commits (local history; NOT a pending-push list):")
             for line in recent:
                 print(f"  {line}")
     else:
@@ -179,7 +218,9 @@ def main() -> int:
 
     print()
     if last_commit is None:
-        print("Status:  remote ref exists (no local push state to compare)")
+        print("Status:  remote has Dolt data — exact sync delta not verifiable")
+        print("         (beads does not write push-state.json; the remote ref SHA")
+        print("         above advances on each successful push)")
         return 0
 
     if dolt_db_dir is None or not _have_dolt():
