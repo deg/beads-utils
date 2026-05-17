@@ -75,6 +75,10 @@ Current scripts:
   `<id>` survives. Single positional arg: `bd-view <issue-id>`. Pages via
   `bdutils.paged_output()`. Falls back to a plain-text dump (with a
   `warning:`) if `rich` isn't installed.
+  Shebang is `#!/usr/bin/env -S uv run --script` with PEP 723 inline
+  metadata declaring `rich` + `markdown-it-py`, so deps come from `uv`'s
+  per-script cached venv — nothing is added to any global Python env.
+  Requires `uv` on `PATH`.
 
 Shared helper:
 
@@ -108,9 +112,11 @@ project (this repo itself is one):
 ```
 
 `dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
-degrades gracefully when it isn't. `bd-view` requires the `rich` Python library
-for Markdown rendering (already installed system-wide) and falls back to plain
-text if missing. All other scripts require only Python 3 stdlib and `bd` on `PATH`.
+degrades gracefully when it isn't. `bd-view` requires `uv` on `PATH` — its shebang
+is `#!/usr/bin/env -S uv run --script` and PEP 723 inline metadata declares the
+`rich` + `markdown-it-py` deps, which uv resolves into a per-script cached venv
+(no global Python install touched). All other scripts require only Python 3 stdlib
+and `bd` on `PATH`.
 
 ## Conventions
 

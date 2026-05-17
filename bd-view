@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["rich", "markdown-it-py"]
+# ///
 """Pretty-print a beads issue with rendered Markdown."""
 from __future__ import annotations
 
@@ -13,19 +17,29 @@ from bdutils import error, format_priority, format_ts, paged_output, warn
 try:
     from markdown_it import MarkdownIt
     from rich.console import Console
-    from rich.markdown import Markdown as _RichMarkdown
-    from rich.rule import Rule
+    from rich.markdown import Heading, Markdown as _RichMarkdown
     from rich.text import Text
+    from rich.theme import Theme
     HAVE_RICH = True
 
-    class Markdown(_RichMarkdown):
-        """Markdown renderer with raw HTML disabled.
+    class _PlainHeading(Heading):
+        """Render H1 inline like H2/H3 instead of inside a HEAVY box panel."""
+        def __rich_console__(self, console, options):
+            text = self.text
+            text.justify = "left"
+            if self.tag in ("h1", "h2"):
+                yield Text("")
+            yield text
 
-        rich's default parser allows raw HTML, which silently eats any
-        '<word>' substring (e.g. placeholder text like '<id>') and can cause
-        odd block-level whitespace. Beads prose is plain-text-with-markdown,
-        not HTML, so we re-parse with html=False.
+    class Markdown(_RichMarkdown):
+        """Markdown renderer with quieter styling for beads prose.
+
+        - raw HTML disabled (placeholder text like '<id>' is preserved
+          instead of being eaten by markdown-it's default html=True);
+        - H1 renders as plain bold text instead of a HEAVY box panel.
         """
+        elements = {**_RichMarkdown.elements, "heading_open": _PlainHeading}
+
         def __init__(self, markup: str, **kwargs) -> None:
             super().__init__(markup, **kwargs)
             parser = (
@@ -34,6 +48,14 @@ try:
                 .enable("table")
             )
             self.parsed = parser.parse(markup)
+
+    # Quieter theme overrides (rich defaults are noisier than we want):
+    #  - inline `code` drops the dark filled background (was 'bold cyan on black')
+    #  - h2 drops the underline (was 'bold underline')
+    QUIET_THEME = Theme({
+        "markdown.code": "cyan",
+        "markdown.h2": "bold",
+    })
 except ImportError:
     HAVE_RICH = False
 
@@ -124,7 +146,13 @@ def fetch_comments(issue_id: str) -> list[dict]:
 
 def make_console(out) -> Console:
     width = shutil.get_terminal_size((100, 24)).columns
-    return Console(file=out, force_terminal=True, width=width, soft_wrap=False)
+    return Console(file=out, force_terminal=True, width=width,
+                   soft_wrap=False, theme=QUIET_THEME)
+
+
+def section_header(console: Console, title: str) -> None:
+    console.print()
+    console.print(Text(f"=== {title} ===", style="bold"))
 
 
 def render_header(console: Console, issue: dict) -> None:
@@ -182,16 +210,14 @@ def render_header(console: Console, issue: dict) -> None:
 def render_section(console: Console, title: str, body: str) -> None:
     if not body or not body.strip():
         return
-    console.print()
-    console.print(Rule(title, style="dim", align="left"))
+    section_header(console, title)
     console.print(Markdown(with_hard_breaks(body)))
 
 
 def render_deps(console: Console, deps: list[dict], dependents: list[dict]) -> None:
     if not deps and not dependents:
         return
-    console.print()
-    console.print(Rule("Dependencies", style="dim", align="left"))
+    section_header(console, "Dependencies")
 
     def render_list(label: str, items: list[dict]) -> None:
         if not items:
@@ -222,8 +248,7 @@ def render_deps(console: Console, deps: list[dict], dependents: list[dict]) -> N
 def render_comments(console: Console, comments: list[dict]) -> None:
     if not comments:
         return
-    console.print()
-    console.print(Rule("Comments", style="dim", align="left"))
+    section_header(console, "Comments")
     for i, c in enumerate(comments):
         if i:
             console.print()
