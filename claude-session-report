@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""Render a Claude Code session JSONL as a Markdown discussion transcript.
+
+Resolves the positional arg in this order:
+  1. Path to an existing .jsonl file (used as-is).
+  2. UUID — locates <uuid>.jsonl under any ~/.claude/projects/*/ dir.
+  3. Substring of a session title (custom-title from /rename, or auto
+     ai-title) — searched case-insensitively across every recorded
+     session. Ambiguous matches list the candidates and exit non-zero.
+
+Each "channel" of session content is toggleable. Defaults render only the
+discussion (human prompts, assistant text replies, and slash-command
+turns); all other categories (thinking, tools, system reminders, bash
+shortcuts, task notifications, sidechain subagent turns) are opt-in.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+from bdutils import error, format_ts, paged_output
+
+
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+
+
+# --- Session resolution ----------------------------------------------------
+
+def session_titles(jsonl: Path) -> tuple[str | None, str | None]:
+    """Return (custom_title, ai_title) — last-wins for either if present."""
+    custom = None
+    ai = None
+    try:
+        with jsonl.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                t = obj.get("type")
+                if t == "custom-title":
+                    ct = obj.get("customTitle")
+                    if isinstance(ct, str):
+                        custom = ct
+                elif t == "ai-title":
+                    at = obj.get("aiTitle")
+                    if isinstance(at, str):
+                        ai = at
+    except OSError:
+        pass
+    return custom, ai
+
+
+def resolve_session(arg: str) -> Path:
+    """Resolve a user-supplied session identifier to a .jsonl path."""
+    # 1. Path to a .jsonl file.
+    p = Path(arg).expanduser()
+    if p.suffix == ".jsonl" and p.is_file():
+        return p
+
+    if not CLAUDE_PROJECTS.is_dir():
+        error(f"no such directory: {CLAUDE_PROJECTS}")
+
+    # 2. UUID — `<arg>.jsonl` under any project dir.
+    direct: list[Path] = []
+    for pdir in CLAUDE_PROJECTS.iterdir():
+        if not pdir.is_dir():
+            continue
+        candidate = pdir / f"{arg}.jsonl"
+        if candidate.is_file():
+            direct.append(candidate)
+    if len(direct) == 1:
+        return direct[0]
+    if len(direct) > 1:
+        sys.stderr.write(
+            f"error: {len(direct)} sessions named {arg!r} found (unexpected):\n"
+        )
+        for c in direct:
+            sys.stderr.write(f"  {c}\n")
+        sys.exit(1)
+
+    # 3. Title substring match.
+    needle = arg.lower()
+    matches: list[tuple[Path, str]] = []
+    for pdir in CLAUDE_PROJECTS.iterdir():
+        if not pdir.is_dir():
+            continue
+        for jsonl in pdir.glob("*.jsonl"):
+            custom, ai = session_titles(jsonl)
+            title = custom or ai
+            if title and needle in title.lower():
+                matches.append((jsonl, title))
+
+    if not matches:
+        error(f"no session found for {arg!r}")
+    if len(matches) > 1:
+        matches.sort(key=lambda m: m[0].stat().st_mtime, reverse=True)
+        sys.stderr.write(
+            f"error: {len(matches)} sessions match {arg!r} — disambiguate "
+            "with a UUID:\n"
+        )
+        for jsonl, title in matches[:25]:
+            sys.stderr.write(f"  {jsonl.stem}  {title}\n")
+        if len(matches) > 25:
+            sys.stderr.write(f"  … and {len(matches) - 25} more\n")
+        sys.exit(1)
+    return matches[0][0]
+
+
+# --- Content parsing -------------------------------------------------------
+
+SLASH_CMD_RE = re.compile(
+    r"<command-message>(?P<msg>[^<]*)</command-message>\s*"
+    r"<command-name>(?P<name>[^<]*)</command-name>"
+    r"(?:\s*<command-args>(?P<args>.*?)</command-args>)?",
+    re.DOTALL,
+)
+BASH_INPUT_RE = re.compile(
+    r"<bash-input>(?P<input>.*?)</bash-input>", re.DOTALL,
+)
+BASH_STDOUT_RE = re.compile(
+    r"<bash-stdout>(?P<stdout>.*?)</bash-stdout>", re.DOTALL,
+)
+BASH_STDERR_RE = re.compile(
+    r"<bash-stderr>(?P<stderr>.*?)</bash-stderr>", re.DOTALL,
+)
+LOCAL_STDOUT_RE = re.compile(
+    r"<local-command-stdout>(?P<stdout>.*?)</local-command-stdout>",
+    re.DOTALL,
+)
+TASK_NOTIF_RE = re.compile(
+    r"<task-notification>(?P<body>.*?)</task-notification>",
+    re.DOTALL,
+)
+SYS_REMINDER_RE = re.compile(
+    r"<system-reminder>(?P<body>.*?)</system-reminder>",
+    re.DOTALL,
+)
+CMD_CAVEAT_RE = re.compile(
+    r"<local-command-caveat>.*?</local-command-caveat>",
+    re.DOTALL,
+)
+
+
+def parse_user_text(text: str) -> dict:
+    """Decompose a user message's text into structured categories.
+
+    Returns a dict with keys:
+      slash_command: {message, name, args} | None
+      bash:          {input, stdout, stderr} | None
+      local_stdout:  str | None
+      task_notification: str | None
+      system_reminders:  list[str]
+      human_text:    str  (what's left after stripping all wrappers)
+    """
+    out: dict = {
+        "slash_command": None,
+        "bash": None,
+        "local_stdout": None,
+        "task_notification": None,
+        "system_reminders": [],
+        "human_text": "",
+    }
+    work = text
+
+    m = SLASH_CMD_RE.search(work)
+    if m:
+        out["slash_command"] = {
+            "message": (m.group("msg") or "").strip(),
+            "name": (m.group("name") or "").strip(),
+            "args": (m.group("args") or "").strip(),
+        }
+        work = work[: m.start()] + work[m.end():]
+
+    work = CMD_CAVEAT_RE.sub("", work)
+
+    # Bash !-shortcut tags can arrive together or split across user entries —
+    # input in one turn, stdout/stderr in the next. Extract independently;
+    # any matched tag is stripped from human_text whether or not the channel
+    # is enabled, so raw XML never leaks into the prose render.
+    b_input = b_stdout = b_stderr = None
+    m = BASH_INPUT_RE.search(work)
+    if m:
+        b_input = (m.group("input") or "").strip()
+        work = work[: m.start()] + work[m.end():]
+    m = BASH_STDOUT_RE.search(work)
+    if m:
+        b_stdout = (m.group("stdout") or "").strip()
+        work = work[: m.start()] + work[m.end():]
+    m = BASH_STDERR_RE.search(work)
+    if m:
+        b_stderr = (m.group("stderr") or "").strip()
+        work = work[: m.start()] + work[m.end():]
+    if b_input is not None or b_stdout is not None or b_stderr is not None:
+        out["bash"] = {
+            "input": b_input or "",
+            "stdout": b_stdout or "",
+            "stderr": b_stderr or "",
+        }
+
+    m = LOCAL_STDOUT_RE.search(work)
+    if m:
+        out["local_stdout"] = (m.group("stdout") or "").strip()
+        work = work[: m.start()] + work[m.end():]
+
+    m = TASK_NOTIF_RE.search(work)
+    if m:
+        out["task_notification"] = (m.group("body") or "").strip()
+        work = work[: m.start()] + work[m.end():]
+
+    reminders = [m.group("body").strip() for m in SYS_REMINDER_RE.finditer(work)]
+    out["system_reminders"] = reminders
+    work = SYS_REMINDER_RE.sub("", work)
+
+    out["human_text"] = work.strip()
+    return out
+
+
+def gather_user_content(content) -> tuple[str, list[dict]]:
+    """Split user message content into (concatenated_text, tool_results)."""
+    text_parts: list[str] = []
+    tool_results: list[dict] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for blk in content:
+            if not isinstance(blk, dict):
+                continue
+            btype = blk.get("type")
+            if btype == "text":
+                t = blk.get("text")
+                if isinstance(t, str):
+                    text_parts.append(t)
+            elif btype == "tool_result":
+                tool_results.append({
+                    "tool_use_id": blk.get("tool_use_id", ""),
+                    "is_error": bool(blk.get("is_error")),
+                    "content": _tool_result_text(blk.get("content")),
+                })
+    return "\n".join(text_parts), tool_results
+
+
+def _tool_result_text(c) -> str:
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = []
+        for sub in c:
+            if isinstance(sub, dict) and sub.get("type") == "text":
+                t = sub.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+        return "\n".join(parts)
+    return ""
+
+
+def gather_assistant_blocks(content) -> list[dict]:
+    """Return ordered list of blocks from an assistant message."""
+    out: list[dict] = []
+    if not isinstance(content, list):
+        return out
+    for blk in content:
+        if not isinstance(blk, dict):
+            continue
+        btype = blk.get("type")
+        if btype == "text":
+            t = blk.get("text")
+            if isinstance(t, str) and t.strip():
+                out.append({"type": "text", "text": t})
+        elif btype == "thinking":
+            t = blk.get("thinking")
+            if isinstance(t, str) and t.strip():
+                out.append({"type": "thinking", "text": t})
+        elif btype == "tool_use":
+            out.append({
+                "type": "tool_use",
+                "name": blk.get("name", "") or "",
+                "id": blk.get("id", "") or "",
+                "input": blk.get("input"),
+            })
+    return out
+
+
+# --- Output helpers --------------------------------------------------------
+
+# Our outer section headers are H2 ("## User — ts"). Prose content (prompts,
+# replies, slash-command args, thinking) often contains its own ATX headings
+# — including system-injected text like the start-task skill body. Without
+# demotion, a content "## 1. Load Context" is indistinguishable from a real
+# turn header. Demote by HEADING_DEMOTE_LEVELS so content headings clearly
+# sit *under* the turn header. Fenced code blocks are skipped so code samples
+# survive intact.
+HEADING_DEMOTE_LEVELS = 2
+
+_FENCE_OPEN_RE = re.compile(r"^(?P<bar>`{3,}|~{3,})")
+_ATX_RE = re.compile(r"^(?P<indent>\s{0,3})(?P<hashes>#{1,6})(?P<sep>\s|$)(?P<rest>.*)")
+
+
+def demote_headings(text: str, by: int = HEADING_DEMOTE_LEVELS) -> str:
+    """Prepend `by` extra `#` to ATX headings outside fenced code, capping at
+    h6. Setext headings (=== / --- underlines) are left alone — rare in chat
+    prose and trickier to detect without lookahead."""
+    if by <= 0 or not text:
+        return text
+    out: list[str] = []
+    fence_marker: str | None = None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if fence_marker is None:
+            m = _FENCE_OPEN_RE.match(stripped)
+            if m:
+                fence_marker = m.group("bar")[0]
+                out.append(line)
+                continue
+        else:
+            if stripped.startswith(fence_marker * 3):
+                fence_marker = None
+            out.append(line)
+            continue
+        hm = _ATX_RE.match(line)
+        if hm:
+            new_level = min(len(hm.group("hashes")) + by, 6)
+            out.append(
+                f"{hm.group('indent')}{'#' * new_level}"
+                f"{hm.group('sep')}{hm.group('rest')}"
+            )
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def fence(content: str, lang: str = "") -> str:
+    """Return content wrapped in a code fence long enough to survive nested
+    backtick runs in the content (min 3, else longest-run + 1)."""
+    longest = 0
+    for run in re.findall(r"`+", content):
+        if len(run) > longest:
+            longest = len(run)
+    n = max(3, longest + 1)
+    bar = "`" * n
+    return f"{bar}{lang}\n{content}\n{bar}"
+
+
+def section(out, heading: str) -> None:
+    print(f"## {heading}", file=out)
+    print(file=out)
+
+
+def blank(out) -> None:
+    print(file=out)
+
+
+def write_details(out, summary: str, body: str) -> None:
+    """Emit body inside a <details>…</details> block (collapsed by default
+    in HTML markdown renderers) with headings demoted to nest under the
+    enclosing H2 section header. Used for content that is long, boilerplate,
+    or both — thinking blocks and slash-command skill bodies."""
+    print(f"<details><summary>{summary}</summary>", file=out)
+    blank(out)
+    print(demote_headings(body), file=out)
+    blank(out)
+    print("</details>", file=out)
+    blank(out)
+
+
+# --- Rendering -------------------------------------------------------------
+
+def render_header(out, jsonl: Path, custom_title: str | None,
+                  ai_title: str | None, project_cwd: str | None,
+                  start_ts: str | None, end_ts: str | None) -> None:
+    title = custom_title or ai_title or "(untitled)"
+    print(f"# Session: {title}", file=out)
+    blank(out)
+    print(f"- UUID: `{jsonl.stem}`", file=out)
+    if project_cwd:
+        print(f"- Project: `{project_cwd}`", file=out)
+    if custom_title and ai_title and custom_title != ai_title:
+        print(f"- AI title: {ai_title}", file=out)
+    if start_ts:
+        print(f"- Started: {format_ts(start_ts)}", file=out)
+    if end_ts and end_ts != start_ts:
+        print(f"- Last activity: {format_ts(end_ts)}", file=out)
+    blank(out)
+    print("---", file=out)
+    blank(out)
+
+
+def render_user_entry(out, obj: dict, opts, *,
+                      is_skill_body: bool = False,
+                      parent_cmd_name: str = "") -> None:
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return
+    text, tool_results = gather_user_content(msg.get("content"))
+    ts = format_ts(obj.get("timestamp", ""))
+    parsed = parse_user_text(text)
+
+    sc = parsed["slash_command"]
+    if sc and opts.slash_commands:
+        name = sc["name"] or "(unnamed)"
+        section(out, f"{name} — {ts}")
+        if sc["args"]:
+            print(demote_headings(sc["args"]), file=out)
+            blank(out)
+
+    b = parsed["bash"]
+    if b and opts.bash_shortcuts:
+        has_input = bool(b["input"])
+        has_output = bool(b["stdout"] or b["stderr"])
+        if has_input and not has_output:
+            label = "! shell input"
+        elif has_output and not has_input:
+            label = "! shell output"
+        else:
+            label = "! shell"
+        section(out, f"{label} — {ts}")
+        if b["input"]:
+            print(fence(b["input"], "bash"), file=out)
+            blank(out)
+        if b["stdout"]:
+            if has_input:
+                print("stdout:", file=out)
+                blank(out)
+            print(fence(b["stdout"]), file=out)
+            blank(out)
+        if b["stderr"]:
+            print("stderr:", file=out)
+            blank(out)
+            print(fence(b["stderr"]), file=out)
+            blank(out)
+
+    if parsed["local_stdout"] and opts.bash_shortcuts:
+        section(out, f"local stdout — {ts}")
+        print(fence(parsed["local_stdout"]), file=out)
+        blank(out)
+
+    if parsed["task_notification"] and opts.task_notifications:
+        section(out, f"task notification — {ts}")
+        print(fence(parsed["task_notification"]), file=out)
+        blank(out)
+
+    if parsed["system_reminders"] and opts.system_reminders:
+        for sr in parsed["system_reminders"]:
+            section(out, f"system-reminder — {ts}")
+            print(fence(sr), file=out)
+            blank(out)
+
+    # Route human_text by entry classification:
+    #  - Skill bodies (child entries of a slash-command turn): the body is
+    #    the boilerplate skill prompt Claude Code injects to drive the
+    #    agent. It repeats verbatim across every invocation of the same
+    #    skill, so it's hidden by default; --slash-bodies brings it back
+    #    inside a collapsible <details> block. --no-slash-commands
+    #    suppresses it entirely.
+    #  - Otherwise: render as a standalone "## User" section, gated by
+    #    --prompts.
+    if parsed["human_text"]:
+        if is_skill_body:
+            if opts.slash_commands and opts.slash_bodies:
+                label = parent_cmd_name or "(unknown)"
+                section(out, f"{label} body — {ts}")
+                write_details(out, "skill body", parsed["human_text"])
+        elif opts.prompts and not sc:
+            section(out, f"User — {ts}")
+            print(demote_headings(parsed["human_text"]), file=out)
+            blank(out)
+
+    if tool_results and opts.tools:
+        for tr in tool_results:
+            err = " (error)" if tr["is_error"] else ""
+            section(out, f"Tool result{err} — {ts}")
+            body = tr["content"] or "(empty)"
+            print(fence(body), file=out)
+            blank(out)
+
+
+def render_assistant_entry(out, obj: dict, opts) -> None:
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return
+    blocks = gather_assistant_blocks(msg.get("content"))
+    ts = format_ts(obj.get("timestamp", ""))
+
+    for blk in blocks:
+        btype = blk["type"]
+        if btype == "text" and opts.replies:
+            section(out, f"Claude — {ts}")
+            print(demote_headings(blk["text"].strip()), file=out)
+            blank(out)
+        elif btype == "thinking" and opts.thinking:
+            section(out, f"Claude thinking — {ts}")
+            write_details(out, "thinking", blk["text"].strip())
+        elif btype == "tool_use" and opts.tools:
+            name = blk["name"] or "(unnamed)"
+            section(out, f"Claude tool: {name} — {ts}")
+            try:
+                rendered = json.dumps(blk["input"], indent=2, ensure_ascii=False)
+            except (TypeError, ValueError):
+                rendered = str(blk["input"])
+            print(fence(rendered, "json"), file=out)
+            blank(out)
+
+
+def render_attachment_entry(out, obj: dict) -> None:
+    att = obj.get("attachment")
+    if not isinstance(att, dict):
+        return
+    ts = format_ts(obj.get("timestamp", ""))
+    label = att.get("hookName") or att.get("type") or "attachment"
+    section(out, f"attachment: {label} — {ts}")
+    content = att.get("content")
+    if isinstance(content, str) and content.strip():
+        print(fence(content), file=out)
+        blank(out)
+
+
+def render(out, jsonl: Path, opts) -> None:
+    """Walk the JSONL once for metadata and once for rendering."""
+    custom_title = None
+    ai_title = None
+    project_cwd = None
+    start_ts = None
+    end_ts = None
+    entries: list[dict] = []
+
+    try:
+        f = jsonl.open("r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        error(f"could not open {jsonl}: {exc}")
+
+    with f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            t = obj.get("type")
+            if t == "custom-title":
+                ct = obj.get("customTitle")
+                if isinstance(ct, str):
+                    custom_title = ct
+                continue
+            if t == "ai-title":
+                at = obj.get("aiTitle")
+                if isinstance(at, str):
+                    ai_title = at
+                continue
+            if t in ("user", "assistant", "attachment"):
+                ts = obj.get("timestamp")
+                if isinstance(ts, str) and ts:
+                    if start_ts is None:
+                        start_ts = ts
+                    end_ts = ts
+                if project_cwd is None:
+                    cwd = obj.get("cwd")
+                    if isinstance(cwd, str) and cwd:
+                        project_cwd = cwd
+                entries.append(obj)
+
+    render_header(out, jsonl, custom_title, ai_title, project_cwd,
+                  start_ts, end_ts)
+
+    # Map slash-command user-entry uuids → command name, so a child user
+    # entry can be recognised as the appended skill body. Claude Code
+    # writes the body as a separate user entry whose parentUuid points
+    # back at the slash-command entry; the parent/child relationship is
+    # the only deterministic signal that distinguishes a skill body from
+    # ordinary user prose.
+    slash_cmd_by_uuid: dict[str, str] = {}
+    for obj in entries:
+        if obj.get("type") != "user":
+            continue
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        m = SLASH_CMD_RE.search(content)
+        if m:
+            uid = obj.get("uuid")
+            if isinstance(uid, str):
+                slash_cmd_by_uuid[uid] = (m.group("name") or "").strip()
+
+    for obj in entries:
+        if obj.get("isSidechain") and not opts.sidechains:
+            continue
+        t = obj.get("type")
+        if t == "user":
+            parent = obj.get("parentUuid") or ""
+            is_body = parent in slash_cmd_by_uuid
+            cmd_name = slash_cmd_by_uuid.get(parent, "")
+            render_user_entry(out, obj, opts,
+                              is_skill_body=is_body,
+                              parent_cmd_name=cmd_name)
+        elif t == "assistant":
+            render_assistant_entry(out, obj, opts)
+        elif t == "attachment" and opts.system_reminders:
+            render_attachment_entry(out, obj)
+
+
+# --- Main ------------------------------------------------------------------
+
+CHANNEL_FLAGS = (
+    "prompts", "replies", "slash_commands",
+    "thinking", "tools", "slash_bodies",
+    "bash_shortcuts", "system_reminders", "task_notifications",
+    "sidechains",
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Render a Claude Code session as a Markdown transcript.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-session-report 2d71fcce-5cd4-45f4-8091-6654336ac73f\n"
+            "  claude-session-report 'planning outline'         # title substring\n"
+            "  claude-session-report ~/.claude/projects/foo/bar.jsonl\n"
+            "  claude-session-report <id> --thinking --tools    # full detail\n"
+            "  claude-session-report <id> --all > session.md    # everything\n"
+            "\n"
+            "Resolver tries: (1) path ending in .jsonl, (2) UUID lookup across\n"
+            "all ~/.claude/projects/*/ dirs, (3) case-insensitive substring of\n"
+            "the session's custom-title (set via /rename) or auto ai-title.\n"
+            "\n"
+            "Default channels render only the discussion: human prompts,\n"
+            "assistant text replies, and slash-command turns. All other\n"
+            "channels (thinking, tool calls/results, bash !-shortcuts,\n"
+            "system reminders, task notifications, sidechain subagent turns)\n"
+            "are opt-in. --all turns everything on.\n"
+        ),
+    )
+    parser.add_argument(
+        "session",
+        help="UUID, title substring, or path to a Claude session .jsonl",
+    )
+
+    # Default-on channels (paired --no-X flags).
+    grp_on = parser.add_argument_group("Default-on channels")
+    grp_on.add_argument(
+        "--prompts", dest="prompts", action="store_true", default=True,
+        help=argparse.SUPPRESS,
+    )
+    grp_on.add_argument(
+        "--no-prompts", dest="prompts", action="store_false",
+        help="Hide human-typed user text",
+    )
+    grp_on.add_argument(
+        "--replies", dest="replies", action="store_true", default=True,
+        help=argparse.SUPPRESS,
+    )
+    grp_on.add_argument(
+        "--no-replies", dest="replies", action="store_false",
+        help="Hide assistant text replies",
+    )
+    grp_on.add_argument(
+        "--slash-commands", dest="slash_commands",
+        action="store_true", default=True, help=argparse.SUPPRESS,
+    )
+    grp_on.add_argument(
+        "--no-slash-commands", dest="slash_commands", action="store_false",
+        help="Hide /slash-command turns",
+    )
+
+    # Default-off channels.
+    grp_off = parser.add_argument_group("Default-off channels")
+    grp_off.add_argument(
+        "--thinking", action="store_true",
+        help="Include assistant extended-thinking blocks",
+    )
+    grp_off.add_argument(
+        "--tools", action="store_true",
+        help="Include tool calls (tool_use) and tool results",
+    )
+    grp_off.add_argument(
+        "--slash-bodies", dest="slash_bodies", action="store_true",
+        help="Include the boilerplate skill body appended to a "
+             "slash-command turn (collapsed inside <details>)",
+    )
+    grp_off.add_argument(
+        "--bash-shortcuts", action="store_true",
+        help="Include `! cmd` shell shortcuts (input/stdout/stderr)",
+    )
+    grp_off.add_argument(
+        "--system-reminders", action="store_true",
+        help="Include <system-reminder> blocks and hook-output attachments",
+    )
+    grp_off.add_argument(
+        "--task-notifications", action="store_true",
+        help="Include background <task-notification> events",
+    )
+    grp_off.add_argument(
+        "--sidechains", action="store_true",
+        help="Include sidechain (subagent) entries",
+    )
+
+    parser.add_argument(
+        "--all", dest="all_channels", action="store_true",
+        help="Enable every channel (overrides --no-* flags)",
+    )
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX)",
+    )
+    args = parser.parse_args()
+
+    if args.all_channels:
+        for name in CHANNEL_FLAGS:
+            setattr(args, name, True)
+
+    jsonl = resolve_session(args.session)
+
+    with paged_output(no_pager=args.no_pager) as out:
+        render(out, jsonl, args)
+        out.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -79,6 +79,33 @@ Current scripts:
   metadata declaring `rich` + `markdown-it-py`, so deps come from `uv`'s
   per-script cached venv — nothing is added to any global Python env.
   Requires `uv` on `PATH`.
+- `claude-session-report` — Renders a Claude Code session JSONL as a
+  Markdown discussion transcript. Each emitted item is its own H2
+  section (`## User — ts`, `## /cmd-name — ts`, `## Claude — ts`,
+  `## Claude thinking — ts`, `## Claude tool: <name> — ts`, …); ATX
+  headings inside content are demoted by 2 levels (capped at h6) so
+  they nest cleanly under the turn header. Long boilerplate (thinking,
+  slash-command skill bodies) is wrapped in `<details>` so GitHub
+  viewers collapse them. Fence lengths in code blocks adapt to nested
+  backtick runs in the content. Pages via `bdutils.paged_output()`;
+  `--no-pager` disables.
+  Positional arg resolves in order: (1) path to a `.jsonl` file, (2)
+  UUID — `<uuid>.jsonl` lookup across every `~/.claude/projects/*/`
+  dir, (3) case-insensitive substring match against the session's
+  `custom-title` (set via `/rename`) or auto `ai-title`; ambiguous
+  matches list candidates and exit non-zero.
+  Each content category is an independent toggle. Default-on (the
+  "discussion"): `--prompts`, `--replies`, `--slash-commands`.
+  Default-off (opt-in): `--thinking`, `--tools`, `--slash-bodies`,
+  `--bash-shortcuts`, `--system-reminders`, `--task-notifications`,
+  `--sidechains`. `--all` enables every channel.
+  Skill bodies — the boilerplate Claude Code appends as a *child* user
+  entry of a slash-command turn (identified by `parentUuid`) — are
+  hidden by default because they repeat verbatim across every
+  invocation of the same skill; `--slash-bodies` brings them back.
+  Note: Claude Code does not currently persist extended-thinking
+  content to disk (only the signature), so `--thinking` is
+  forward-compatible but produces no output for current sessions.
 
 Shared helper:
 
@@ -88,10 +115,11 @@ Shared helper:
   short output indistinguishable from direct-to-stdout). Imported by scripts
   in this repo; keep small and stdlib-only.
 
-All scripts accept an optional project path argument (default: cwd) and print a
+Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
-(`bd-view` is the exception: it takes an issue id, not a project path, and
-relies on `bd`'s own `.beads/` auto-discovery from the current directory.)
+Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
+auto-discovery from the current directory); `claude-session-report` takes a
+Claude session UUID, title substring, or `.jsonl` path.
 
 ## Running & Testing
 
@@ -109,6 +137,10 @@ project (this repo itself is one):
 ./find-claude-session -a 'dolt push'           # Include assistant/tool content
 ./find-claude-session -q foo | head -1         # UUID only (for `claude --resume`)
 ./bd-view beads-utils-s4s                      # Pretty-print a single bead
+./claude-session-report <uuid>                 # Default discussion-only render
+./claude-session-report 'bd-view'              # Substring-match a session title
+./claude-session-report <uuid> --thinking --tools     # Add agent thinking + tool I/O
+./claude-session-report <uuid> --all > session.md     # Everything, to a file
 ```
 
 `dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
