@@ -28,3 +28,7 @@ non-trivial coding project and try to do all of it with Claude in
 the driver's seat. Six weeks and 2,140 lines later, the experiment
 is in [`PROJECT.md`](PROJECT.md) — what we built, what worked, what
 broke, and what I'd carry forward.
+
+## License
+
+Released under the [MIT License](LICENSE).
