@@ -12,9 +12,9 @@ needs `rich`).
 | Script | What it does |
 |---|---|
 | [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review |
-| [`dolt-remote-check`](dolt-remote-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
+| [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
 | [`bd-log`](bd-log) | Git-log-style view of recently closed beads (auto-paged) |
-| [`find-claude-session`](find-claude-session) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
+| [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 

@@ -49,7 +49,7 @@ Current scripts:
 - `bd-export-csv` — Shells out to `bd export --all --no-memories`, parses the JSONL,
   and writes a flat CSV suitable for spreadsheet review. Supports `--sortby` with
   comma-separated keys and `-`-prefixed descending order.
-- `dolt-remote-check` — Verifies that a beads repo's Dolt data (stored under
+- `bd-dolt-check` — Verifies that a beads repo's Dolt data (stored under
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
@@ -58,7 +58,7 @@ Current scripts:
   `-n/--limit` (default 0 = unlimited, like `git log`) and `--since DATE`
   (passed through as `--closed-after`). Pages through `bdutils.paged_output()`
   (`$PAGER` or `less -FRX` when stdout is a tty). `--no-pager` disables.
-- `find-claude-session` — Finds the UUID of an old Claude Code session by
+- `claude-session-find` — Finds the UUID of an old Claude Code session by
   grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
   (mangling = `/` and `.` → `-`). Defaults to the current project and
   human-typed user messages only; `-g/--global` spans all projects,
@@ -129,13 +129,13 @@ project (this repo itself is one):
 ```bash
 ./bd-export-csv .                             # Export this repo to CSV in cwd
 ./bd-export-csv . --sortby=-priority,created_at
-./dolt-remote-check .                          # Check Dolt sync state
+./bd-dolt-check .                             # Check Dolt sync state
 ./bd-log                                       # Last 10 recently closed beads
 ./bd-log -n 25 --since 2026-04-01              # 25 closures on/after date
-./find-claude-session 'bd-log'                 # Sessions in this project matching
-./find-claude-session -g 'paged_output'        # All projects
-./find-claude-session -a 'dolt push'           # Include assistant/tool content
-./find-claude-session -q foo | head -1         # UUID only (for `claude --resume`)
+./claude-session-find 'bd-log'                 # Sessions in this project matching
+./claude-session-find -g 'paged_output'        # All projects
+./claude-session-find -a 'dolt push'           # Include assistant/tool content
+./claude-session-find -q foo | head -1         # UUID only (for `claude --resume`)
 ./bd-view beads-utils-s4s                      # Pretty-print a single bead
 ./claude-session-report <uuid>                 # Default discussion-only render
 ./claude-session-report 'bd-view'              # Substring-match a session title
@@ -143,7 +143,7 @@ project (this repo itself is one):
 ./claude-session-report <uuid> --all > session.md     # Everything, to a file
 ```
 
-`dolt-remote-check` assumes the `dolt` CLI is installed for its richest output but
+`bd-dolt-check` assumes the `dolt` CLI is installed for its richest output but
 degrades gracefully when it isn't. `bd-view` requires `uv` on `PATH` — its shebang
 is `#!/usr/bin/env -S uv run --script` and PEP 723 inline metadata declares the
 `rich` + `markdown-it-py` deps, which uv resolves into a per-script cached venv

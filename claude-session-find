@@ -212,11 +212,11 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  find-claude-session 'bd-log'                   Search cwd's sessions\n"
-            "  find-claude-session -g 'paged_output'          Search all projects\n"
-            "  find-claude-session -a 'dolt push'             Include tool I/O\n"
-            "  find-claude-session -q 'search string'         UUIDs only, pipe-friendly\n"
-            "  claude --resume $(find-claude-session -q foo | head -1)\n"
+            "  claude-session-find 'bd-log'                   Search cwd's sessions\n"
+            "  claude-session-find -g 'paged_output'          Search all projects\n"
+            "  claude-session-find -a 'dolt push'             Include tool I/O\n"
+            "  claude-session-find -q 'search string'         UUIDs only, pipe-friendly\n"
+            "  claude --resume $(claude-session-find -q foo | head -1)\n"
             "\n"
             "Session data lives under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl.\n"
             "Default scope = current project (cwd); -g/--global spans all projects.\n"

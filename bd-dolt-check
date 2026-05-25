@@ -138,8 +138,8 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  dolt-remote-check          Check the current directory\n"
-            "  dolt-remote-check <path>   Check a specific beads repo\n"
+            "  bd-dolt-check          Check the current directory\n"
+            "  bd-dolt-check <path>   Check a specific beads repo\n"
         ),
     )
     parser.add_argument(
