@@ -21,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-from bdutils import error, format_ts, paged_output
+from bdutils import add_version_arg, error, format_ts, paged_output
 
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
@@ -711,6 +711,7 @@ def main() -> int:
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX)",
     )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     if args.all_channels:

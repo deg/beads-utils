@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bdutils import error, resolve_project_path
+from bdutils import add_version_arg, error, resolve_project_path
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -134,7 +134,7 @@ def _have_dolt() -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description="Verify a beads project's Dolt data has been pushed to its remote.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -146,6 +146,7 @@ def main() -> int:
         "project_path", nargs="?", default=".",
         help="Path to the beads project (default: current directory)",
     )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     project_path = resolve_project_path(args.project_path)

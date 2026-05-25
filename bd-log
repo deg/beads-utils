@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bdutils import error, format_priority, format_ts, paged_output, resolve_project_path
+from bdutils import add_version_arg, error, format_priority, format_ts, paged_output, resolve_project_path
 
 EVENT_KINDS = ("create", "start", "close")
 EVENT_TS_FIELD = {
@@ -132,6 +132,7 @@ def main() -> int:
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
     )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     if args.limit < 0:

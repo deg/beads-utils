@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 
-from bdutils import error, format_priority, format_ts, paged_output, warn
+from bdutils import add_version_arg, error, format_priority, format_ts, paged_output, warn
 
 try:
     from markdown_it import MarkdownIt
@@ -364,6 +364,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("issue_id", help="Issue id to view (e.g. beads-utils-s4s)")
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
+    )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     issue = fetch_issue(args.issue_id)
@@ -375,7 +380,7 @@ def main() -> int:
         warn("'rich' not installed; falling back to plain text "
              "(install with: pip install rich)")
 
-    with paged_output() as out:
+    with paged_output(no_pager=args.no_pager) as out:
         if HAVE_RICH:
             render_with_rich(out, issue, deps, dependents, comments)
         else:

@@ -10,7 +10,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from bdutils import error, resolve_project_path, warn
+from bdutils import add_version_arg, error, resolve_project_path, warn
 
 COLUMNS = [
     "id", "title", "type", "status", "priority",
@@ -121,7 +121,15 @@ def apply_sort(rows: list[dict], keys: list[tuple[str, bool]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Export a beads project to CSV for project review."
+        description="Export a beads project to CSV for project review.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  bd-export-csv                  Export cwd to <prefix>-issues-<date>.csv\n"
+            "  bd-export-csv .                Same, explicit path\n"
+            "  bd-export-csv . -o out.csv     Write to a specific file\n"
+            "  bd-export-csv . --sortby=-priority,created_at\n"
+        ),
     )
     parser.add_argument(
         "project_path", nargs="?", default=".",
@@ -141,6 +149,7 @@ def main() -> int:
             "Keys: " + ", ".join(sorted(SORT_KEYS))
         ),
     )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     sort_keys = parse_sortby(args.sortby) if args.sortby else []

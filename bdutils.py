@@ -16,6 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
+__version__ = "0.1.0"
+
+
+def add_version_arg(parser) -> None:
+    """Add a standard '--version' flag that prints '<prog> <__version__>'.
+
+    Keeps the version string identical across every beads-utils script so the
+    whole collection versions as one unit (see __version__ above)."""
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+
 
 def error(msg: str) -> NoReturn:
     """Exit with a lowercase 'error: ...' message on stderr."""

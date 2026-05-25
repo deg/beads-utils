@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from bdutils import error, paged_output, warn
+from bdutils import add_version_arg, error, paged_output, warn
 
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
@@ -246,6 +246,7 @@ def main() -> int:
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
     )
+    add_version_arg(parser)
     args = parser.parse_args()
 
     if args.limit < 0:
