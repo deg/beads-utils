@@ -73,8 +73,8 @@ Current scripts:
   with proper formatting via the `rich` library. Subclasses
   `rich.markdown.Markdown` to disable raw HTML so placeholder text like
   `<id>` survives. Single positional arg: `bd-view <issue-id>`. Pages via
-  `bdutils.paged_output()`. Falls back to a plain-text dump (with a
-  `warning:`) if `rich` isn't installed.
+  `bdutils.paged_output()`; `--no-pager` disables. Falls back to a
+  plain-text dump (with a `warning:`) if `rich` isn't installed.
   Shebang is `#!/usr/bin/env -S uv run --script` with PEP 723 inline
   metadata declaring `rich` + `markdown-it-py`, so deps come from `uv`'s
   per-script cached venv — nothing is added to any global Python env.
@@ -158,6 +158,9 @@ and `bd` on `PATH`.
   needs `rich` for Markdown rendering); `bdutils.py` itself stays stdlib-only.
 - **Argument parsing**: `argparse`. Use `RawDescriptionHelpFormatter` with
   `description=` and `epilog=` when a richer help block is warranted.
+- **Versioning**: all scripts share a single `bdutils.__version__`; add the
+  `--version` flag via `bdutils.add_version_arg(parser)` so every script prints
+  `<prog> <version>` identically. Paging scripts also accept `--no-pager`.
 - **Errors**: use `bdutils.error(msg)` — exits non-zero with a lowercase `error: ...`
   line to stderr. Never raise tracebacks at the top level.
 - **Warnings**: use `bdutils.warn(msg)` — writes `warning: ...` to stderr without exit.
