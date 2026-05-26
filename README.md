@@ -1,5 +1,7 @@
 # beads-utils
 
+[![lint](https://github.com/deg/beads-utils/actions/workflows/lint.yml/badge.svg)](https://github.com/deg/beads-utils/actions/workflows/lint.yml)
+
 A small collection of Python CLI scripts that augment
 [`bd`](https://github.com/steveyegge/beads) (the beads issue
 tracker) and its Dolt-backed storage. No package, no build step —

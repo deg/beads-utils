@@ -1,7 +1,7 @@
 name: lint
 
-# Single lint check for the collection. Runs on direct pushes to main (the
-# maintainer's workflow) and on pull requests (contributors).
+# Single lint check (plus a script smoke test) for the collection. Runs on
+# direct pushes to main (the maintainer's workflow) and on pull requests.
 on:
   push:
     branches: [main]
@@ -11,10 +11,25 @@ jobs:
   ruff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      # Lint bdutils.py plus every script (discovered by its shebang, so new
-      # scripts are picked up automatically). ruff is pinned for reproducible
-      # CI; bump the version here deliberately.
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: false   # no lock files in this repo to key a cache on
       - name: ruff check
-        run: uvx ruff@0.15.14 check bdutils.py $(grep -lE '^#!' * 2>/dev/null)
+        # Each script is found by its shebang, so new scripts are linted
+        # automatically. Fail loudly if discovery finds nothing rather than
+        # silently checking only bdutils.py. xargs builds the file list (not
+        # shell word-splitting), so this behaves identically under any shell.
+        run: |
+          scripts="$(grep -lE '^#!' * 2>/dev/null)"
+          [ -n "$scripts" ] || { echo "::error::shebang discovery found no scripts"; exit 1; }
+          printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
+      - name: smoke test (--version)
+        # ruff is static-only; actually invoke each script (bd-view via its
+        # uv-run shebang) to catch argparse/import breakage. read -r line by
+        # line, so no word-splitting assumptions.
+        run: |
+          grep -lE '^#!' * 2>/dev/null | while IFS= read -r s; do
+            echo "== $s --version =="
+            "./$s" --version
+          done
