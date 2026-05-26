@@ -57,15 +57,21 @@ def get_remote_dolt_ref(project_path: Path) -> str | None:
     return line.split()[0]
 
 
-def read_push_state(beads_dir: Path) -> tuple[str | None, str | None]:
-    path = beads_dir / "push-state.json"
+def read_repo_state(dolt_db_dir: Path) -> dict:
+    path = dolt_db_dir / ".dolt" / "repo_state.json"
     if not path.is_file():
-        return None, None
+        return {}
     try:
-        data = json.loads(path.read_text())
+        return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return None, None
-    return data.get("last_push"), data.get("last_commit")
+        return {}
+
+
+def get_head_branch(dolt_db_dir: Path) -> str:
+    """Current Dolt branch name from repo_state.json (default 'main')."""
+    head = read_repo_state(dolt_db_dir).get("head", "")
+    prefix = "refs/heads/"
+    return head[len(prefix):] if head.startswith(prefix) else "main"
 
 
 def locate_dolt_db(beads_dir: Path, db_name: str) -> Path | None:
@@ -76,14 +82,7 @@ def locate_dolt_db(beads_dir: Path, db_name: str) -> Path | None:
 
 
 def read_dolt_remotes(dolt_db_dir: Path) -> dict[str, str]:
-    repo_state = dolt_db_dir / ".dolt" / "repo_state.json"
-    if not repo_state.is_file():
-        return {}
-    try:
-        data = json.loads(repo_state.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    remotes = data.get("remotes", {}) or {}
+    remotes = read_repo_state(dolt_db_dir).get("remotes", {}) or {}
     return {name: r.get("url", "?") for name, r in remotes.items()}
 
 
@@ -106,16 +105,37 @@ def derive_dolt_remote_url(git_url: str) -> str | None:
     return None
 
 
-def get_local_dolt_head(dolt_db_dir: Path) -> str | None:
+def dolt_rev(dolt_db_dir: Path, ref: str) -> str | None:
+    """Short commit hash at `ref`, or None if dolt is missing or `ref` doesn't resolve."""
     if not _have_dolt():
         return None
-    result = run(["dolt", "log", "--oneline", "-n", "1"], cwd=dolt_db_dir)
+    result = run(["dolt", "log", "--oneline", "-n", "1", ref], cwd=dolt_db_dir)
     if result.returncode != 0:
         return None
-    first = strip_ansi(result.stdout).strip().splitlines()
-    if not first:
+    lines = strip_ansi(result.stdout).strip().splitlines()
+    return lines[0].split()[0] if lines and lines[0] else None
+
+
+def dolt_count_range(dolt_db_dir: Path, rev_range: str) -> int | None:
+    """Number of commits in a Dolt `A..B` range; None if dolt is missing or it errors."""
+    if not _have_dolt():
         return None
-    return first[0].split()[0] if first[0] else None
+    result = run(["dolt", "log", "--oneline", rev_range], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return None
+    return sum(1 for ln in result.stdout.splitlines() if ln.strip())
+
+
+def dolt_fetch(dolt_db_dir: Path, remote: str) -> bool:
+    """Best-effort `dolt fetch <remote>` to refresh remote-tracking refs.
+
+    Returns True on success. Used so a remote that moved ahead (e.g. pushed
+    from another machine) is reflected in remotes/<remote>/<branch> before we
+    compare against it.
+    """
+    if not _have_dolt():
+        return False
+    return run(["dolt", "fetch", remote], cwd=dolt_db_dir).returncode == 0
 
 
 def get_recent_dolt_log(dolt_db_dir: Path, n: int = 5) -> list[str]:
@@ -192,13 +212,6 @@ def main() -> int:
 
     print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
 
-    last_push, last_commit = read_push_state(beads_dir)
-    if last_push is not None:
-        print(f"Pushed:  {last_push}")
-        print(f"Commit:  {last_commit}")
-    else:
-        print("Last push:  not tracked (beads does not write push-state.json)")
-
     if dolt_db_dir is not None:
         if dolt_remotes:
             print()
@@ -218,26 +231,55 @@ def main() -> int:
         print(f"           {beads_dir / 'dolt' / db_name}")
 
     print()
-    if last_commit is None:
-        print("Status:  remote has Dolt data — exact sync delta not verifiable")
-        print("         (beads does not write push-state.json; the remote ref SHA")
-        print("         above advances on each successful push)")
-        return 0
-
     if dolt_db_dir is None or not _have_dolt():
-        print("Status:  remote ref exists (install dolt CLI for full sync check)")
+        print("Status:  remote has Dolt data — sync delta not verifiable")
+        print("         (run from the project dir with the dolt CLI installed for a full check)")
         return 0
 
-    local_head = get_local_dolt_head(dolt_db_dir)
-    if local_head == last_commit:
-        print("Status:  IN SYNC (local HEAD matches last push)")
+    branch = get_head_branch(dolt_db_dir)
+    remote_name = "origin" if "origin" in dolt_remotes else next(iter(dolt_remotes), "origin")
+    tracking_ref = f"remotes/{remote_name}/{branch}"
+
+    if not dolt_fetch(dolt_db_dir, remote_name):
+        print(f"Note: 'dolt fetch {remote_name}' failed; comparing against the last-known")
+        print("      remote-tracking ref (a remote that moved ahead may be missed).")
+        print()
+
+    local_head = dolt_rev(dolt_db_dir, branch)
+    tracking_head = dolt_rev(dolt_db_dir, tracking_ref)
+
+    if local_head is None:
+        print("Status:  remote has Dolt data — sync delta not verifiable")
+        print(f"         (could not read local Dolt HEAD for branch '{branch}')")
+        return 0
+    if tracking_head is None:
+        print("Status:  remote has Dolt data — sync delta not verifiable")
+        print(f"         (no local remote-tracking ref '{tracking_ref}'; run 'bd dolt push' once)")
         return 0
 
-    print("Status:  OUT OF SYNC")
-    print(f"  Local HEAD:  {local_head}")
-    print(f"  Last pushed: {last_commit}")
+    if local_head == tracking_head:
+        print(f"Status:  IN SYNC (local {branch} matches {tracking_ref})")
+        return 0
+
+    ahead = dolt_count_range(dolt_db_dir, f"{tracking_ref}..{branch}") or 0
+    behind = dolt_count_range(dolt_db_dir, f"{branch}..{tracking_ref}") or 0
+
+    if ahead and behind:
+        print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled")
+        action = "Run 'bd dolt pull' then 'bd dolt push' to reconcile."
+    elif ahead:
+        print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed")
+        action = "Run 'bd dolt push' to sync."
+    elif behind:
+        print(f"Status:  BEHIND — {behind} remote commit(s) not pulled")
+        action = "Run 'bd dolt pull' to update local."
+    else:
+        print("Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable)")
+        action = "Run 'bd dolt pull' / 'bd dolt push' to reconcile."
+    print(f"  local ({branch}):           {local_head}")
+    print(f"  remote ({tracking_ref}): {tracking_head}")
     print()
-    print("Run 'bd dolt push' to sync.")
+    print(action)
     return 1
 
 
