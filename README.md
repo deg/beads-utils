@@ -19,7 +19,8 @@ needs `rich`).
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 
 Run any script with `--help` for full usage. Per-script details and
-conventions live in [`CLAUDE.md`](CLAUDE.md).
+conventions live in [`CLAUDE.md`](CLAUDE.md); see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute.
 
 ## License
 
