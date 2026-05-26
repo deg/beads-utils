@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.1.0   # setup-uv ships only full-version tags (no moving @v8)
         with:
           enable-cache: false   # no lock files in this repo to key a cache on
       - name: ruff check
