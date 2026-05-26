@@ -106,6 +106,19 @@ Current scripts:
   Note: Claude Code does not currently persist extended-thinking
   content to disk (only the signature), so `--thinking` is
   forward-compatible but produces no output for current sessions.
+  `--list-sessions` prints `uuid<TAB>title` for every known session
+  (newest first) and exits, ignoring the positional arg and channel
+  flags — a standalone session index that also feeds `bd-complete`.
+- `bd-complete` — Emits shell-completion candidates as
+  `value<TAB>description` lines; the single front door behind the
+  zsh/bash completion in `completions/` (so candidate logic is never
+  duplicated across shells, and a future TTL cache has one wrap point).
+  `bd-complete ids` lists full bead ids (e.g. `beads-utils-v9o.4`) from
+  `bd list --status=all` — full rather than the short suffix so a
+  wrong-project id is visible at the prompt.
+  `bd-complete sessions` delegates to
+  `claude-session-report --list-sessions`. Lookups fail silently (no
+  output, exit 0) so a broken/slow command never garbles the prompt.
 
 Shared helper:
 
@@ -119,7 +132,19 @@ Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
 Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
 auto-discovery from the current directory); `claude-session-report` takes a
-Claude session UUID, title substring, or `.jsonl` path.
+Claude session UUID, title substring, or `.jsonl` path; `bd-complete` takes a
+candidate kind (`ids` or `sessions`).
+
+## Shell completion
+
+`completions/beads-utils.zsh` and `completions/beads-utils.bash` provide tab
+completion (sourced from the user's rc file; see `README.md`). They are pure
+glue — `compdef`/`complete` wiring plus per-command flag lists transcribed
+from each script's `argparse` — and route every *dynamic* lookup through
+`bd-complete`, so enumeration logic is never duplicated across the two shells.
+When adding/renaming a flag or script, update the matching flag list in both
+completion files. There is no caching yet; if added, it wraps `bd-complete`
+alone.
 
 ## Running & Testing
 
@@ -141,7 +166,13 @@ project (this repo itself is one):
 ./claude-session-report 'bd-view'              # Substring-match a session title
 ./claude-session-report <uuid> --thinking --tools     # Add agent thinking + tool I/O
 ./claude-session-report <uuid> --all > session.md     # Everything, to a file
+./claude-session-report --list-sessions               # uuid<TAB>title index of all sessions
+./bd-complete ids                                      # Completion feed: short ids + titles
+./bd-complete sessions                                 # Completion feed: session uuids + titles
 ```
+
+Shell completion is verified by sourcing the file and tab-completing in a real
+shell (`source completions/beads-utils.zsh` / `.bash`, then `bd-view <TAB>`).
 
 `bd-dolt-check` assumes the `dolt` CLI is installed for its richest output but
 degrades gracefully when it isn't. `bd-view` requires `uv` on `PATH` — its shebang

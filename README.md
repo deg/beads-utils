@@ -19,10 +19,32 @@ needs `rich`).
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
+| [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
 Run any script with `--help` for full usage. Per-script details and
 conventions live in [`CLAUDE.md`](CLAUDE.md); see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute.
+
+## Shell completion
+
+Tab completion for zsh and bash lives in [`completions/`](completions).
+`bd-view` completes bead ids (with titles shown in zsh),
+`claude-session-report` completes session uuids/titles, the project-path
+scripts complete directories, and every script completes its flags.
+
+Source the file for your shell from your rc file:
+
+```bash
+# ~/.zshrc  (oh-my-zsh users: put this *after* `source $ZSH/oh-my-zsh.sh`)
+source /path/to/beads-utils/completions/beads-utils.zsh
+# ~/.bashrc
+source /path/to/beads-utils/completions/beads-utils.bash
+```
+
+The scripts (including `bd-complete`, which feeds the dynamic candidates)
+must be on your `$PATH`. Prefer the autoload convention instead? Drop
+`beads-utils.zsh` into a directory on your `$fpath`, or `beads-utils.bash`
+into your `bash-completion.d`.
 
 ## License
 
