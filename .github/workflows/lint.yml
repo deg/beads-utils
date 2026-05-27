@@ -16,15 +16,25 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0   # setup-uv ships only full-version tags (no moving @v8)
         with:
           enable-cache: false   # no lock files in this repo to key a cache on
-      - name: ruff check
-        # Each script is found by its shebang, so new scripts are linted
-        # automatically. Fail loudly if discovery finds nothing rather than
-        # silently checking only bdutils.py. xargs builds the file list (not
-        # shell word-splitting), so this behaves identically under any shell.
+      - name: ruff check (TEMP DIAGNOSTIC - revert after beads-utils-y13)
+        # Diagnosing a silent exit-2 from `uvx ruff` that appeared only after
+        # the ubuntu-24.04 runner image bump (20260518 -> 20260525). exec 2>&1
+        # merges stderr so nothing is lost; `if` guard preserves the real exit.
         run: |
+          set -x
+          exec 2>&1
+          which uvx uv xargs python python3 || true
+          uvx --version || echo "uvx --version exit $?"
+          uv python list || true
           scripts="$(grep -lE '^#!' * 2>/dev/null)"
-          [ -n "$scripts" ] || { echo "::error::shebang discovery found no scripts"; exit 1; }
-          printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
+          echo "scripts: [$scripts]"
+          if printf '%s\n' "$scripts" | xargs -t uvx --verbose ruff@0.15.14 check bdutils.py; then
+            rc=0
+          else
+            rc=$?
+          fi
+          echo "final exit $rc"
+          exit "$rc"
       - name: smoke test (--version)
         # ruff is static-only; actually invoke each script (bd-view via its
         # uv-run shebang) to catch argparse/import breakage. read -r line by
