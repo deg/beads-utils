@@ -16,31 +16,27 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0   # setup-uv ships only full-version tags (no moving @v8)
         with:
           enable-cache: false   # no lock files in this repo to key a cache on
-      - name: ruff check (TEMP DIAGNOSTIC - revert after beads-utils-y13)
-        # Diagnosing a silent exit-2 from `uvx ruff` that appeared only after
-        # the ubuntu-24.04 runner image bump (20260518 -> 20260525). exec 2>&1
-        # merges stderr so nothing is lost; `if` guard preserves the real exit.
+      - name: ruff check
+        # Each script is found by its shebang, so new scripts are linted
+        # automatically. `-d skip` makes grep ignore subdirectories (e.g.
+        # completions/) rather than erroring on them: under `bash -e` a grep
+        # exit-2 on a directory aborts the whole step before ruff runs. `|| true`
+        # keeps the explicit empty-result guard reachable (a no-match grep exits
+        # 1, which set -e would otherwise treat as fatal). Fail loudly if
+        # discovery finds nothing rather than silently checking only bdutils.py.
+        # xargs builds the file list (not shell word-splitting), so this behaves
+        # identically under any shell.
         run: |
-          set -x
-          exec 2>&1
-          which uvx uv xargs python python3 || true
-          uvx --version || echo "uvx --version exit $?"
-          uv python list || true
-          scripts="$(grep -lE '^#!' * 2>/dev/null)"
-          echo "scripts: [$scripts]"
-          if printf '%s\n' "$scripts" | xargs -t uvx --verbose ruff@0.15.14 check bdutils.py; then
-            rc=0
-          else
-            rc=$?
-          fi
-          echo "final exit $rc"
-          exit "$rc"
+          scripts="$(grep -lE -d skip '^#!' * 2>/dev/null)" || true
+          [ -n "$scripts" ] || { echo "::error::shebang discovery found no scripts"; exit 1; }
+          printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
       - name: smoke test (--version)
         # ruff is static-only; actually invoke each script (bd-view via its
-        # uv-run shebang) to catch argparse/import breakage. read -r line by
-        # line, so no word-splitting assumptions.
+        # uv-run shebang) to catch argparse/import breakage. `-d skip` ignores
+        # subdirectories (see ruff check); read -r line by line, so no
+        # word-splitting assumptions.
         run: |
-          grep -lE '^#!' * 2>/dev/null | while IFS= read -r s; do
+          grep -lE -d skip '^#!' * 2>/dev/null | while IFS= read -r s; do
             echo "== $s --version =="
             "./$s" --version
           done
