@@ -167,6 +167,68 @@ def render_block(meta: SessionMeta, now: datetime, show_project: bool) -> list[s
     return lines
 
 
+def _duration_secs(meta: SessionMeta) -> float:
+    """Session active span in seconds. 0 when timestamps are unavailable."""
+    first = _parse_iso(meta.first_ts)
+    last = _parse_iso(meta.last_ts)
+    if first is None or last is None:
+        return 0.0
+    return (last - first).total_seconds()
+
+
+# Sort keys recognised by --sort. Each maps to a callable that extracts the
+# comparison value from a SessionMeta. Strings compare lexically; ints/floats
+# numerically. Missing timestamps fall through as empty strings, which sort
+# before any real ISO date.
+SORT_KEYS = {
+    "started":  lambda m: m.first_ts or "",
+    "last":     lambda m: m.last_ts or "",
+    "duration": _duration_secs,
+    "prompts":  lambda m: m.human_prompts,
+    "replies":  lambda m: m.assistant_turns,
+    "turns":    lambda m: m.human_prompts + m.assistant_turns,
+    "title":    lambda m: m.title.lower(),
+    "project":  lambda m: project_label(m.jsonl, m.cwd).lower(),
+    "id":       lambda m: m.jsonl.stem,
+}
+
+
+def parse_sort(spec: str) -> list[tuple[str, bool]]:
+    """Parse '-started,title' into [('started', True), ('title', False)]."""
+    keys: list[tuple[str, bool]] = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        desc = token.startswith("-")
+        name = token.lstrip("-+")
+        if name not in SORT_KEYS:
+            error(
+                f"--sort: unknown key {name!r} "
+                f"(valid: {', '.join(sorted(SORT_KEYS))})"
+            )
+        keys.append((name, desc))
+    return keys
+
+
+def apply_sort(sessions: list[SessionMeta],
+               keys: list[tuple[str, bool]]) -> list[SessionMeta]:
+    """Stable multi-key sort. Later keys are primary, so apply in reverse."""
+    result = list(sessions)
+    for name, desc in reversed(keys):
+        result.sort(key=SORT_KEYS[name], reverse=desc)
+    return result
+
+
+def apply_match(sessions: list[SessionMeta], pattern: str) -> list[SessionMeta]:
+    """Case-insensitive substring match on title OR full uuid."""
+    needle = pattern.lower()
+    return [
+        m for m in sessions
+        if needle in m.title.lower() or needle in m.jsonl.stem.lower()
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="List recent Claude Code sessions, git-log style.",
@@ -180,6 +242,9 @@ def main() -> int:
             "  claude-session-list -q                UUIDs only, pipe-friendly\n"
             "  claude-session-list -a                Include truly-empty (/clear ghosts)\n"
             "  claude-session-list --min-prompts 3   Real conversations only\n"
+            "  claude-session-list -m bd-view        Sessions whose title/uuid contains 'bd-view'\n"
+            "  claude-session-list --sort=-turns     Biggest conversations first\n"
+            "  claude-session-list --sort=title      Alphabetical by title\n"
             "  claude --resume $(claude-session-list -q | head -1)\n"
             "\n"
             "Session data lives under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl.\n"
@@ -198,6 +263,21 @@ def main() -> int:
     parser.add_argument(
         "-n", "--limit", type=int, default=0,
         help="Maximum sessions to show (default: 0 = unlimited)",
+    )
+    parser.add_argument(
+        "-s", "--sort", default=None, metavar="KEYS",
+        help=(
+            "Comma-separated sort keys; prefix with '-' for descending "
+            "(e.g., '-started,title'). Default: newest activity first. "
+            "Use '--sort=-key' (with '=') when the first key is descending, "
+            "so argparse doesn't treat it as a flag. "
+            "Keys: " + ", ".join(sorted(SORT_KEYS))
+        ),
+    )
+    parser.add_argument(
+        "-m", "--match", default=None, metavar="PATTERN",
+        help="Show only sessions whose title or UUID contains PATTERN "
+             "(case-insensitive substring match)",
     )
     filter_grp = parser.add_mutually_exclusive_group()
     filter_grp.add_argument(
@@ -233,6 +313,8 @@ def main() -> int:
     if not CLAUDE_PROJECTS.is_dir():
         error(f"no such directory: {CLAUDE_PROJECTS}")
 
+    sort_keys = parse_sort(args.sort) if args.sort else []
+
     if args.global_:
         sessions = list_sessions()
         show_project = True
@@ -244,9 +326,12 @@ def main() -> int:
         sessions = list_sessions(pdir)
         show_project = False
 
-    # Apply filters. --all bypasses all filtering. --min-prompts is stricter
-    # than the default empty-session filter (and excludes its mutex
-    # counterpart already).
+    # Filter order: --match narrows first (user-expressed interest), then the
+    # empty/min-prompts filter, then sort, then limit. The hidden_count footer
+    # reflects what the empty filter removed from the match-narrowed set.
+    if args.match:
+        sessions = apply_match(sessions, args.match)
+
     hidden_count = 0
     if not args.show_all:
         before = len(sessions)
@@ -255,6 +340,9 @@ def main() -> int:
         else:
             sessions = [s for s in sessions if not s.is_empty]
         hidden_count = before - len(sessions)
+
+    if sort_keys:
+        sessions = apply_sort(sessions, sort_keys)
 
     if args.limit > 0:
         sessions = sessions[:args.limit]

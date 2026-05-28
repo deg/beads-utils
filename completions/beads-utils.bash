@@ -75,11 +75,12 @@ _beads_claude_session_list() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
   case $prev in
-    -n|--limit|--min-prompts) return ;;
+    -n|--limit|--min-prompts|-s|--sort|-m|--match) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-g --global -n --limit -a --all --min-prompts \
-      --oneline -q --quiet --no-pager --version -h --help"
+    __beads_flags "-g --global -n --limit -s --sort -m --match \
+      -a --all --min-prompts --oneline -q --quiet --no-pager \
+      --version -h --help"
   fi
   # no positional args.
 }
@@ -102,10 +103,10 @@ _beads_bd_export_csv() {
   COMPREPLY=()
   case $prev in
     -o|--output) __beads_files; return ;;
-    --sortby) return ;;
+    -s|--sort) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-o --output --sortby --version -h --help"
+    __beads_flags "-o --output -s --sort --version -h --help"
   else
     __beads_dirs
   fi

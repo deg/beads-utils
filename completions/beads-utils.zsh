@@ -91,6 +91,8 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-g --global)'{-g,--global}'[list sessions across all projects]' \
       '(-n --limit)'{-n,--limit}'[max sessions to show (0 = unlimited)]:count' \
+      '(-s --sort)'{-s,--sort}'[comma-separated sort keys (-key for descending)]:keys' \
+      '(-m --match)'{-m,--match}'[show only sessions whose title or uuid contains PATTERN]:pattern' \
       '(-a --all --min-prompts)'{-a,--all}'[show every session, including empty ones]' \
       '(-a --all --min-prompts)--min-prompts[only sessions with >= N human prompts]:count' \
       '(--oneline -q --quiet)--oneline[single-row output]' \
@@ -112,7 +114,7 @@ _beads_dispatch() {
       '(- *)--version[show version and exit]' \
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-o --output)'{-o,--output}'[output CSV path]:file:_files' \
-      '--sortby[comma-separated sort keys (-key for descending)]:keys' \
+      '(-s --sort)'{-s,--sort}'[comma-separated sort keys (-key for descending)]:keys' \
       '1:project:_files -/'
     ;;
   bd-dolt-check)

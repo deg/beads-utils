@@ -97,7 +97,7 @@ def derive_prefix(issues: list[dict], fallback: str) -> str:
     return fallback
 
 
-def parse_sortby(spec: str) -> list[tuple[str, bool]]:
+def parse_sort(spec: str) -> list[tuple[str, bool]]:
     keys: list[tuple[str, bool]] = []
     for token in spec.split(","):
         token = token.strip()
@@ -107,7 +107,7 @@ def parse_sortby(spec: str) -> list[tuple[str, bool]]:
         key = token.lstrip("-+")
         if key not in SORT_KEYS:
             error(
-                f"--sortby: unknown key {key!r} "
+                f"--sort: unknown key {key!r} "
                 f"(valid: {', '.join(sorted(SORT_KEYS))})"
             )
         keys.append((key, desc))
@@ -128,7 +128,7 @@ def main() -> int:
             "  bd-export-csv                  Export cwd to <prefix>-issues-<date>.csv\n"
             "  bd-export-csv .                Same, explicit path\n"
             "  bd-export-csv . -o out.csv     Write to a specific file\n"
-            "  bd-export-csv . --sortby=-priority,created_at\n"
+            "  bd-export-csv . --sort=-priority,created_at\n"
         ),
     )
     parser.add_argument(
@@ -140,11 +140,11 @@ def main() -> int:
         help="Output CSV path (default: <prefix>-issues-<YYYY-MM-DD>.csv in cwd)",
     )
     parser.add_argument(
-        "--sortby", default=None, metavar="KEYS",
+        "-s", "--sort", default=None, metavar="KEYS",
         help=(
             "Comma-separated sort keys; prefix with '-' for descending "
             "(e.g., 'priority,-created_at'). "
-            "Use '--sortby=-key,...' (with '=') when the first key is "
+            "Use '--sort=-key,...' (with '=') when the first key is "
             "descending, so argparse doesn't treat it as a flag. "
             "Keys: " + ", ".join(sorted(SORT_KEYS))
         ),
@@ -152,7 +152,7 @@ def main() -> int:
     add_version_arg(parser)
     args = parser.parse_args()
 
-    sort_keys = parse_sortby(args.sortby) if args.sortby else []
+    sort_keys = parse_sort(args.sort) if args.sort else []
 
     project_path = resolve_project_path(args.project_path)
 

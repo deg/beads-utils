@@ -47,7 +47,7 @@ the sibling `bdutils` import).
 Current scripts:
 
 - `bd-export-csv` — Shells out to `bd export --all --no-memories`, parses the JSONL,
-  and writes a flat CSV suitable for spreadsheet review. Supports `--sortby` with
+  and writes a flat CSV suitable for spreadsheet review. Supports `-s/--sort` with
   comma-separated keys and `-`-prefixed descending order.
 - `bd-dolt-check` — Verifies that a beads repo's Dolt data (stored under
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
@@ -133,8 +133,14 @@ Current scripts:
   auto-size to the actual data so the TITLE column doesn't jitter
   row-to-row. `-q/--quiet` prints UUIDs only (pipe-friendly,
   suppresses the header and the filter-hint footer). `-n/--limit`
-  caps the count (0 = unlimited). Pages via `bdutils.paged_output()`;
-  `--no-pager` disables.
+  caps the count (0 = unlimited).
+  `-s/--sort=KEYS` accepts comma-separated keys with `-`-prefix
+  descending (matches `bd-export-csv --sort`); keys = `started`,
+  `last`, `duration`, `prompts`, `replies`, `turns`, `title`,
+  `project`, `id`. Default order is mtime-newest-first (same as
+  before). `-m/--match=PATTERN` is a case-insensitive substring
+  match on title OR full UUID, applied before the empty-session
+  filter. Pages via `bdutils.paged_output()`; `--no-pager` disables.
 - `bd-complete` — Emits shell-completion candidates as
   `value<TAB>description` lines; the single front door behind the
   zsh/bash completion in `completions/` (so candidate logic is never
@@ -191,7 +197,7 @@ project (this repo itself is one):
 
 ```bash
 ./bd-export-csv .                             # Export this repo to CSV in cwd
-./bd-export-csv . --sortby=-priority,created_at
+./bd-export-csv . --sort=-priority,created_at
 ./bd-dolt-check .                             # Check Dolt sync state
 ./bd-log                                       # Last 10 recently closed beads
 ./bd-log -n 25 --since 2026-04-01              # 25 closures on/after date
