@@ -17,6 +17,7 @@ needs `rich`).
 | [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
 | [`bd-log`](bd-log) | Git-log-style view of recently closed beads (auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
+| [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |

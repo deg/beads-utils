@@ -106,9 +106,19 @@ Current scripts:
   Note: Claude Code does not currently persist extended-thinking
   content to disk (only the signature), so `--thinking` is
   forward-compatible but produces no output for current sessions.
-  `--list-sessions` prints `uuid<TAB>title` for every known session
-  (newest first) and exits, ignoring the positional arg and channel
-  flags — a standalone session index that also feeds `bd-complete`.
+- `claude-session-list` — Git-log-style listing of recent Claude Code
+  sessions. Default scope = current project (matched by mangled-cwd
+  lookup under `~/.claude/projects/`); `-g/--global` spans all projects
+  and adds a project-label line to each entry. Each entry shows the
+  full UUID (copy-paste-ready for `claude --resume`), an optional
+  project label, a timestamp range with relative age and active span
+  (`2026-05-27 09:11 → 14:32  (3h ago, 5h21m active)`), a user-prompt
+  turn count (subagent sidechains excluded), and the session title
+  (`custom-title` from `/rename`, else `ai-title`, else `(untitled)`).
+  `--oneline` collapses each session to one row; `-q/--quiet` prints
+  UUIDs only (pipe-friendly for `claude --resume`). `-n/--limit` caps
+  the count (0 = unlimited). Pages via `bdutils.paged_output()`;
+  `--no-pager` disables.
 - `bd-complete` — Emits shell-completion candidates as
   `value<TAB>description` lines; the single front door behind the
   zsh/bash completion in `completions/` (so candidate logic is never
@@ -116,24 +126,32 @@ Current scripts:
   `bd-complete ids` lists full bead ids (e.g. `beads-utils-v9o.4`) from
   `bd list --status=all` — full rather than the short suffix so a
   wrong-project id is visible at the prompt.
-  `bd-complete sessions` delegates to
-  `claude-session-report --list-sessions`. Lookups fail silently (no
-  output, exit 0) so a broken/slow command never garbles the prompt.
+  `bd-complete sessions` calls into `claudeutils.list_sessions()`
+  directly. Lookups fail silently (no output, exit 0) so a
+  broken/slow command never garbles the prompt.
 
-Shared helper:
+Shared helpers:
 
 - `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
   `format_ts()`, `format_priority()`, and `paged_output()` (context manager
   that pipes through `$PAGER` or `less -FRX` when stdout is a tty; `-F` makes
   short output indistinguishable from direct-to-stdout). Imported by scripts
   in this repo; keep small and stdlib-only.
+- `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
+  `mangle_cwd()`, `find_project_dir()`, `project_label()`, `read_session_meta()`
+  (one-pass scan: titles, cwd, first/last timestamps, user-turn count returned
+  as a `SessionMeta` dataclass), `iter_sessions()`, `list_sessions()`, and
+  `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
+  `claude-session-report`, `claude-session-list`, and `bd-complete`. Also
+  stdlib-only.
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
 Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
 auto-discovery from the current directory); `claude-session-report` takes a
-Claude session UUID, title substring, or `.jsonl` path; `bd-complete` takes a
-candidate kind (`ids` or `sessions`).
+Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
+takes no positional args (current project unless `-g/--global`); `bd-complete`
+takes a candidate kind (`ids` or `sessions`).
 
 ## Shell completion
 
@@ -166,7 +184,9 @@ project (this repo itself is one):
 ./claude-session-report 'bd-view'              # Substring-match a session title
 ./claude-session-report <uuid> --thinking --tools     # Add agent thinking + tool I/O
 ./claude-session-report <uuid> --all > session.md     # Everything, to a file
-./claude-session-report --list-sessions               # uuid<TAB>title index of all sessions
+./claude-session-list                                  # Recent sessions for cwd's project
+./claude-session-list -g --oneline                     # Every project, one row each
+./claude-session-list -q | head -1                     # Newest UUID (for `claude --resume`)
 ./bd-complete ids                                      # Completion feed: short ids + titles
 ./bd-complete sessions                                 # Completion feed: session uuids + titles
 ```

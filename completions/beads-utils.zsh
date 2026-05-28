@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check claude-session-find claude-session-report
+#compdef bd-view bd-log bd-export-csv bd-dolt-check claude-session-find claude-session-list claude-session-report
 #
 # zsh tab completion for beads-utils.
 #
@@ -82,9 +82,18 @@ _beads_dispatch() {
       '--task-notifications[include background task notifications]' \
       '--sidechains[include sidechain subagent entries]' \
       '--all[enable every channel]' \
-      '--list-sessions[list all known sessions and exit]' \
       '--no-pager[write directly to stdout; skip the pager]' \
       '1:session:__beads_sessions'
+    ;;
+  claude-session-list)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '(-g --global)'{-g,--global}'[list sessions across all projects]' \
+      '(-n --limit)'{-n,--limit}'[max sessions to show (0 = unlimited)]:count' \
+      '(--oneline -q --quiet)--oneline[single-row output]' \
+      '(--oneline -q --quiet)'{-q,--quiet}'[print only session UUIDs]' \
+      '--no-pager[write directly to stdout; skip the pager]'
     ;;
   bd-log)
     _arguments -s -S \
@@ -126,4 +135,4 @@ _beads_dispatch() {
 
 compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check \
-  claude-session-find claude-session-report
+  claude-session-find claude-session-list claude-session-report

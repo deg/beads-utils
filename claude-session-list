@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""List recent Claude Code sessions in a git-log-style view.
+
+Defaults to sessions for the current project (cwd). -g/--global spans every
+project under ~/.claude/projects. Newest first by file mtime.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from bdutils import add_version_arg, error, format_ts, paged_output
+from claudeutils import (
+    CLAUDE_PROJECTS,
+    SessionMeta,
+    find_project_dir,
+    list_sessions,
+    project_label,
+)
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _humanize_delta(seconds: float) -> str:
+    """Compact relative-time string: '3m', '5h', '2d', '3w', '4mo', '1y'."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h"
+    if s < 7 * 86400:
+        return f"{s // 86400}d"
+    if s < 30 * 86400:
+        return f"{s // (7 * 86400)}w"
+    if s < 365 * 86400:
+        return f"{s // (30 * 86400)}mo"
+    return f"{s // (365 * 86400)}y"
+
+
+def _humanize_span(seconds: float) -> str:
+    """Active-span string: '5m', '1h12m', '2d3h'. Empty for spans < 1 min."""
+    s = int(seconds)
+    if s < 60:
+        return ""
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        h, rem = divmod(s, 3600)
+        m = rem // 60
+        return f"{h}h{m}m" if m else f"{h}h"
+    d, rem = divmod(s, 86400)
+    h = rem // 3600
+    return f"{d}d{h}h" if h else f"{d}d"
+
+
+def render_range(meta: SessionMeta, now: datetime) -> str:
+    """'2026-05-27 09:11 → 14:32  (3h ago, 5h21m active)' or graceful fallback."""
+    first = _parse_iso(meta.first_ts)
+    last = _parse_iso(meta.last_ts)
+    if first is None and last is None:
+        # Fallback: file mtime when the jsonl has no timestamped entries.
+        mtime = datetime.fromtimestamp(meta.jsonl.stat().st_mtime).astimezone()
+        ago = _humanize_delta((now - mtime.astimezone(timezone.utc)).total_seconds())
+        return f"{mtime.strftime('%Y-%m-%d %H:%M')}  ({ago} ago, mtime)"
+
+    first_local = (first or last).astimezone()
+    last_local = (last or first).astimezone()
+    ago = _humanize_delta((now - last_local.astimezone(timezone.utc)).total_seconds())
+    same_day = first_local.date() == last_local.date()
+    start_str = first_local.strftime("%Y-%m-%d %H:%M")
+    end_str = last_local.strftime("%H:%M" if same_day else "%Y-%m-%d %H:%M")
+    span = _humanize_span((last_local - first_local).total_seconds())
+    tail = f"({ago} ago, {span} active)" if span else f"({ago} ago)"
+    if first_local == last_local:
+        return f"{start_str}  {tail}"
+    return f"{start_str} → {end_str}  {tail}"
+
+
+def render_oneline(meta: SessionMeta, now: datetime, show_project: bool) -> str:
+    short = meta.jsonl.stem.split("-")[0]
+    last = _parse_iso(meta.last_ts)
+    if last is None:
+        last_local = datetime.fromtimestamp(meta.jsonl.stat().st_mtime).astimezone()
+    else:
+        last_local = last.astimezone()
+    ago = _humanize_delta((now - last_local.astimezone(timezone.utc)).total_seconds())
+    bits = [
+        short,
+        last_local.strftime("%Y-%m-%d %H:%M"),
+        f"{ago:>4} ago",
+        f"{meta.user_turns:>4}t",
+    ]
+    if show_project:
+        bits.append(project_label(meta.jsonl))
+    bits.append(meta.title)
+    return "  ".join(bits)
+
+
+def render_block(meta: SessionMeta, now: datetime, show_project: bool) -> list[str]:
+    lines = [meta.jsonl.stem]
+    if show_project:
+        lines.append(f"  {project_label(meta.jsonl)}")
+    lines.append(f"  {render_range(meta, now)}")
+    turn_word = "turn" if meta.user_turns == 1 else "turns"
+    lines.append(f"  {meta.user_turns} {turn_word}")
+    lines.append(f"  {meta.title}")
+    return lines
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="List recent Claude Code sessions, git-log style.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-session-list                   Sessions for cwd's project\n"
+            "  claude-session-list -g                Every project\n"
+            "  claude-session-list -n 5              Last 5 only\n"
+            "  claude-session-list --oneline         One row per session\n"
+            "  claude-session-list -q                UUIDs only, pipe-friendly\n"
+            "  claude --resume $(claude-session-list -q | head -1)\n"
+            "\n"
+            "Session data lives under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl.\n"
+            "Newest first by file mtime. 'turns' is the count of user prompts\n"
+            "(excluding subagent sidechains). Timestamps come from the first\n"
+            "and last entry in each jsonl; falls back to mtime if absent.\n"
+        ),
+    )
+    parser.add_argument(
+        "-g", "--global", dest="global_", action="store_true",
+        help="List sessions across all projects (default: cwd only)",
+    )
+    parser.add_argument(
+        "-n", "--limit", type=int, default=0,
+        help="Maximum sessions to show (default: 0 = unlimited)",
+    )
+    grp = parser.add_mutually_exclusive_group()
+    grp.add_argument(
+        "--oneline", action="store_true",
+        help="Single-row output: uuid-prefix, last ts, age, turns, title",
+    )
+    grp.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="Print only session UUIDs (one per line, pipe-friendly)",
+    )
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX)",
+    )
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    if args.limit < 0:
+        error("--limit must be >= 0 (0 means unlimited)")
+    if not CLAUDE_PROJECTS.is_dir():
+        error(f"no such directory: {CLAUDE_PROJECTS}")
+
+    if args.global_:
+        sessions = list_sessions()
+        show_project = True
+    else:
+        cwd = Path.cwd().resolve()
+        pdir = find_project_dir(cwd)
+        if pdir is None:
+            error(f"no Claude sessions recorded for {cwd} (try --global)")
+        sessions = list_sessions(pdir)
+        show_project = False
+
+    if args.limit > 0:
+        sessions = sessions[:args.limit]
+
+    if not sessions:
+        print("no sessions found")
+        return 0
+
+    now = datetime.now(timezone.utc)
+    no_pager = True if args.quiet else args.no_pager
+    with paged_output(no_pager=no_pager) as out:
+        if args.quiet:
+            for meta in sessions:
+                print(meta.jsonl.stem, file=out)
+        elif args.oneline:
+            for meta in sessions:
+                print(render_oneline(meta, now, show_project), file=out)
+        else:
+            for i, meta in enumerate(sessions):
+                if i:
+                    print(file=out)
+                for line in render_block(meta, now, show_project):
+                    print(line, file=out)
+        out.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

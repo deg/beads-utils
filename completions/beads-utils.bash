@@ -64,11 +64,24 @@ _beads_claude_session_report() {
   if [[ $cur == -* ]]; then
     __beads_flags "--no-prompts --no-replies --no-slash-commands --thinking \
       --tools --slash-bodies --bash-shortcuts --system-reminders \
-      --task-notifications --sidechains --all --list-sessions --no-pager \
+      --task-notifications --sidechains --all --no-pager \
       --version -h --help"
   else
     __beads_values sessions
   fi
+}
+
+_beads_claude_session_list() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  case $prev in
+    -n|--limit) return ;;
+  esac
+  if [[ $cur == -* ]]; then
+    __beads_flags "-g --global -n --limit --oneline -q --quiet --no-pager \
+      --version -h --help"
+  fi
+  # no positional args.
 }
 
 _beads_bd_log() {
@@ -123,6 +136,7 @@ _beads_claude_session_find() {
 
 complete -F _beads_bd_view bd-view
 complete -F _beads_claude_session_report claude-session-report
+complete -F _beads_claude_session_list claude-session-list
 complete -F _beads_bd_log bd-log
 complete -F _beads_bd_export_csv bd-export-csv
 complete -F _beads_bd_dolt_check bd-dolt-check

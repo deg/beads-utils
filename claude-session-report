@@ -22,121 +22,7 @@ import sys
 from pathlib import Path
 
 from bdutils import add_version_arg, error, format_ts, paged_output
-
-
-CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-
-
-# --- Session resolution ----------------------------------------------------
-
-def session_titles(jsonl: Path) -> tuple[str | None, str | None]:
-    """Return (custom_title, ai_title) — last-wins for either if present."""
-    custom = None
-    ai = None
-    try:
-        with jsonl.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                t = obj.get("type")
-                if t == "custom-title":
-                    ct = obj.get("customTitle")
-                    if isinstance(ct, str):
-                        custom = ct
-                elif t == "ai-title":
-                    at = obj.get("aiTitle")
-                    if isinstance(at, str):
-                        ai = at
-    except OSError:
-        pass
-    return custom, ai
-
-
-def iter_sessions():
-    """Yield (jsonl, custom_title, ai_title) for every recorded session.
-
-    Walks every ~/.claude/projects/*/ dir. Titles are None when absent.
-    Yields nothing if the projects directory is missing. This is the single
-    source of session enumeration — resolve_session() and list_sessions()
-    both build on it.
-    """
-    if not CLAUDE_PROJECTS.is_dir():
-        return
-    for pdir in CLAUDE_PROJECTS.iterdir():
-        if not pdir.is_dir():
-            continue
-        for jsonl in pdir.glob("*.jsonl"):
-            custom, ai = session_titles(jsonl)
-            yield jsonl, custom, ai
-
-
-def list_sessions() -> list[tuple[Path, str]]:
-    """All sessions as (jsonl, title), newest-first by mtime.
-
-    Title is the custom-title, else the ai-title, else '(untitled)'.
-    """
-    out = [
-        (jsonl, custom or ai or "(untitled)")
-        for jsonl, custom, ai in iter_sessions()
-    ]
-    out.sort(key=lambda m: m[0].stat().st_mtime, reverse=True)
-    return out
-
-
-def resolve_session(arg: str) -> Path:
-    """Resolve a user-supplied session identifier to a .jsonl path."""
-    # 1. Path to a .jsonl file.
-    p = Path(arg).expanduser()
-    if p.suffix == ".jsonl" and p.is_file():
-        return p
-
-    if not CLAUDE_PROJECTS.is_dir():
-        error(f"no such directory: {CLAUDE_PROJECTS}")
-
-    # 2. UUID — `<arg>.jsonl` under any project dir.
-    direct: list[Path] = []
-    for pdir in CLAUDE_PROJECTS.iterdir():
-        if not pdir.is_dir():
-            continue
-        candidate = pdir / f"{arg}.jsonl"
-        if candidate.is_file():
-            direct.append(candidate)
-    if len(direct) == 1:
-        return direct[0]
-    if len(direct) > 1:
-        sys.stderr.write(
-            f"error: {len(direct)} sessions named {arg!r} found (unexpected):\n"
-        )
-        for c in direct:
-            sys.stderr.write(f"  {c}\n")
-        sys.exit(1)
-
-    # 3. Title substring match.
-    needle = arg.lower()
-    matches: list[tuple[Path, str]] = []
-    for jsonl, custom, ai in iter_sessions():
-        title = custom or ai
-        if title and needle in title.lower():
-            matches.append((jsonl, title))
-
-    if not matches:
-        error(f"no session found for {arg!r}")
-    if len(matches) > 1:
-        matches.sort(key=lambda m: m[0].stat().st_mtime, reverse=True)
-        sys.stderr.write(
-            f"error: {len(matches)} sessions match {arg!r} — disambiguate "
-            "with a UUID:\n"
-        )
-        for jsonl, title in matches[:25]:
-            sys.stderr.write(f"  {jsonl.stem}  {title}\n")
-        if len(matches) > 25:
-            sys.stderr.write(f"  … and {len(matches) - 25} more\n")
-        sys.exit(1)
-    return matches[0][0]
+from claudeutils import resolve_session
 
 
 # --- Content parsing -------------------------------------------------------
@@ -736,26 +622,14 @@ def main() -> int:
         help="Enable every channel (overrides --no-* flags)",
     )
     parser.add_argument(
-        "--list-sessions", dest="list_sessions", action="store_true",
-        help="List every known session as 'uuid<TAB>title' (newest first) "
-             "and exit; ignores the positional arg and channel flags",
-    )
-    parser.add_argument(
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX)",
     )
     add_version_arg(parser)
     args = parser.parse_args()
 
-    if args.list_sessions:
-        with paged_output(no_pager=args.no_pager) as out:
-            for jsonl, title in list_sessions():
-                print(f"{jsonl.stem}\t{title}", file=out)
-            out.flush()
-        return 0
-
     if not args.session:
-        parser.error("a session is required (or pass --list-sessions)")
+        parser.error("a session is required (UUID, title substring, or .jsonl path)")
 
     if args.all_channels:
         for name in CHANNEL_FLAGS:

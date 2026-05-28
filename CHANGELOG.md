@@ -1,3 +1,9 @@
+## Unreleased
+
+* [feature] `claude-session-list` — git-log-style listing of recent Claude Code sessions. Defaults to cwd's project; `-g/--global` spans all. `--oneline` for one-per-row, `-q/--quiet` for UUIDs only (pipe-friendly for `claude --resume`). Shows timestamp range, age, user-prompt turn count, and title.
+* [refactor] Session enumeration helpers (`iter_sessions`, `list_sessions`, `resolve_session`, project-dir lookup) moved from `claude-session-report` into a new shared `claudeutils` module. `bd-complete sessions` now imports the helper directly instead of shelling out.
+* [breaking] Removed `claude-session-report --list-sessions` — its only consumer was `bd-complete`. `claude-session-list -g -q` is the user-facing replacement; `bd-complete sessions` is unaffected.
+
 ## v0.2.0 (26May26)
 
 * [feature] Shell tab completion for zsh and bash — completes full bead ids (with titles shown in zsh) for `bd-view`, session uuids/titles for `claude-session-report`, project directories for the path-taking scripts, and flags for every command. Source `completions/beads-utils.zsh` or `completions/beads-utils.bash` to enable; dynamic candidates come from a new `bd-complete` helper.

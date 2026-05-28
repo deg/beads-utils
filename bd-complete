@@ -19,9 +19,9 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 from bdutils import add_version_arg
+from claudeutils import list_sessions
 
 
 def emit(value: str, description: str = "") -> None:
@@ -57,21 +57,16 @@ def complete_ids() -> None:
 
 
 def complete_sessions() -> None:
-    """Claude session uuids + titles.
+    """Claude session uuids + titles, newest first.
 
-    Delegates to `claude-session-report --list-sessions`, which already emits
-    `uuid<TAB>title` lines — so the project-dir walk lives in exactly one
-    place rather than being duplicated here.
+    Calls into claudeutils.list_sessions() directly so the project-dir walk
+    lives in exactly one place rather than being duplicated here.
     """
-    script = Path(__file__).resolve().with_name("claude-session-report")
     try:
-        proc = subprocess.run(
-            [str(script), "--list-sessions", "--no-pager"],
-            capture_output=True, text=True, check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
+        for meta in list_sessions():
+            emit(meta.jsonl.stem, meta.title)
+    except OSError:
         return
-    sys.stdout.write(proc.stdout)
 
 
 def main() -> int:
