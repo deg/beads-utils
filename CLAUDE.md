@@ -112,13 +112,24 @@ Current scripts:
   and adds a project-label line to each entry. Each entry shows the
   full UUID (copy-paste-ready for `claude --resume`), an optional
   project label, a timestamp range with relative age and active span
-  (`2026-05-27 09:11 → 14:32  (3h ago, 5h21m active)`), a user-prompt
-  turn count (subagent sidechains excluded), and the session title
-  (`custom-title` from `/rename`, else `ai-title`, else `(untitled)`).
-  `--oneline` collapses each session to one row; `-q/--quiet` prints
-  UUIDs only (pipe-friendly for `claude --resume`). `-n/--limit` caps
-  the count (0 = unlimited). Pages via `bdutils.paged_output()`;
-  `--no-pager` disables.
+  (`2026-05-27 09:11 → 14:32  (3h ago, 5h21m active)`), the
+  prompt/reply counts (`N prompts / M replies` in block view, `Np/Mr`
+  in `--oneline`), and the session title (`custom-title` from
+  `/rename`, else `ai-title`, else `(untitled)`).
+  Counts: "prompts" = `type=='user'` entries whose content has
+  non-wrapper prose; entries consisting only of `<command-name>`,
+  `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, etc.
+  (no human-typed text) don't count. This is what lets `/clear`-ghost
+  sessions register as `0p/0r`. "replies" = `type=='assistant'`
+  entries. Both exclude subagent sidechains.
+  Filters: by default, sessions with `0p/0r` (truly empty — `/clear`
+  ghosts, aborted sessions) are hidden; a stderr footer reports the
+  hidden count. `-a/--all` shows everything. `--min-prompts N`
+  (mutex with `-a`) is a stricter filter — only sessions with ≥ N
+  human prompts. `--oneline` collapses each session to one row;
+  `-q/--quiet` prints UUIDs only (pipe-friendly, suppresses the
+  filter-hint footer). `-n/--limit` caps the count (0 = unlimited).
+  Pages via `bdutils.paged_output()`; `--no-pager` disables.
 - `bd-complete` — Emits shell-completion candidates as
   `value<TAB>description` lines; the single front door behind the
   zsh/bash completion in `completions/` (so candidate logic is never
@@ -138,10 +149,14 @@ Shared helpers:
   short output indistinguishable from direct-to-stdout). Imported by scripts
   in this repo; keep small and stdlib-only.
 - `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
-  `mangle_cwd()`, `find_project_dir()`, `project_label()`, `read_session_meta()`
-  (one-pass scan: titles, cwd, first/last timestamps, user-turn count returned
-  as a `SessionMeta` dataclass), `iter_sessions()`, `list_sessions()`, and
-  `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
+  `mangle_cwd()`, `find_project_dir()`, `project_label()`, `has_human_prose()`
+  (strips known wrapper tags listed in `USER_WRAPPER_TAGS` — `<command-name>`,
+  `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, etc. — and
+  reports whether anything is left), `read_session_meta()` (one-pass scan:
+  titles, cwd, first/last timestamps, `human_prompts` count using
+  `has_human_prose`, `assistant_turns` count, all returned as a `SessionMeta`
+  dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
+  and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
   `claude-session-report`, `claude-session-list`, and `bd-complete`. Also
   stdlib-only.
 

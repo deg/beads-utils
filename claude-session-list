@@ -95,11 +95,12 @@ def render_oneline(meta: SessionMeta, now: datetime, show_project: bool) -> str:
     else:
         last_local = last.astimezone()
     ago = _humanize_delta((now - last_local.astimezone(timezone.utc)).total_seconds())
+    counts = f"{meta.human_prompts}p/{meta.assistant_turns}r"
     bits = [
         short,
         last_local.strftime("%Y-%m-%d %H:%M"),
         f"{ago:>4} ago",
-        f"{meta.user_turns:>4}t",
+        f"{counts:>8}",
     ]
     if show_project:
         bits.append(project_label(meta.jsonl))
@@ -112,8 +113,11 @@ def render_block(meta: SessionMeta, now: datetime, show_project: bool) -> list[s
     if show_project:
         lines.append(f"  {project_label(meta.jsonl)}")
     lines.append(f"  {render_range(meta, now)}")
-    turn_word = "turn" if meta.user_turns == 1 else "turns"
-    lines.append(f"  {meta.user_turns} {turn_word}")
+    p_word = "prompt" if meta.human_prompts == 1 else "prompts"
+    r_word = "reply" if meta.assistant_turns == 1 else "replies"
+    lines.append(
+        f"  {meta.human_prompts} {p_word} / {meta.assistant_turns} {r_word}"
+    )
     lines.append(f"  {meta.title}")
     return lines
 
@@ -129,12 +133,17 @@ def main() -> int:
             "  claude-session-list -n 5              Last 5 only\n"
             "  claude-session-list --oneline         One row per session\n"
             "  claude-session-list -q                UUIDs only, pipe-friendly\n"
+            "  claude-session-list -a                Include truly-empty (/clear ghosts)\n"
+            "  claude-session-list --min-prompts 3   Real conversations only\n"
             "  claude --resume $(claude-session-list -q | head -1)\n"
             "\n"
             "Session data lives under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl.\n"
-            "Newest first by file mtime. 'turns' is the count of user prompts\n"
-            "(excluding subagent sidechains). Timestamps come from the first\n"
-            "and last entry in each jsonl; falls back to mtime if absent.\n"
+            "Newest first by file mtime. Counts show 'Np/Mr' = human prompts /\n"
+            "assistant replies; entries that contain only slash-command, system-\n"
+            "reminder, or bash-shortcut wrappers are NOT counted as human prompts\n"
+            "(this is how /clear-ghost sessions register as 0p/0r and are hidden\n"
+            "by the default filter). Timestamps come from the first and last\n"
+            "entry in the jsonl; falls back to file mtime if absent.\n"
         ),
     )
     parser.add_argument(
@@ -145,10 +154,21 @@ def main() -> int:
         "-n", "--limit", type=int, default=0,
         help="Maximum sessions to show (default: 0 = unlimited)",
     )
+    filter_grp = parser.add_mutually_exclusive_group()
+    filter_grp.add_argument(
+        "-a", "--all", dest="show_all", action="store_true",
+        help="Show every session, including truly-empty ones "
+             "(default hides sessions with no human prompts AND no replies)",
+    )
+    filter_grp.add_argument(
+        "--min-prompts", type=int, default=None, metavar="N",
+        help="Only show sessions with at least N human prompts "
+             "(stricter than the default empty-session filter)",
+    )
     grp = parser.add_mutually_exclusive_group()
     grp.add_argument(
         "--oneline", action="store_true",
-        help="Single-row output: uuid-prefix, last ts, age, turns, title",
+        help="Single-row output: uuid-prefix, last ts, age, Np/Mr, title",
     )
     grp.add_argument(
         "-q", "--quiet", action="store_true",
@@ -163,6 +183,8 @@ def main() -> int:
 
     if args.limit < 0:
         error("--limit must be >= 0 (0 means unlimited)")
+    if args.min_prompts is not None and args.min_prompts < 0:
+        error("--min-prompts must be >= 0")
     if not CLAUDE_PROJECTS.is_dir():
         error(f"no such directory: {CLAUDE_PROJECTS}")
 
@@ -177,11 +199,29 @@ def main() -> int:
         sessions = list_sessions(pdir)
         show_project = False
 
+    # Apply filters. --all bypasses all filtering. --min-prompts is stricter
+    # than the default empty-session filter (and excludes its mutex
+    # counterpart already).
+    hidden_count = 0
+    if not args.show_all:
+        before = len(sessions)
+        if args.min_prompts is not None:
+            sessions = [s for s in sessions if s.human_prompts >= args.min_prompts]
+        else:
+            sessions = [s for s in sessions if not s.is_empty]
+        hidden_count = before - len(sessions)
+
     if args.limit > 0:
         sessions = sessions[:args.limit]
 
     if not sessions:
-        print("no sessions found")
+        if hidden_count:
+            print(
+                f"no sessions to show ({hidden_count} hidden by filter; "
+                "use --all to include them)"
+            )
+        else:
+            print("no sessions found")
         return 0
 
     now = datetime.now(timezone.utc)
@@ -200,6 +240,14 @@ def main() -> int:
                 for line in render_block(meta, now, show_project):
                     print(line, file=out)
         out.flush()
+
+    # Hint about filtered sessions — stderr keeps -q pipes clean and the
+    # block/oneline output uncluttered.
+    if hidden_count and not args.quiet:
+        word = "session" if hidden_count == 1 else "sessions"
+        sys.stderr.write(
+            f"({hidden_count} empty {word} hidden; use --all to show)\n"
+        )
 
     return 0
 

@@ -70,6 +70,51 @@ def project_label(jsonl: Path) -> str:
     return jsonl.parent.name
 
 
+# XML-style wrapper blocks that Claude Code injects into 'user' entries
+# (slash commands, bash !-shortcuts, system reminders, local-command output,
+# etc.). A user entry whose content is *only* these wrappers is not a human
+# prompt — it's plumbing. Stripping them and checking what's left is the
+# canonical "did the human actually type something?" test.
+USER_WRAPPER_TAGS = (
+    "local-command-caveat",
+    "local-command-stdout",
+    "command-name",
+    "command-message",
+    "command-args",
+    "system-reminder",
+    "task-notification",
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+)
+_USER_WRAPPER_RE = re.compile(
+    "|".join(rf"<{t}>.*?</{t}>" for t in USER_WRAPPER_TAGS),
+    re.DOTALL,
+)
+
+
+def has_human_prose(content) -> bool:
+    """True if a user message's content has non-wrapper, non-empty text.
+
+    A `/clear` session contributes a user entry whose text is just
+    '<command-name>/clear</command-name>...' — stripping the wrapper blocks
+    leaves nothing, so the entry doesn't count as a real prompt.
+    """
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                t = block.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+        text = "\n".join(parts)
+    else:
+        return False
+    return bool(_USER_WRAPPER_RE.sub("", text).strip())
+
+
 @dataclass
 class SessionMeta:
     """Per-session metadata gathered in a single pass over its JSONL."""
@@ -79,21 +124,31 @@ class SessionMeta:
     cwd: str | None
     first_ts: str | None
     last_ts: str | None
-    user_turns: int
+    human_prompts: int
+    assistant_turns: int
 
     @property
     def title(self) -> str:
         return self.custom_title or self.ai_title or "(untitled)"
 
+    @property
+    def is_empty(self) -> bool:
+        """True when neither side produced anything (e.g. /clear-ghost session)."""
+        return self.human_prompts == 0 and self.assistant_turns == 0
+
 
 def read_session_meta(jsonl: Path) -> SessionMeta:
-    """One-pass scan: titles, cwd, first/last ts, user turn count.
+    """One-pass scan: titles, cwd, first/last ts, human-prompt + assistant counts.
 
+    'human_prompts' = type=='user' entries whose content has non-wrapper prose
+    (excludes sidechain subagent turns and pure-plumbing entries like /clear).
+    'assistant_turns' = type=='assistant' entries (excludes sidechains).
     All fields tolerate missing/unparseable input — a malformed session yields
     a SessionMeta with None/0 fields rather than raising.
     """
     custom = ai = cwd = first_ts = last_ts = None
-    user_turns = 0
+    human_prompts = 0
+    assistant_turns = 0
     try:
         with jsonl.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -112,10 +167,12 @@ def read_session_meta(jsonl: Path) -> SessionMeta:
                     at = obj.get("aiTitle")
                     if isinstance(at, str):
                         ai = at
-                elif t == "user":
-                    # Skip sidechain (subagent) entries — they're not user prompts.
-                    if not obj.get("isSidechain"):
-                        user_turns += 1
+                elif t == "user" and not obj.get("isSidechain"):
+                    msg = obj.get("message")
+                    if isinstance(msg, dict) and has_human_prose(msg.get("content")):
+                        human_prompts += 1
+                elif t == "assistant" and not obj.get("isSidechain"):
+                    assistant_turns += 1
                 if cwd is None:
                     c = obj.get("cwd")
                     if isinstance(c, str):
@@ -129,7 +186,8 @@ def read_session_meta(jsonl: Path) -> SessionMeta:
         pass
     return SessionMeta(
         jsonl=jsonl, custom_title=custom, ai_title=ai, cwd=cwd,
-        first_ts=first_ts, last_ts=last_ts, user_turns=user_turns,
+        first_ts=first_ts, last_ts=last_ts,
+        human_prompts=human_prompts, assistant_turns=assistant_turns,
     )
 
 

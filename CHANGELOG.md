@@ -1,6 +1,7 @@
 ## Unreleased
 
-* [feature] `claude-session-list` — git-log-style listing of recent Claude Code sessions. Defaults to cwd's project; `-g/--global` spans all. `--oneline` for one-per-row, `-q/--quiet` for UUIDs only (pipe-friendly for `claude --resume`). Shows timestamp range, age, user-prompt turn count, and title.
+* [feature] `claude-session-list` — git-log-style listing of recent Claude Code sessions. Defaults to cwd's project; `-g/--global` spans all. `--oneline` for one-per-row, `-q/--quiet` for UUIDs only (pipe-friendly for `claude --resume`). Shows timestamp range, age, prompt/reply counts (`N prompts / M replies` in block view, `Np/Mr` in oneline), and title.
+* [feature] `claude-session-list` filters truly-empty sessions (e.g. `/clear`-ghost sessions where `0p/0r`) by default; `-a/--all` shows everything, `--min-prompts N` is a stricter filter. Hidden count reported to stderr (suppressed in `-q` so pipes stay clean). The prompt counter strips wrapper tags (`<command-name>`, `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, …) so entries that are pure plumbing don't count as human prompts.
 * [refactor] Session enumeration helpers (`iter_sessions`, `list_sessions`, `resolve_session`, project-dir lookup) moved from `claude-session-report` into a new shared `claudeutils` module. `bd-complete sessions` now imports the helper directly instead of shelling out.
 * [breaking] Removed `claude-session-report --list-sessions` — its only consumer was `bd-complete`. `claude-session-list -g -q` is the user-facing replacement; `bd-complete sessions` is unaffected.
 

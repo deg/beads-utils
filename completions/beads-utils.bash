@@ -75,11 +75,11 @@ _beads_claude_session_list() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
   case $prev in
-    -n|--limit) return ;;
+    -n|--limit|--min-prompts) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-g --global -n --limit --oneline -q --quiet --no-pager \
-      --version -h --help"
+    __beads_flags "-g --global -n --limit -a --all --min-prompts \
+      --oneline -q --quiet --no-pager --version -h --help"
   fi
   # no positional args.
 }

@@ -91,6 +91,8 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-g --global)'{-g,--global}'[list sessions across all projects]' \
       '(-n --limit)'{-n,--limit}'[max sessions to show (0 = unlimited)]:count' \
+      '(-a --all --min-prompts)'{-a,--all}'[show every session, including empty ones]' \
+      '(-a --all --min-prompts)--min-prompts[only sessions with >= N human prompts]:count' \
       '(--oneline -q --quiet)--oneline[single-row output]' \
       '(--oneline -q --quiet)'{-q,--quiet}'[print only session UUIDs]' \
       '--no-pager[write directly to stdout; skip the pager]'
