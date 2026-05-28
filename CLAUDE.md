@@ -126,10 +126,15 @@ Current scripts:
   ghosts, aborted sessions) are hidden; a stderr footer reports the
   hidden count. `-a/--all` shows everything. `--min-prompts N`
   (mutex with `-a`) is a stricter filter — only sessions with ≥ N
-  human prompts. `--oneline` collapses each session to one row;
-  `-q/--quiet` prints UUIDs only (pipe-friendly, suppresses the
-  filter-hint footer). `-n/--limit` caps the count (0 = unlimited).
-  Pages via `bdutils.paged_output()`; `--no-pager` disables.
+  human prompts. `--oneline` collapses each session to one row and
+  prints an `ID / STARTED / AGE / COUNTS / PROJECT / TITLE` header
+  (STARTED is the session's first timestamp; AGE is time since last
+  activity — independent dimensions). The COUNTS and PROJECT columns
+  auto-size to the actual data so the TITLE column doesn't jitter
+  row-to-row. `-q/--quiet` prints UUIDs only (pipe-friendly,
+  suppresses the header and the filter-hint footer). `-n/--limit`
+  caps the count (0 = unlimited). Pages via `bdutils.paged_output()`;
+  `--no-pager` disables.
 - `bd-complete` — Emits shell-completion candidates as
   `value<TAB>description` lines; the single front door behind the
   zsh/bash completion in `completions/` (so candidate logic is never

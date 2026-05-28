@@ -61,9 +61,15 @@ def find_project_dir(cwd: Path) -> Path | None:
     return None
 
 
-def project_label(jsonl: Path) -> str:
-    """Short label for a session's project — prefer the recorded cwd's basename."""
-    cwd = first_cwd(jsonl)
+def project_label(jsonl: Path, cwd: str | None = None) -> str:
+    """Short label for a session's project — prefer the recorded cwd's basename.
+
+    Pass `cwd` (e.g. from a SessionMeta) to skip the file re-read; falls back
+    to first_cwd(jsonl) when not provided. Returns the project-dir name if
+    neither yields a cwd.
+    """
+    if cwd is None:
+        cwd = first_cwd(jsonl)
     if cwd:
         base = os.path.basename(cwd.rstrip("/")) or cwd
         return base

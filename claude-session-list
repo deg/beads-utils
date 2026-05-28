@@ -87,31 +87,76 @@ def render_range(meta: SessionMeta, now: datetime) -> str:
     return f"{start_str} → {end_str}  {tail}"
 
 
-def render_oneline(meta: SessionMeta, now: datetime, show_project: bool) -> str:
+# Fixed column widths for --oneline (data + matching headers).
+ONELINE_ID_W = 8          # uuid prefix is always 8 hex chars
+ONELINE_STARTED_W = 16    # "YYYY-MM-DD HH:MM"
+ONELINE_AGE_W = 8         # "{:>4} ago" → always 8
+
+
+def _oneline_row(meta: SessionMeta, now: datetime, show_project: bool,
+                 counts_w: int, project_w: int) -> str:
     short = meta.jsonl.stem.split("-")[0]
+    first = _parse_iso(meta.first_ts)
     last = _parse_iso(meta.last_ts)
-    if last is None:
-        last_local = datetime.fromtimestamp(meta.jsonl.stat().st_mtime).astimezone()
+    # STARTED column shows session start (first_ts). Falls back to last_ts
+    # then file mtime if the jsonl has no timestamped entries.
+    if first is not None:
+        started_local = first.astimezone()
+    elif last is not None:
+        started_local = last.astimezone()
     else:
-        last_local = last.astimezone()
-    ago = _humanize_delta((now - last_local.astimezone(timezone.utc)).total_seconds())
+        started_local = datetime.fromtimestamp(meta.jsonl.stat().st_mtime).astimezone()
+    # AGE is independent — always "time since last activity", i.e. freshness.
+    age_ref = (last or first).astimezone() if (last or first) else started_local
+    ago = _humanize_delta((now - age_ref.astimezone(timezone.utc)).total_seconds())
     counts = f"{meta.human_prompts}p/{meta.assistant_turns}r"
     bits = [
-        short,
-        last_local.strftime("%Y-%m-%d %H:%M"),
-        f"{ago:>4} ago",
-        f"{counts:>8}",
+        f"{short:<{ONELINE_ID_W}}",
+        f"{started_local.strftime('%Y-%m-%d %H:%M'):<{ONELINE_STARTED_W}}",
+        f"{ago + ' ago':<{ONELINE_AGE_W}}",
+        f"{counts:<{counts_w}}",
     ]
     if show_project:
-        bits.append(project_label(meta.jsonl))
+        bits.append(f"{project_label(meta.jsonl, meta.cwd):<{project_w}}")
     bits.append(meta.title)
     return "  ".join(bits)
+
+
+def _oneline_header(show_project: bool, counts_w: int, project_w: int) -> str:
+    bits = [
+        f"{'ID':<{ONELINE_ID_W}}",
+        f"{'STARTED':<{ONELINE_STARTED_W}}",
+        f"{'AGE':<{ONELINE_AGE_W}}",
+        f"{'COUNTS':<{counts_w}}",
+    ]
+    if show_project:
+        bits.append(f"{'PROJECT':<{project_w}}")
+    bits.append("TITLE")
+    return "  ".join(bits)
+
+
+def render_oneline_block(sessions: list[SessionMeta], now: datetime,
+                         show_project: bool) -> list[str]:
+    """Header + one row per session, with columns sized to the data."""
+    counts_strs = [f"{m.human_prompts}p/{m.assistant_turns}r" for m in sessions]
+    counts_w = max(len("COUNTS"), max((len(s) for s in counts_strs), default=0))
+    project_w = 0
+    if show_project:
+        project_w = max(
+            len("PROJECT"),
+            max((len(project_label(m.jsonl, m.cwd)) for m in sessions), default=0),
+        )
+    lines = [_oneline_header(show_project, counts_w, project_w)]
+    lines.extend(
+        _oneline_row(m, now, show_project, counts_w, project_w) for m in sessions
+    )
+    return lines
 
 
 def render_block(meta: SessionMeta, now: datetime, show_project: bool) -> list[str]:
     lines = [meta.jsonl.stem]
     if show_project:
-        lines.append(f"  {project_label(meta.jsonl)}")
+        lines.append(f"  {project_label(meta.jsonl, meta.cwd)}")
     lines.append(f"  {render_range(meta, now)}")
     p_word = "prompt" if meta.human_prompts == 1 else "prompts"
     r_word = "reply" if meta.assistant_turns == 1 else "replies"
@@ -231,8 +276,8 @@ def main() -> int:
             for meta in sessions:
                 print(meta.jsonl.stem, file=out)
         elif args.oneline:
-            for meta in sessions:
-                print(render_oneline(meta, now, show_project), file=out)
+            for line in render_oneline_block(sessions, now, show_project):
+                print(line, file=out)
         else:
             for i, meta in enumerate(sessions):
                 if i:
