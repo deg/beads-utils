@@ -20,8 +20,18 @@ EVENT_GLYPH = {"create": "+", "start": "▶", "close": "✓"}
 EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
 
 
-def run_bd_list(project_path: Path) -> str:
-    cmd = ["bd", "list", "--all", "--limit", "0", "--json"]
+def run_bd_list(project_path: Path, status: str | None, open_only: bool) -> str:
+    # Three scopes, mutually exclusive by construction:
+    #   --status=LIST -> delegate the filter (and its vocabulary) to bd
+    #   --open        -> plain 'bd list', whose default already means "not closed"
+    #   neither       -> --all, the backward-compatible everything-incl-closed view
+    if status:
+        scope = [f"--status={status}"]
+    elif open_only:
+        scope = []
+    else:
+        scope = ["--all"]
+    cmd = ["bd", "list", *scope, "--limit", "0", "--json"]
     try:
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=True,
@@ -97,9 +107,18 @@ def main() -> int:
             "  ▶ start    issue was claimed / moved to in_progress\n"
             "  ✓ close    issue was closed\n"
             "\n"
+            "Filtering has two orthogonal axes:\n"
+            "  --only=KINDS      which event kinds to render (above)\n"
+            "  --status=LIST     which beads to include, by *current* status\n"
+            "                    (passed through to 'bd list --status'; comma-\n"
+            "                    separated). --open is shorthand for \"not closed\".\n"
+            "\n"
             "Examples:\n"
-            "  bd-log                         All events in cwd (paged)\n"
+            "  bd-log                         All events, incl. closed (paged)\n"
             "  bd-log -n 10                   Last 10 events\n"
+            "  bd-log --open                  Events for beads that are still open\n"
+            "  bd-log --status=in_progress    Only currently in-progress beads\n"
+            "  bd-log --only=start --open     What's actively being worked\n"
             "  bd-log --only=close            Closures only (previous default)\n"
             "  bd-log --only=create,close     Narrow to two kinds\n"
             "  bd-log --since 2026-04-01      Events on/after date\n"
@@ -123,6 +142,17 @@ def main() -> int:
         help="Comma-separated event kinds to include "
              f"(known: {', '.join(EVENT_KINDS)}). Default: all.",
     )
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--status", default=None, metavar="LIST",
+        help="Include only beads whose current status is in LIST "
+             "(comma-separated; passed through to 'bd list --status'). "
+             "Default: all statuses, incl. closed.",
+    )
+    scope.add_argument(
+        "--open", action="store_true",
+        help="Shorthand: include only beads that are still open (not closed).",
+    )
     parser.add_argument(
         "--since", default=None, metavar="DATE",
         help="Show only events on/after DATE (YYYY-MM-DD or RFC3339, UTC). "
@@ -142,7 +172,7 @@ def main() -> int:
 
     project_path = resolve_project_path(args.project_path)
 
-    raw = run_bd_list(project_path)
+    raw = run_bd_list(project_path, args.status, args.open)
     try:
         issues = json.loads(raw) if raw.strip() else []
     except json.JSONDecodeError as exc:

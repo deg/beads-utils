@@ -105,6 +105,8 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-n --limit)'{-n,--limit}'[max events to show (0 = unlimited)]:count' \
       '--only[comma-separated event kinds to include]:kinds' \
+      '(--status --open)--status[include only beads with these current statuses]:statuses:(open in_progress blocked deferred closed pinned hooked)' \
+      '(--status --open)--open[shorthand: only beads still open (not closed)]' \
       '--since[show only events on/after DATE]:date' \
       '--no-pager[write directly to stdout; skip the pager]' \
       '1:project:_files -/'

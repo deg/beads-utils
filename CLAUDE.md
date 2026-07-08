@@ -53,11 +53,20 @@ Current scripts:
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
-- `bd-log` — Shows recently closed beads in a git-log-style view. Wraps
-  `bd list --status=closed --sort=closed --json` (newest first). Supports
-  `-n/--limit` (default 0 = unlimited, like `git log`) and `--since DATE`
-  (passed through as `--closed-after`). Pages through `bdutils.paged_output()`
-  (`$PAGER` or `less -FRX` when stdout is a tty). `--no-pager` disables.
+- `bd-log` — Shows recent beads lifecycle events (create/start/close) in a
+  git-log-style timeline, newest first. Wraps `bd list ... --json` and
+  synthesizes one event per non-empty `created_at`/`started_at`/`closed_at`
+  timestamp on each issue. Two orthogonal filter axes: `--only=KINDS`
+  (comma-separated event kinds — `create,start,close`; default all) selects
+  which *events* to render, and `--status=LIST` (comma-separated statuses,
+  passed straight through to `bd list --status`; bd owns the vocabulary and
+  validation) scopes to beads by *current* status. `--open` is shorthand for
+  "not closed" (mutually exclusive with `--status`); with neither flag the
+  default is `bd list --all` (everything, incl. closed). Also `-n/--limit`
+  (default 0 = unlimited, like `git log`) and `--since DATE`
+  (timestamp filter applied to every event kind). Pages through
+  `bdutils.paged_output()` (`$PAGER` or `less -FRX` when stdout is a tty).
+  `--no-pager` disables.
 - `claude-session-find` — Finds the UUID of an old Claude Code session by
   grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
   (mangling = `/` and `.` → `-`). Defaults to the current project and
@@ -199,8 +208,10 @@ project (this repo itself is one):
 ./bd-export-csv .                             # Export this repo to CSV in cwd
 ./bd-export-csv . --sort=-priority,created_at
 ./bd-dolt-check .                             # Check Dolt sync state
-./bd-log                                       # Last 10 recently closed beads
-./bd-log -n 25 --since 2026-04-01              # 25 closures on/after date
+./bd-log                                       # All lifecycle events (incl. closed)
+./bd-log --open                                # Events for beads still open
+./bd-log --only=start --status=in_progress     # What's actively being worked
+./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
 ./claude-session-find 'bd-log'                 # Sessions in this project matching
 ./claude-session-find -g 'paged_output'        # All projects
 ./claude-session-find -a 'dolt push'           # Include assistant/tool content

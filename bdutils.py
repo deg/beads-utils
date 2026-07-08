@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def add_version_arg(parser) -> None:

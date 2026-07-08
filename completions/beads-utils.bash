@@ -89,10 +89,13 @@ _beads_bd_log() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
   case $prev in
+    --status)
+      COMPREPLY=( $(compgen -W "open in_progress blocked deferred closed pinned hooked" -- "$cur") )
+      return ;;
     -n|--limit|--only|--since) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-n --limit --only --since --no-pager --version -h --help"
+    __beads_flags "-n --limit --only --status --open --since --no-pager --version -h --help"
   else
     __beads_dirs
   fi
