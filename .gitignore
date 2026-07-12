@@ -4,9 +4,17 @@
 *.db
 .beads-credential-key
 
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.pyc
 
 # Claude Code session artifacts
 .claude/scheduled_tasks.lock
+
+# Emacs
+*~
+\#*\#
+.\#*
