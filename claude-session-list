@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bdutils import add_version_arg, error, format_ts, paged_output
+from bdutils import add_version_arg, error, paged_output
 from claudeutils import (
     CLAUDE_PROJECTS,
     SessionMeta,
