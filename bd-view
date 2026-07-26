@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import sys
+import textwrap
 
 from bdutils import add_version_arg, error, format_priority, format_ts, paged_output, warn
 
@@ -18,6 +19,7 @@ try:
     from markdown_it import MarkdownIt
     from rich.console import Console
     from rich.markdown import Heading, Markdown as _RichMarkdown
+    from rich.table import Table
     from rich.text import Text
     from rich.theme import Theme
     HAVE_RICH = True
@@ -98,6 +100,127 @@ STATUS_STYLE = {
     "pinned": "magenta",
     "hooked": "magenta",
 }
+
+# Dependency edges come back from `bd dep list` tagged with a dependency_type
+# ('blocks', 'parent-child', and eight rarer kinds). The heading depends on both
+# the type and which way we asked: '--direction=down' lists what this bead points
+# at, '--direction=up' what points back. Types not in this table still render,
+# under their raw name (see dep_heading) -- nothing is silently dropped.
+DEP_HEADINGS = {
+    ("down", "parent-child"): "Parent:",
+    ("up", "parent-child"): "Children:",
+    ("down", "blocks"): "Depends on:",
+    ("up", "blocks"): "Blocks:",
+    ("down", "tracks"): "Tracks:",
+    ("up", "tracks"): "Tracked by:",
+    ("down", "discovered-from"): "Discovered from:",
+    ("up", "discovered-from"): "Discovered:",
+    ("down", "caused-by"): "Caused by:",
+    ("up", "caused-by"): "Caused:",
+    ("down", "validates"): "Validates:",
+    ("up", "validates"): "Validated by:",
+    ("down", "supersedes"): "Supersedes:",
+    ("up", "supersedes"): "Superseded by:",
+    ("down", "related"): "Related:",
+    ("up", "related"): "Related to:",
+    ("down", "relates-to"): "Relates to:",
+    ("up", "relates-to"): "Related from:",
+    ("down", "until"): "Until:",
+    ("up", "until"): "Until (inbound):",
+}
+
+# Order the dependency groups are printed in; anything else follows, sorted.
+DEP_TYPE_ORDER = ["parent-child", "blocks"]
+
+# Every top-level key of `bd show --json` that some renderer above accounts for.
+# Whatever is left over lands in the trailing 'Other Fields' section, so a bead
+# field bd grows later shows up unprompted instead of vanishing.
+RENDERED_KEYS = frozenset({
+    "id", "title", "status", "priority", "issue_type",
+    "owner", "assignee", "created_by",
+    "created_at", "started_at", "updated_at", "closed_at", "defer_until",
+    "close_reason", "external_ref", "spec_id", "labels", "metadata",
+    "description", "design", "notes", "acceptance_criteria",
+    "parent", "dependencies",
+})
+
+# Counts that duplicate the rendered dependency/comment lists.
+IGNORED_KEYS = frozenset({"dependency_count", "dependent_count", "comment_count"})
+
+
+def dep_heading(direction: str, dep_type: str) -> str:
+    """Heading for one dependency group; falls back to the raw type name."""
+    known = DEP_HEADINGS.get((direction, dep_type))
+    if known:
+        return known
+    suffix = "" if direction == "down" else " (inbound)"
+    return f"{dep_type or 'related'}{suffix}:"
+
+
+def group_deps(deps: list[dict], dependents: list[dict],
+               ) -> list[tuple[str, str, list[dict]]]:
+    """Bucket both directions' edges by dependency_type.
+
+    Returns (direction, dep_type, items) groups ordered the way `bd show`
+    presents them -- parent, children, depends-on, blocks -- with any other
+    type following alphabetically. Ordering is by type first (not direction),
+    so the two halves of a relationship stay adjacent."""
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for direction, edges in (("down", deps), ("up", dependents)):
+        for d in edges:
+            key = (direction, d.get("dependency_type") or "")
+            groups.setdefault(key, []).append(d)
+
+    def sort_key(key: tuple[str, str]) -> tuple[int, str, int]:
+        direction, dep_type = key
+        rank = (DEP_TYPE_ORDER.index(dep_type) if dep_type in DEP_TYPE_ORDER
+                else len(DEP_TYPE_ORDER))
+        # 'down' first within a type: Parent before Children, Depends on before
+        # Blocks. The type name only breaks ties among the unranked types.
+        return (rank, "" if rank < len(DEP_TYPE_ORDER) else dep_type,
+                0 if direction == "down" else 1)
+
+    return [(d, t, groups[(d, t)]) for d, t in sorted(groups, key=sort_key)]
+
+
+def has_parent_edge(deps: list[dict]) -> bool:
+    return any(d.get("dependency_type") == "parent-child" for d in deps)
+
+
+def flatten_pairs(mapping: dict) -> list[tuple[str, str]]:
+    """A flat dict (the bead's 'metadata') as ordered label/value lines."""
+    return [(str(k), v if isinstance(v, str) else json.dumps(v))
+            for k, v in mapping.items()]
+
+
+def flatten_extra(key: str, value: object) -> list[tuple[str, str]]:
+    """Render a leftover JSON field as label/value line(s).
+
+    Dicts expand one level ('metadata.branch'); everything else is stringified,
+    with non-scalars falling back to compact JSON."""
+    if isinstance(value, dict):
+        return [(f"{key}.{k}", v if isinstance(v, str) else json.dumps(v))
+                for k, v in value.items()]
+    if isinstance(value, list):
+        if all(isinstance(v, (str, int, float)) for v in value):
+            return [(key, ", ".join(str(v) for v in value))]
+        return [(key, json.dumps(value))]
+    if isinstance(value, str):
+        return [(key, value)]
+    return [(key, json.dumps(value))]
+
+
+def extra_fields(issue: dict) -> list[tuple[str, str]]:
+    """Fields present in the bead JSON that no other renderer claims."""
+    out: list[tuple[str, str]] = []
+    for key in sorted(issue):
+        if key in RENDERED_KEYS or key in IGNORED_KEYS:
+            continue
+        value = issue[key]
+        if value in (None, "", [], {}):
+            continue
+        out.extend(flatten_extra(key, value))
+    return out
 
 
 def run_bd_json(args: list[str]) -> object:
@@ -191,12 +314,25 @@ def render_header(console: Console, issue: dict) -> None:
     for label, key in (("created", "created_at"),
                        ("started", "started_at"),
                        ("updated", "updated_at"),
-                       ("closed", "closed_at")):
+                       ("closed", "closed_at"),
+                       ("deferred", "defer_until")):
         ts = issue.get(key)
         if ts:
             date_bits.append(f"{label}: {format_ts(ts)}")
     if date_bits:
         console.print(Text("  ·  ".join(date_bits), style="dim"))
+
+    labels = issue.get("labels") or []
+    if labels:
+        console.print(Text(f"labels: {', '.join(labels)}", style="dim"))
+
+    ref_bits = []
+    if issue.get("external_ref"):
+        ref_bits.append(f"external: {issue['external_ref']}")
+    if issue.get("spec_id"):
+        ref_bits.append(f"spec: {issue['spec_id']}")
+    if ref_bits:
+        console.print(Text("  ·  ".join(ref_bits), style="dim"))
 
     close_reason = issue.get("close_reason")
     if close_reason:
@@ -214,8 +350,26 @@ def render_section(console: Console, title: str, body: str) -> None:
     console.print(Markdown(with_hard_breaks(body)))
 
 
-def render_deps(console: Console, deps: list[dict], dependents: list[dict]) -> None:
-    if not deps and not dependents:
+def render_pairs(console: Console, title: str, pairs: list[tuple[str, str]]) -> None:
+    """A section of dim 'key: value' lines (metadata, leftover fields).
+
+    Laid out as a borderless grid rather than hand-padded text so that a long
+    value (metadata's 'defer_reason' is routinely a paragraph) wraps under its
+    own column instead of running back to the left margin."""
+    if not pairs:
+        return
+    section_header(console, title)
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(style="dim", no_wrap=True)
+    grid.add_column(overflow="fold")
+    for key, value in pairs:
+        grid.add_row(f"  {key}:", value)
+    console.print(grid)
+
+
+def render_deps(console: Console, deps: list[dict], dependents: list[dict],
+                parent_id: str = "") -> None:
+    if not deps and not dependents and not parent_id:
         return
     section_header(console, "Dependencies")
 
@@ -241,8 +395,17 @@ def render_deps(console: Console, deps: list[dict], dependents: list[dict]) -> N
                 line.append(f"  ({extra})", style="dim")
             console.print(line)
 
-    render_list("Depends on:", deps)
-    render_list("Blocks:", dependents)
+    # The bead's own 'parent' field is the source of truth; if no parent-child
+    # edge came back from `bd dep list`, still show the bare id (in the same
+    # leading position the edge-derived 'Parent:' group would occupy).
+    if parent_id and not has_parent_edge(deps):
+        console.print(Text("Parent:", style="bold"))
+        line = Text("  · ")
+        line.append(parent_id, style="bold")
+        console.print(line)
+
+    for direction, dep_type, items in group_deps(deps, dependents):
+        render_list(dep_heading(direction, dep_type), items)
 
 
 def render_comments(console: Console, comments: list[dict]) -> None:
@@ -272,8 +435,11 @@ def render_with_rich(out, issue: dict, deps: list[dict],
     render_section(console, "Design", issue.get("design") or "")
     render_section(console, "Notes", issue.get("notes") or "")
     render_section(console, "Acceptance Criteria", issue.get("acceptance_criteria") or "")
-    render_deps(console, deps, dependents)
+    render_pairs(console, "Metadata",
+                 flatten_pairs(issue.get("metadata") or {}))
+    render_deps(console, deps, dependents, issue.get("parent") or "")
     render_comments(console, comments)
+    render_pairs(console, "Other Fields", extra_fields(issue))
 
 
 def render_plain(out, issue: dict, deps: list[dict],
@@ -304,15 +470,32 @@ def render_plain(out, issue: dict, deps: list[dict],
     for label, key in (("created", "created_at"),
                        ("started", "started_at"),
                        ("updated", "updated_at"),
-                       ("closed", "closed_at")):
+                       ("closed", "closed_at"),
+                       ("deferred", "defer_until")):
         ts = issue.get(key)
         if ts:
             date_bits.append(f"{label}: {format_ts(ts)}")
     if date_bits:
         w("  ".join(date_bits))
 
+    labels = issue.get("labels") or []
+    if labels:
+        w(f"labels: {', '.join(labels)}")
+
+    ref_bits = []
+    if issue.get("external_ref"):
+        ref_bits.append(f"external: {issue['external_ref']}")
+    if issue.get("spec_id"):
+        ref_bits.append(f"spec: {issue['spec_id']}")
+    if ref_bits:
+        w("  ".join(ref_bits))
+
     if issue.get("close_reason"):
         w(f"close reason: {issue['close_reason']}")
+
+    created_by = issue.get("created_by")
+    if created_by and created_by not in (owner, assignee):
+        w(f"created by: {created_by}")
 
     def section(name: str, body: str) -> None:
         if body and body.strip():
@@ -320,21 +503,38 @@ def render_plain(out, issue: dict, deps: list[dict],
             w(f"== {name} ==")
             w(body)
 
+    def pair_section(name: str, pairs: list[tuple[str, str]]) -> None:
+        if not pairs:
+            return
+        w()
+        w(f"== {name} ==")
+        label_width = max(len(k) for k, _ in pairs) + 4  # '  ' + ':' + ' '
+        term_width = shutil.get_terminal_size((100, 24)).columns
+        wrap_width = max(term_width - label_width, 20)
+        for key, value in pairs:
+            label = f"  {key}:".ljust(label_width)
+            # Continuation lines hang under the value column, not column 0.
+            chunks = textwrap.wrap(value, wrap_width) or [""]
+            w(f"{label}{chunks[0]}")
+            for chunk in chunks[1:]:
+                w(f"{' ' * label_width}{chunk}")
+
     section("DESCRIPTION", issue.get("description") or "")
     section("DESIGN", issue.get("design") or "")
     section("NOTES", issue.get("notes") or "")
     section("ACCEPTANCE CRITERIA", issue.get("acceptance_criteria") or "")
+    pair_section("METADATA", flatten_pairs(issue.get("metadata") or {}))
 
-    if deps or dependents:
+    parent_id = issue.get("parent") or ""
+    if deps or dependents or parent_id:
         w()
         w("== DEPENDENCIES ==")
-        if deps:
-            w("Depends on:")
-            for d in deps:
-                w(f"  {d.get('id', '?')}  {d.get('status', '')}  {d.get('title', '')}")
-        if dependents:
-            w("Blocks:")
-            for d in dependents:
+        if parent_id and not has_parent_edge(deps):
+            w("Parent:")
+            w(f"  {parent_id}")
+        for direction, dep_type, items in group_deps(deps, dependents):
+            w(dep_heading(direction, dep_type))
+            for d in items:
                 w(f"  {d.get('id', '?')}  {d.get('status', '')}  {d.get('title', '')}")
 
     if comments:
@@ -348,6 +548,8 @@ def render_plain(out, issue: dict, deps: list[dict],
             w(f"-- {author}  {ts} --")
             w(c.get("text") or "")
 
+    pair_section("OTHER FIELDS", extra_fields(issue))
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -355,9 +557,12 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Renders a single bead's full content (description, design, notes,\n"
-            "acceptance criteria, dependencies, comments) with proper Markdown\n"
-            "formatting via the 'rich' library. Output is paged through $PAGER\n"
-            "(or 'less -FRX') when stdout is a tty.\n"
+            "acceptance criteria, metadata, dependencies, comments) with proper\n"
+            "Markdown formatting via the 'rich' library. Dependencies are grouped\n"
+            "by relationship (parent, children, depends-on, blocks, ...), and any\n"
+            "field this script doesn't render explicitly is listed under 'Other\n"
+            "Fields' rather than dropped. Output is paged through $PAGER (or\n"
+            "'less -FRX') when stdout is a tty.\n"
             "\n"
             "Examples:\n"
             "  bd-view beads-utils-s4s\n"

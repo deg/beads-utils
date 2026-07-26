@@ -40,9 +40,10 @@ When an issue carries a long description — design notes, acceptance
 criteria, nested lists — `bd show` prints the raw Markdown as one long
 wall of text. `bd-view beads-utils-s4s` (that's an issue id) renders it
 instead: real headings, real code blocks, dependencies and comments
-included, paged like `git log`. (It dates from when `bd show` skipped
-some fields entirely; `bd` has since caught up, but rendered Markdown
-is still much easier on the eyes than raw.)
+included, paged like `git log`. Field coverage is a superset of `bd
+show`'s — labels, external refs, the metadata dict, parent and children
+each shown as themselves — and anything `bd` grows later lands in a
+trailing `Other Fields` section rather than silently disappearing.
 
 Agentic coding changes what an issue tracker has to answer. A Claude
 session can create, claim, and close half a dozen beads while your
