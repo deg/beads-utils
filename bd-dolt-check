@@ -9,44 +9,25 @@ remote and reports whether they're in sync.
 from __future__ import annotations
 
 import argparse
-import functools
-import json
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-from bdutils import add_version_arg, error, resolve_project_path
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def strip_ansi(s: str) -> str:
-    return ANSI_RE.sub("", s)
-
-
-def run(cmd: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
-
-
-def read_metadata(beads_dir: Path) -> tuple[str, str]:
-    path = beads_dir / "metadata.json"
-    if not path.is_file():
-        error(f"no metadata.json in {beads_dir}")
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        error(f"could not read {path}: {exc}")
-    db_name = data.get("dolt_database", "unknown")
-    dolt_mode = data.get("dolt_mode", "unknown")
-    return db_name, dolt_mode
-
-
-def get_remote_url(project_path: Path) -> str:
-    result = run(["git", "remote", "get-url", "origin"], cwd=project_path)
-    url = result.stdout.strip()
-    return url if url else "(no remote)"
+from bdutils import (
+    add_version_arg,
+    dolt_count_range,
+    dolt_fetch,
+    dolt_rev,
+    get_git_remote_url,
+    get_head_branch,
+    have_dolt,
+    locate_dolt_db,
+    read_dolt_remotes,
+    read_metadata,
+    resolve_project_path,
+    run,
+    strip_ansi,
+)
 
 
 def get_remote_dolt_ref(project_path: Path) -> str | None:
@@ -55,35 +36,6 @@ def get_remote_dolt_ref(project_path: Path) -> str | None:
     if not line:
         return None
     return line.split()[0]
-
-
-def read_repo_state(dolt_db_dir: Path) -> dict:
-    path = dolt_db_dir / ".dolt" / "repo_state.json"
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def get_head_branch(dolt_db_dir: Path) -> str:
-    """Current Dolt branch name from repo_state.json (default 'main')."""
-    head = read_repo_state(dolt_db_dir).get("head", "")
-    prefix = "refs/heads/"
-    return head[len(prefix):] if head.startswith(prefix) else "main"
-
-
-def locate_dolt_db(beads_dir: Path, db_name: str) -> Path | None:
-    for candidate in (beads_dir / "embeddeddolt" / db_name, beads_dir / "dolt" / db_name):
-        if (candidate / ".dolt").is_dir():
-            return candidate
-    return None
-
-
-def read_dolt_remotes(dolt_db_dir: Path) -> dict[str, str]:
-    remotes = read_repo_state(dolt_db_dir).get("remotes", {}) or {}
-    return {name: r.get("url", "?") for name, r in remotes.items()}
 
 
 def derive_dolt_remote_url(git_url: str) -> str | None:
@@ -105,51 +57,13 @@ def derive_dolt_remote_url(git_url: str) -> str | None:
     return None
 
 
-def dolt_rev(dolt_db_dir: Path, ref: str) -> str | None:
-    """Short commit hash at `ref`, or None if dolt is missing or `ref` doesn't resolve."""
-    if not _have_dolt():
-        return None
-    result = run(["dolt", "log", "--oneline", "-n", "1", ref], cwd=dolt_db_dir)
-    if result.returncode != 0:
-        return None
-    lines = strip_ansi(result.stdout).strip().splitlines()
-    return lines[0].split()[0] if lines and lines[0] else None
-
-
-def dolt_count_range(dolt_db_dir: Path, rev_range: str) -> int | None:
-    """Number of commits in a Dolt `A..B` range; None if dolt is missing or it errors."""
-    if not _have_dolt():
-        return None
-    result = run(["dolt", "log", "--oneline", rev_range], cwd=dolt_db_dir)
-    if result.returncode != 0:
-        return None
-    return sum(1 for ln in result.stdout.splitlines() if ln.strip())
-
-
-def dolt_fetch(dolt_db_dir: Path, remote: str) -> bool:
-    """Best-effort `dolt fetch <remote>` to refresh remote-tracking refs.
-
-    Returns True on success. Used so a remote that moved ahead (e.g. pushed
-    from another machine) is reflected in remotes/<remote>/<branch> before we
-    compare against it.
-    """
-    if not _have_dolt():
-        return False
-    return run(["dolt", "fetch", remote], cwd=dolt_db_dir).returncode == 0
-
-
 def get_recent_dolt_log(dolt_db_dir: Path, n: int = 5) -> list[str]:
-    if not _have_dolt():
+    if not have_dolt():
         return []
     result = run(["dolt", "log", "--oneline", "-n", str(n)], cwd=dolt_db_dir)
     if result.returncode != 0:
         return []
     return [strip_ansi(line) for line in result.stdout.splitlines() if line.strip()]
-
-
-@functools.cache
-def _have_dolt() -> bool:
-    return shutil.which("dolt") is not None
 
 
 def main() -> int:
@@ -173,7 +87,7 @@ def main() -> int:
     beads_dir = project_path / ".beads"
 
     db_name, dolt_mode = read_metadata(beads_dir)
-    remote_url = get_remote_url(project_path)
+    remote_url = get_git_remote_url(project_path)
 
     print(f"Repository:  {project_path}")
     print(f"Remote:      {remote_url}")
@@ -231,7 +145,7 @@ def main() -> int:
         print(f"           {beads_dir / 'dolt' / db_name}")
 
     print()
-    if dolt_db_dir is None or not _have_dolt():
+    if dolt_db_dir is None or not have_dolt():
         print("Status:  remote has Dolt data — sync delta not verifiable")
         print("         (run from the project dir with the dolt CLI installed for a full check)")
         return 0

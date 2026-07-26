@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Show what a `bd dolt push` would actually send to the remote.
+
+`bd-dolt-check` answers "am I in sync?" — this answers "in sync with what,
+exactly?" It diffs the issue data between two Dolt revisions (by default the
+remote-tracking ref and your local branch) and reports added, removed, and
+field-level-changed rows, so you can review a push before making it.
+
+Read-only: it never writes, commits, or pushes.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from bdutils import (
+    add_version_arg,
+    dolt_count_range,
+    dolt_fetch,
+    dolt_log_range,
+    dolt_rev,
+    dolt_sql_json,
+    dolt_table_columns,
+    error,
+    get_git_remote_url,
+    get_head_branch,
+    have_dolt,
+    locate_dolt_db,
+    paged_output,
+    read_dolt_remotes,
+    read_metadata,
+    resolve_project_path,
+    warn,
+)
+
+TRUNCATE_AT = 100
+
+
+class TableSpec:
+    """How to compare one table across revisions.
+
+    `key` identifies a logical row. It deliberately excludes surrogate UUID
+    columns: Dolt assigns a fresh uuid() per insert, so the same logical
+    dependency edge created on two clones has two different `id` values and
+    would otherwise show up as a spurious add+remove pair.
+    """
+
+    def __init__(self, name: str, key: tuple[str, ...], ignore: tuple[str, ...] = ()):
+        self.name = name
+        self.key = key
+        self.ignore = set(ignore)
+
+
+TABLE_SPECS = (
+    # content_hash is derived from the other columns; reporting it is pure noise.
+    TableSpec("issues", key=("id",), ignore=("content_hash",)),
+    TableSpec(
+        "dependencies",
+        key=(
+            "issue_id",
+            "type",
+            "depends_on_issue_id",
+            "depends_on_wisp_id",
+            "depends_on_external",
+        ),
+        ignore=("id",),
+    ),
+    TableSpec("labels", key=("issue_id", "label")),
+    TableSpec("comments", key=("issue_id", "author", "created_at"), ignore=("id",)),
+)
+
+
+def shorten(value, full: bool) -> str:
+    """Render a cell for display, collapsing newlines and truncating."""
+    if value is None or value == "":
+        return "(empty)"
+    text = str(value).replace("\n", " ").replace("\r", " ")
+    if not full and len(text) > TRUNCATE_AT:
+        return text[:TRUNCATE_AT] + "..."
+    return text
+
+
+def row_key(row: dict, key_cols: tuple[str, ...]) -> tuple:
+    return tuple(row.get(c) for c in key_cols)
+
+
+def fetch_rows(dolt_db_dir: Path, table: str, rev: str, cols: list[str], key_cols: tuple[str, ...]):
+    """Select `cols` from `table` at `rev`, as a dict keyed by `key_cols` values.
+
+    Rows sharing a key tuple collapse (last one wins) — e.g. two same-second
+    comments by one author. Silent, but acceptable for a push preview.
+    """
+    select = ",".join(f"`{c}`" for c in cols)
+    safe_rev = rev.replace("'", "''")  # `'` is legal in ref names; keep it inside the literal
+    rows = dolt_sql_json(dolt_db_dir, f"select {select} from `{table}` as of '{safe_rev}';")
+    if rows is None:
+        return None
+    return {row_key(r, key_cols): r for r in rows}
+
+
+def diff_table(dolt_db_dir: Path, spec: TableSpec, base_rev: str, head_rev: str):
+    """Compare one table across two revisions.
+
+    Returns (added, removed, changed, note) where `changed` is a list of
+    (key, row, {field: (before, after)}). `note` is a human-readable caveat
+    when the comparison had to be narrowed or could not run at all.
+    """
+    base_cols = dolt_table_columns(dolt_db_dir, spec.name, base_rev)
+    head_cols = dolt_table_columns(dolt_db_dir, spec.name, head_rev)
+    if not base_cols and not head_cols:
+        return None, None, None, "table not present at either revision"
+    if not base_cols or not head_cols:
+        missing_at = base_rev if not base_cols else head_rev
+        return None, None, None, f"table missing at {missing_at} (or describe failed)"
+
+    # A schema migration between the revisions can add or drop columns, and
+    # selecting a column absent from one side is a hard error in Dolt — so
+    # compare only the intersection and say so when it isn't the whole table.
+    shared = [c for c in head_cols if c in set(base_cols) and c not in spec.ignore]
+    dropped = sorted((set(base_cols) ^ set(head_cols)) - spec.ignore)
+    note = None
+    if dropped:
+        note = "schema differs between revisions; not compared: " + ", ".join(dropped)
+
+    key_cols = tuple(c for c in spec.key if c in shared)
+    if not key_cols:
+        return None, None, None, "no usable key column at both revisions"
+
+    base = fetch_rows(dolt_db_dir, spec.name, base_rev, shared, key_cols)
+    head = fetch_rows(dolt_db_dir, spec.name, head_rev, shared, key_cols)
+    if base is None or head is None:
+        return None, None, None, "query failed"
+
+    value_cols = [c for c in shared if c not in set(key_cols)]
+    added = [head[k] for k in head if k not in base]
+    removed = [base[k] for k in base if k not in head]
+    changed = []
+    for k in head:
+        if k not in base:
+            continue
+        deltas = {
+            c: (base[k].get(c), head[k].get(c))
+            for c in value_cols
+            if base[k].get(c) != head[k].get(c)
+        }
+        if deltas:
+            changed.append((k, head[k], deltas))
+    return added, removed, changed, note
+
+
+def describe_issue(row: dict) -> str:
+    status = row.get("status", "?")
+    title = row.get("title", "")
+    return f"{status:<7} {title}"
+
+
+def render_issues(out, added, removed, changed, full: bool) -> None:
+    """Issue rows get id/status/title lines plus was/now blocks for changed fields."""
+    for row in sorted(added, key=lambda r: r.get("id", "")):
+        out.write(f"  + {row.get('id',''):<12} {describe_issue(row)}\n")
+    for row in sorted(removed, key=lambda r: r.get("id", "")):
+        out.write(f"  - {row.get('id',''):<12} {describe_issue(row)}\n")
+    for _key, row, deltas in sorted(changed, key=lambda c: c[1].get("id", "")):
+        out.write(f"  ~ {row.get('id',''):<12} {', '.join(sorted(deltas))}\n")
+        for field in sorted(deltas):
+            before, after = deltas[field]
+            out.write(f"      {field}:\n")
+            out.write(f"        was: {shorten(before, full)}\n")
+            out.write(f"        now: {shorten(after, full)}\n")
+
+
+def render_generic(out, spec: TableSpec, added, removed, changed, full: bool) -> None:
+    """Non-issue rows are identified by their key tuple (labels, deps, comments)."""
+
+    def fmt(row: dict) -> str:
+        return "  ".join(f"{c}={row.get(c)}" for c in spec.key if row.get(c) not in (None, ""))
+
+    for row in sorted(added, key=fmt):
+        out.write(f"  + {fmt(row)}\n")
+    for row in sorted(removed, key=fmt):
+        out.write(f"  - {fmt(row)}\n")
+    for _key, row, deltas in sorted(changed, key=lambda c: fmt(c[1])):
+        out.write(f"  ~ {fmt(row)}\n")
+        for field in sorted(deltas):
+            before, after = deltas[field]
+            out.write(f"      {field}: {shorten(before, full)} -> {shorten(after, full)}\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Show the issue-level diff a 'bd dolt push' would send to the remote.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  bd-dolt-diff                     Preview the pending push for the cwd's project\n"
+            "  bd-dolt-diff <path>              Preview a specific beads repo\n"
+            "  bd-dolt-diff --full              Don't truncate long field values\n"
+            "  bd-dolt-diff --base <rev>        Diff against an arbitrary Dolt revision\n"
+            "  bd-dolt-diff --base A --head B   Diff any two revisions (e.g. a pre-migration branch)\n"
+            "\n"
+            "Exits 0 whenever the comparison ran; use 'bd-dolt-check' to gate CI on sync state.\n"
+        ),
+    )
+    parser.add_argument(
+        "project_path", nargs="?", default=".",
+        help="Path to the beads project (default: current directory)",
+    )
+    parser.add_argument(
+        "--base", metavar="REV",
+        help="Revision to treat as 'before' (default: the remote-tracking ref)",
+    )
+    parser.add_argument(
+        "--head", metavar="REV",
+        help="Revision to treat as 'after' (default: the current local branch)",
+    )
+    parser.add_argument(
+        "--remote", default=None,
+        help="Dolt remote name (default: origin, else the first configured)",
+    )
+    parser.add_argument(
+        "--no-fetch", action="store_true",
+        help="Skip 'dolt fetch'; compare against the last-known remote-tracking ref",
+    )
+    parser.add_argument(
+        "--full", action="store_true",
+        help="Show complete field values instead of truncating them",
+    )
+    parser.add_argument("--no-pager", action="store_true", help="Do not page output")
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    project_path = resolve_project_path(args.project_path)
+    beads_dir = project_path / ".beads"
+
+    if not have_dolt():
+        error("the 'dolt' CLI is not on PATH; cannot compute a diff")
+
+    db_name, dolt_mode = read_metadata(beads_dir)
+    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
+    if dolt_db_dir is None:
+        error(f"no Dolt database '{db_name}' under {beads_dir}")
+
+    branch = get_head_branch(dolt_db_dir)
+    dolt_remotes = read_dolt_remotes(dolt_db_dir)
+    remote_name = args.remote or (
+        "origin" if "origin" in dolt_remotes else next(iter(dolt_remotes), "origin")
+    )
+
+    head_rev = args.head or branch
+    base_rev = args.base
+    # Only the default base-vs-local-branch comparison represents the pending
+    # push, so only then can we describe the delta as one or warn it would fail.
+    base_is_remote = args.base is None and args.head is None
+    if base_rev is None:
+        if not dolt_remotes:
+            error("no Dolt remote configured; pass --base to diff against a local revision")
+        if not args.no_fetch and not dolt_fetch(dolt_db_dir, remote_name):
+            warn(f"'dolt fetch {remote_name}' failed; comparing against the last-known ref")
+        base_rev = f"remotes/{remote_name}/{branch}"
+
+    for rev in (base_rev, head_rev):
+        if dolt_rev(dolt_db_dir, rev) is None:
+            error(f"revision '{rev}' does not resolve in {dolt_db_dir}")
+
+    with paged_output(args.no_pager) as out:
+        out.write(f"Repository:  {project_path}\n")
+        out.write(f"Remote:      {get_git_remote_url(project_path)}\n")
+        out.write(f"Dolt DB:     {db_name} (mode: {dolt_mode})\n")
+        out.write(f"Comparing:   {base_rev}  ->  {head_rev}\n")
+
+        if dolt_rev(dolt_db_dir, base_rev) == dolt_rev(dolt_db_dir, head_rev):
+            out.write("\nRevisions are identical — no difference.\n")
+            return 0
+
+        ahead = dolt_count_range(dolt_db_dir, f"{base_rev}..{head_rev}") or 0
+        behind = dolt_count_range(dolt_db_dir, f"{head_rev}..{base_rev}") or 0
+        if behind and base_is_remote:
+            out.write(
+                f"\nWARNING: DIVERGED — {behind} commit(s) exist on {base_rev} that\n"
+                f"         {head_rev} does not have. A push would be rejected; pull first.\n"
+                "         The diff below still shows both directions of change.\n"
+            )
+        elif behind:
+            out.write(
+                f"\nNote: histories diverge — {behind} commit(s) on {base_rev} are not in\n"
+                f"      {head_rev}, so this is a comparison, not a push preview.\n"
+            )
+
+        commits = dolt_log_range(dolt_db_dir, f"{base_rev}..{head_rev}")
+        if commits:
+            heading = (
+                f"Commits to push ({ahead})"
+                if base_is_remote
+                else f"Commits in {head_rev} but not {base_rev} ({ahead})"
+            )
+            out.write(f"\n{heading}, newest first:\n")
+            for line in commits:
+                out.write(f"  {line}\n")
+
+        totals = []
+        for spec in TABLE_SPECS:
+            added, removed, changed, note = diff_table(dolt_db_dir, spec, base_rev, head_rev)
+            if added is None:
+                out.write(f"\n{spec.name}:  not compared ({note})\n")
+                totals.append(f"{spec.name} n/a")
+                continue
+            counts = f"+{len(added)} ~{len(changed)} -{len(removed)}"
+            totals.append(f"{spec.name} {counts}")
+            if not (added or removed or changed):
+                out.write(f"\n{spec.name}:  no changes\n")
+                if note:
+                    out.write(f"  note: {note}\n")
+                continue
+            out.write(f"\n{spec.name}  ({counts}):\n")
+            if note:
+                out.write(f"  note: {note}\n")
+            if spec.name == "issues":
+                render_issues(out, added, removed, changed, args.full)
+            else:
+                render_generic(out, spec, added, removed, changed, args.full)
+
+        out.write("\n" + "-" * 70 + "\n")
+        out.write("Summary:  " + "   ".join(totals) + "\n")
+        out.write(
+            "Compared tables: " + ", ".join(s.name for s in TABLE_SPECS) + "\n"
+        )
+        out.write(
+            "Not compared: events/interactions (audit trail) and other bd-internal tables.\n"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

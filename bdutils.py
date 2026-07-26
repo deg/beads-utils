@@ -7,7 +7,10 @@ resolves the sibling module without any prelude.
 from __future__ import annotations
 
 import contextlib
+import functools
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,6 +20,8 @@ from pathlib import Path
 from typing import NoReturn
 
 __version__ = "0.3.0"
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def add_version_arg(parser) -> None:
@@ -70,6 +75,161 @@ def resolve_project_path(arg: str) -> Path:
     if not (project_path / ".beads").is_dir():
         error(f"no .beads/ directory at {project_path}")
     return project_path
+
+
+# --- Dolt / git plumbing -------------------------------------------------
+#
+# Shared by the Dolt-aware scripts (bd-dolt-check, bd-dolt-diff). Every
+# helper here is read-only and degrades to a None/empty result rather than
+# raising, so callers can report "not verifiable" instead of crashing when
+# the dolt CLI is absent or a ref doesn't resolve.
+
+
+def strip_ansi(s: str) -> str:
+    """Remove ANSI SGR escapes (the dolt CLI colorizes even when piped)."""
+    return ANSI_RE.sub("", s)
+
+
+def run(cmd: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess[str]:
+    """Capture-output subprocess run rooted at `cwd` (never os.chdir)."""
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
+
+
+@functools.cache
+def have_dolt() -> bool:
+    """True if the `dolt` CLI is on PATH."""
+    return shutil.which("dolt") is not None
+
+
+def read_metadata(beads_dir: Path) -> tuple[str, str]:
+    """Return (dolt_database, dolt_mode) from .beads/metadata.json."""
+    path = beads_dir / "metadata.json"
+    if not path.is_file():
+        error(f"no metadata.json in {beads_dir}")
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        error(f"could not read {path}: {exc}")
+    return data.get("dolt_database", "unknown"), data.get("dolt_mode", "unknown")
+
+
+def locate_dolt_db(beads_dir: Path, db_name: str) -> Path | None:
+    """Find the Dolt database dir, covering both embedded and server layouts."""
+    for candidate in (beads_dir / "embeddeddolt" / db_name, beads_dir / "dolt" / db_name):
+        if (candidate / ".dolt").is_dir():
+            return candidate
+    return None
+
+
+def read_repo_state(dolt_db_dir: Path) -> dict:
+    """Parse .dolt/repo_state.json, or {} if unreadable."""
+    path = dolt_db_dir / ".dolt" / "repo_state.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_head_branch(dolt_db_dir: Path) -> str:
+    """Current Dolt branch name from repo_state.json (default 'main')."""
+    head = read_repo_state(dolt_db_dir).get("head", "")
+    prefix = "refs/heads/"
+    return head[len(prefix):] if head.startswith(prefix) else "main"
+
+
+def read_dolt_remotes(dolt_db_dir: Path) -> dict[str, str]:
+    """Map of Dolt remote name -> url from repo_state.json."""
+    remotes = read_repo_state(dolt_db_dir).get("remotes", {}) or {}
+    return {name: r.get("url", "?") for name, r in remotes.items()}
+
+
+def get_git_remote_url(project_path: Path) -> str:
+    """URL of git remote 'origin', or '(no remote)'."""
+    url = run(["git", "remote", "get-url", "origin"], cwd=project_path).stdout.strip()
+    return url if url else "(no remote)"
+
+
+def dolt_fetch(dolt_db_dir: Path, remote: str) -> bool:
+    """Best-effort `dolt fetch <remote>` to refresh remote-tracking refs.
+
+    Returns True on success. Used so a remote that moved ahead (e.g. pushed
+    from another machine) is reflected in remotes/<remote>/<branch> before we
+    compare against it.
+    """
+    if not have_dolt():
+        return False
+    return run(["dolt", "fetch", remote], cwd=dolt_db_dir).returncode == 0
+
+
+def dolt_rev(dolt_db_dir: Path, ref: str) -> str | None:
+    """Commit hash at `ref`, or None if dolt is missing or `ref` doesn't resolve."""
+    if not have_dolt():
+        return None
+    result = run(["dolt", "log", "--oneline", "-n", "1", ref], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return None
+    lines = strip_ansi(result.stdout).strip().splitlines()
+    return lines[0].split()[0] if lines and lines[0] else None
+
+
+def dolt_count_range(dolt_db_dir: Path, rev_range: str) -> int | None:
+    """Number of commits in a Dolt `A..B` range; None if dolt is missing or it errors."""
+    if not have_dolt():
+        return None
+    result = run(["dolt", "log", "--oneline", rev_range], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return None
+    return sum(1 for ln in result.stdout.splitlines() if ln.strip())
+
+
+def dolt_log_range(dolt_db_dir: Path, rev_range: str) -> list[str]:
+    """One-line commit summaries for a Dolt `A..B` range, oldest last."""
+    if not have_dolt():
+        return []
+    result = run(["dolt", "log", "--oneline", rev_range], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return []
+    return [strip_ansi(ln) for ln in result.stdout.splitlines() if ln.strip()]
+
+
+def dolt_sql_json(dolt_db_dir: Path, query: str) -> list[dict] | None:
+    """Run a read-only query and return its rows, or None on any failure.
+
+    Dolt emits `{"rows": [...]}`. Note that JSON output omits NULL columns
+    entirely, so callers must use `.get()` rather than indexing.
+    """
+    if not have_dolt():
+        return None
+    result = run(["dolt", "sql", "-r", "json", "-q", query], cwd=dolt_db_dir)
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout).get("rows", [])
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def dolt_table_columns(dolt_db_dir: Path, table: str, rev: str | None = None) -> list[str]:
+    """Column names of `table`, optionally at revision `rev`.
+
+    Needed because a schema migration can add columns, so two revisions of
+    the same table may not share a column set — selecting a column that only
+    exists on one side is a hard error in Dolt. Callers that compare across
+    revisions should intersect the two results.
+    """
+    if rev:
+        # `'` is legal in ref names and `dolt sql -q` runs `;`-separated
+        # statements, so an unescaped rev could break out of the literal.
+        safe_rev = rev.replace("'", "''")
+        target = f"{table} as of '{safe_rev}'"
+    else:
+        target = table
+    rows = dolt_sql_json(dolt_db_dir, f"describe {target};")
+    if rows is None:
+        return []
+    return [r["Field"] for r in rows if "Field" in r]
 
 
 def _open_pager() -> subprocess.Popen[str] | None:

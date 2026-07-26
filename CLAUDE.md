@@ -53,6 +53,19 @@ Current scripts:
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
+- `bd-dolt-diff` — Previews what a `bd dolt push` would actually send: an
+  issue-level diff between the remote-tracking ref and the local branch
+  (added/removed issues, field-level before/after for changed ones, plus
+  dependency/label/comment changes). `--base`/`--head` diff any two Dolt
+  revisions. Dependency and comment rows are keyed on their semantic tuple,
+  not the surrogate `id` column (Dolt mints a fresh `uuid()` per insert, so
+  the same logical edge created on two clones would otherwise show as a
+  spurious add+remove). When a schema migration means the two revisions
+  don't share a column set, compares the intersection and names the skipped
+  columns (selecting a column absent from one side is a hard Dolt error).
+  Read-only; always exits 0 when the comparison ran — `bd-dolt-check`
+  remains the CI gate. Pages via `bdutils.paged_output()`; `--no-pager`
+  disables. Requires the `dolt` CLI.
 - `bd-log` — Shows recent beads lifecycle events (create/start/close) in a
   git-log-style timeline, newest first. Wraps `bd list ... --json` and
   synthesizes one event per non-empty `created_at`/`started_at`/`closed_at`
@@ -208,6 +221,8 @@ project (this repo itself is one):
 ./bd-export-csv .                             # Export this repo to CSV in cwd
 ./bd-export-csv . --sort=-priority,created_at
 ./bd-dolt-check .                             # Check Dolt sync state
+./bd-dolt-diff .                              # Preview what a push would send
+./bd-dolt-diff . --base <branch-or-hash>      # Diff vs an arbitrary revision
 ./bd-log                                       # All lifecycle events (incl. closed)
 ./bd-log --open                                # Events for beads still open
 ./bd-log --only=start --status=in_progress     # What's actively being worked

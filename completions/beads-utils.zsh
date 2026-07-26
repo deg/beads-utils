@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check claude-session-find claude-session-list claude-session-report
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-report
 #
 # zsh tab completion for beads-utils.
 #
@@ -125,6 +125,18 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '1:project:_files -/'
     ;;
+  bd-dolt-diff)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '--base[revision to treat as before (default: remote-tracking ref)]:rev' \
+      '--head[revision to treat as after (default: local branch)]:rev' \
+      '--remote[Dolt remote name]:remote' \
+      '--no-fetch[skip dolt fetch; compare against last-known remote-tracking ref]' \
+      '--full[show complete field values instead of truncating]' \
+      '--no-pager[write directly to stdout; skip the pager]' \
+      '1:project:_files -/'
+    ;;
   claude-session-find)
     _arguments -s -S \
       '(- *)--version[show version and exit]' \
@@ -140,5 +152,5 @@ _beads_dispatch() {
 }
 
 compdef _beads_dispatch \
-  bd-view bd-log bd-export-csv bd-dolt-check \
+  bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff \
   claude-session-find claude-session-list claude-session-report

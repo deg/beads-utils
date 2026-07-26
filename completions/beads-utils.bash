@@ -125,6 +125,21 @@ _beads_bd_dolt_check() {
   fi
 }
 
+_beads_bd_dolt_diff() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  case $prev in
+    # Dolt revisions and remote names aren't enumerable via bd-complete.
+    --base|--head|--remote) return ;;
+  esac
+  if [[ $cur == -* ]]; then
+    __beads_flags "--base --head --remote --no-fetch --full --no-pager \
+      --version -h --help"
+  else
+    __beads_dirs
+  fi
+}
+
 _beads_claude_session_find() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
@@ -144,4 +159,5 @@ complete -F _beads_claude_session_list claude-session-list
 complete -F _beads_bd_log bd-log
 complete -F _beads_bd_export_csv bd-export-csv
 complete -F _beads_bd_dolt_check bd-dolt-check
+complete -F _beads_bd_dolt_diff bd-dolt-diff
 complete -F _beads_claude_session_find claude-session-find
