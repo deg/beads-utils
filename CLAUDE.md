@@ -277,6 +277,9 @@ and `bd` on `PATH`.
 - **Versioning**: all scripts share a single `bdutils.__version__`; add the
   `--version` flag via `bdutils.add_version_arg(parser)` so every script prints
   `<prog> <version>` identically. Paging scripts also accept `--no-pager`.
+  Do **not** bump `__version__` as part of feature work — add a bullet under
+  `## Unreleased` in `CHANGELOG.md` and leave the number alone; it moves only
+  at release time (see [Releases](#releases)).
 - **Errors**: use `bdutils.error(msg)` — exits non-zero with a lowercase `error: ...`
   line to stderr. Never raise tracebacks at the top level.
 - **Warnings**: use `bdutils.warn(msg)` — writes `warning: ...` to stderr without exit.
@@ -285,3 +288,30 @@ and `bd` on `PATH`.
 - **Subprocess**: pass `cwd=project_path` rather than `os.chdir`. Use `check=True` only
   for calls that must succeed; tolerate empty/missing output where it's a valid state.
 - **No config files, no state** beyond what `bd` / Dolt already manage under `.beads/`.
+
+## Releases
+
+Nothing here is packaged or published — no `pyproject.toml`, no PyPI, no
+installer; the scripts run in place. A release is only a marker of a known-good
+point: `## Unreleased` in `CHANGELOG.md` becomes `## vX.Y.Z (DDMonYY)`,
+`bdutils.__version__` is set to match, and the commit is tagged `vX.Y.Z`
+(annotated). The one exception is `v0.2.0`, a lightweight tag backfilled long
+after the fact — an annotated one would have stamped the backfill date onto a
+May release.
+
+Two rules carry the weight:
+
+- **The version moves only at release time.** Feature work adds a `## Unreleased`
+  bullet and leaves `__version__` alone. `dc63e10` bumped mid-cycle instead, and
+  0.3.0's notes then went a full cycle missing the `bd-log --status/--open`
+  entry that same commit shipped.
+- **Bump from the last release tag, not from `__version__`.** Pre-1.0, any
+  `[breaking]` or `[feature]` bullet takes the minor; `[fix]` / `[cleanup]` /
+  `[refactor]` alone take the patch. Bumping off `__version__` after a stray
+  mid-cycle bump skips a version.
+
+The procedure itself is scripted as the `/release` slash command
+([`.claude/commands/release.md`](.claude/commands/release.md)) — run it rather
+than working through the steps by hand. It gathers the commit range from the
+last tag, audits `## Unreleased` for completeness against that range, runs the
+CI gates, and stops before pushing.

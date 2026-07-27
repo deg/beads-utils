@@ -57,8 +57,8 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
   `epilog` of examples when a richer help block helps.
 - **Versioning**: scripts share `bdutils.__version__`; add `--version` via
   `bdutils.add_version_arg(parser)`. Paging scripts accept `--no-pager`.
-  Don't bump it in a feature PR — note your change under `## Unreleased` in
-  [`CHANGELOG.md`](CHANGELOG.md) instead; the version moves at release time.
+  Don't bump the version in a PR — add a bullet under `## Unreleased` in
+  [`CHANGELOG.md`](CHANGELOG.md) instead; the number moves only at release time.
 - **Errors / warnings**: `bdutils.error(msg)` (exits non-zero with a lowercase
   `error: …`) and `bdutils.warn(msg)`. Never surface a raw traceback.
 - **Project path**: `bdutils.resolve_project_path(arg)` for the
@@ -68,16 +68,10 @@ If you add behavior or flags, update `README.md` and `CLAUDE.md` to match.
 
 ## Releases
 
-Maintainer-only, and deliberately light: nothing is packaged or published (no
-`pyproject.toml`, no PyPI, no installer — the scripts run in place), so a
-release is just a marker of a known-good point. It renames `## Unreleased` in
-[`CHANGELOG.md`](CHANGELOG.md) to `## vX.Y.Z (DDMonYY)`, sets
-`bdutils.__version__`, and tags the commit `vX.Y.Z`.
-
-The procedure is scripted as a Claude Code slash command —
-[`.claude/commands/release.md`](.claude/commands/release.md), run as
-`/release`. Read that file for the authoritative steps rather than duplicating
-them here.
+Maintainer-only, and nothing to do on your side beyond the `## Unreleased` note
+described above. The conventions live in [`CLAUDE.md`](CLAUDE.md); the procedure
+is scripted as the `/release` Claude Code slash command
+([`.claude/commands/release.md`](.claude/commands/release.md)).
 
 ## Issue tracking
 
