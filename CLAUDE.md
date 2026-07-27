@@ -280,6 +280,12 @@ and `bd` on `PATH`.
   Do **not** bump `__version__` as part of feature work — add a bullet under
   `## Unreleased` in `CHANGELOG.md` and leave the number alone; it moves only
   at release time (see [Releases](#releases)).
+- **Changelog bullets**: one short outcome clause each — what a user gets, not
+  how it works. Group by category in the order `[breaking]`, `[feature]`,
+  `[fix]`, `[refactor]`, `[cleanup]`; nest sub-bullets under a multi-part
+  feature rather than spreading it across several top-level lines. Design
+  rationale belongs in this file, not in `CHANGELOG.md` — the one thing a
+  bullet must never drop is a `[breaking]` change's migration path.
 - **Errors**: use `bdutils.error(msg)` — exits non-zero with a lowercase `error: ...`
   line to stderr. Never raise tracebacks at the top level.
 - **Warnings**: use `bdutils.warn(msg)` — writes `warning: ...` to stderr without exit.

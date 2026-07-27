@@ -1,5 +1,7 @@
 ## Unreleased
 
+* [cleanup] Write down the changelog bullet style in `CLAUDE.md`
+
 ## v0.3.0 (27Jul26)
 
 * [breaking] Rename `bd-export-csv --sortby` to `-s/--sort`, matching `claude-session-list` and GNU convention
