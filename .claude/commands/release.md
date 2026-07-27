@@ -21,9 +21,17 @@ These mirror `.github/workflows/lint.yml`, so a release never ships something CI
 would reject:
 
 ```bash
-uvx ruff@0.15.14 check $(grep -lE -d skip '^#!' *) bdutils.py
-for s in $(grep -lE -d skip '^#!' *); do ./$s --version; done
+scripts="$(grep -lE -d skip '^#!' * 2>/dev/null)" || true
+[ -n "$scripts" ] || { echo "shebang discovery found no scripts"; exit 1; }
+printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
+printf '%s\n' "$scripts" | while IFS= read -r s; do "./$s" --version; done
 ```
+
+Keep the guards — they are the same ones CI carries, for the same reason. `-d
+skip` makes `grep` ignore subdirectories like `completions/` instead of exiting
+2 on them, `|| true` keeps a no-match (`grep` exit 1) from killing the step
+before the explicit empty-check runs, and that check is what stops a silent
+collapse to "ruff checked `bdutils.py` alone, all passed".
 
 Both must pass. Fix anything that fails — or stop and report — before continuing.
 
@@ -53,14 +61,18 @@ Report what you added. If nothing was missing, say so.
 
 ## 5. Choose the version number
 
-Read the assembled bullets and propose `X.Y.Z`. Pre-1.0 rules:
+Read the assembled bullets and propose `X.Y.Z`. **Bump from the last release tag
+found in step 3 — not from `bdutils.__version__`.** Pre-1.0 rules:
 
-- any `[breaking]` or `[feature]` bullet → bump the **minor** (0.3.0 → 0.4.0)
-- only `[fix]` / `[cleanup]` / `[refactor]` → bump the **patch** (0.3.0 → 0.3.1)
+- any `[breaking]` or `[feature]` bullet → bump the **minor** (v0.2.0 → 0.3.0)
+- only `[fix]` / `[cleanup]` / `[refactor]` → bump the **patch** (v0.2.0 → 0.2.1)
 
-Compare against the current `bdutils.__version__`. It may already be the right
-number — a mid-cycle bump means the in-development version is already set, in
-which case this release simply consumes it and the next cycle bumps again.
+`bdutils.__version__` is a cross-check, not the base. It may already equal the
+answer: `dc63e10` bumped it to 0.3.0 mid-cycle, so the first release run finds
+tag `v0.2.0` + `[breaking]` bullets → **v0.3.0**, which `__version__` already
+reads and step 7 leaves alone. Bumping from `__version__` instead would wrongly
+yield 0.4.0 and skip a version. (Contributors no longer bump mid-cycle — see
+CONTRIBUTING.md — so after this release the tag and `__version__` stay in step.)
 
 **Confirm the number with the user before writing anything.**
 
@@ -80,7 +92,7 @@ in the repo hardcodes a version.
 ## 8. Verify
 
 ```bash
-for s in $(grep -lE -d skip '^#!' *); do ./$s --version; done
+grep -lE -d skip '^#!' * | while IFS= read -r s; do "./$s" --version; done
 ```
 
 Every script must report the new number. Then `git diff` and confirm the only
