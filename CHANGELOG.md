@@ -1,6 +1,7 @@
 ## Unreleased
 
 * [feature] Limit `bd-log` to named beads with `--id=LIST`, or to their whole subtrees with `--children`
+* [feature] Color `bd-log` events by kind, with `--color=auto|always|never`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
 
 ## v0.3.0 (27Jul26)

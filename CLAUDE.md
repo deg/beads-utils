@@ -102,7 +102,26 @@ Current scripts:
   (default 0 = unlimited, like `git log`) and `--since DATE`
   (timestamp filter applied to every event kind). Pages through
   `bdutils.paged_output()` (`$PAGER` or `less -FRX` when stdout is a tty).
-  `--no-pager` disables.
+  `--no-pager` disables. Events are colored by kind via
+  `--color=auto|always|never` (`bdutils.want_color`), traffic-light style:
+  red on `close`, where work *stops*; green on `start`, where it goes (a
+  play button is green); blue on `create`, which is neither. The obvious
+  alternative maps the lifecycle *sequence* onto the light (create green →
+  start yellow → close red) and is rejected on legibility: in Solarized
+  Light — and low-contrast light themes generally — ANSI green and yellow
+  are both olive (`#859900` vs `#b58900`), so it would put two
+  near-indistinguishable colors on adjacent event kinds. Blue/green/red are
+  the three most separated hues on offer.
+  The **whole entry** is tinted, not just the leading glyph+timestamp. That
+  stamp is ~18 characters of an ~80-character entry, and at that size the
+  eye can't judge a hue at all — every candidate palette read alike until
+  the colored area grew. The event kind stays the sole color axis (nothing
+  encodes priority or type), so a long run of one hue is still one signal.
+  Because
+  `paged_output()` yields the *pager's stdin pipe*, the color decision is
+  resolved from `sys.stdout` before that context manager is entered —
+  testing the yielded stream would report "not a tty" in precisely the case
+  (a user at a terminal) where color is wanted.
 - `claude-session-find` — Finds the UUID of an old Claude Code session by
   grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
   (mangling = `/` and `.` → `-`). Defaults to the current project and
@@ -215,8 +234,18 @@ Shared helpers:
 - `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
   `format_ts()`, `format_priority()`, and `paged_output()` (context manager
   that pipes through `$PAGER` or `less -FRX` when stdout is a tty; `-F` makes
-  short output indistinguishable from direct-to-stdout). Imported by scripts
-  in this repo; keep small and stdlib-only.
+  short output indistinguishable from direct-to-stdout). Color lives here
+  too: the `COLORS`/`RESET` SGR constants, `add_color_arg()`,
+  `want_color(mode)` (`auto` = tty **and** `NO_COLOR` unset **and** `TERM !=
+  dumb`), and `paint(text, color, enabled)`, whose `color` is one or more
+  space-separated `COLORS` names so attributes compose (`"bold blue"`);
+  unknown names are skipped, never raised. Stick to the plain 30–37 hues:
+  the bright slots (90–97) are repurposed as *greys* by Solarized, and
+  `bold` reaches those same slots on terminals set to "draw bold text in
+  bright colors" — so bolting `bold` onto a hue can silently remove the
+  hue. Both were tried against a real Solarized Light terminal and backed
+  out. Widen the colored *area* or pick a better-separated hue instead.
+  Imported by scripts in this repo; keep small and stdlib-only.
 - `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
   `mangle_cwd()`, `find_project_dir()`, `project_label()`, `has_human_prose()`
   (strips known wrapper tags listed in `USER_WRAPPER_TAGS` — `<command-name>`,
@@ -265,6 +294,8 @@ project (this repo itself is one):
 ./bd-log --id beads-utils-s4s                  # One bead's whole history
 ./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree
 ./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
+./bd-log --color=always | cat                  # Keep color through a pipe
+./bd-log --color=never                         # Force plain (also: NO_COLOR=1)
 ./claude-session-find 'bd-log'                 # Sessions in this project matching
 ./claude-session-find -g 'paged_output'        # All projects
 ./claude-session-find -a 'dolt push'           # Include assistant/tool content
@@ -302,6 +333,10 @@ and `bd` on `PATH`.
 - **Versioning**: all scripts share a single `bdutils.__version__`; add the
   `--version` flag via `bdutils.add_version_arg(parser)` so every script prints
   `<prog> <version>` identically. Paging scripts also accept `--no-pager`.
+  Colorizing scripts take `--color=auto|always|never` via
+  `bdutils.add_color_arg(parser)` and resolve it once with
+  `bdutils.want_color()` — same rationale as `--version`, so the flag
+  spelling and the auto-detection rules can't drift between scripts.
   Do **not** bump `__version__` as part of feature work — add a bullet under
   `## Unreleased` in `CHANGELOG.md` and leave the number alone; it moves only
   at release time (see [Releases](#releases)).

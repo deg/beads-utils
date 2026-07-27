@@ -111,6 +111,7 @@ _beads_dispatch() {
       '--children[with --id, also include every bead under each named id]' \
       '--since[show only events on/after DATE]:date' \
       '--no-pager[write directly to stdout; skip the pager]' \
+      '--color[colorize events by kind]:when:(auto always never)' \
       '1:project:_files -/'
     ;;
   bd-export-csv)

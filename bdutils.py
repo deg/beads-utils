@@ -77,6 +77,83 @@ def resolve_project_path(arg: str) -> Path:
     return project_path
 
 
+# --- Color output --------------------------------------------------------
+#
+# Plain SGR escapes; no dependency. Scripts that colorize take the flag via
+# add_color_arg() and resolve it once with want_color(), so the spelling and
+# the auto-detection rules stay identical across the collection — the same
+# reason add_version_arg() exists.
+
+COLOR_MODES = ("auto", "always", "never")
+
+COLORS = {
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+}
+RESET = "\033[0m"
+
+
+def add_color_arg(parser) -> None:
+    """Add a standard '--color=auto|always|never' flag (default: auto)."""
+    parser.add_argument(
+        "--color", choices=COLOR_MODES, default="auto", metavar="WHEN",
+        help="Colorize output: 'auto' (default: only when stdout is a tty and "
+             "NO_COLOR is unset), 'always' (keeps color through a pipe), or "
+             "'never'.",
+    )
+
+
+def want_color(mode: str = "auto") -> bool:
+    """Whether to emit ANSI color, given a --color mode.
+
+    'auto' requires an interactive stdout, an unset NO_COLOR (no-color.org:
+    any non-empty value disables color), and a TERM that isn't 'dumb'.
+
+    Callers that page must resolve this *before* entering paged_output():
+    that context manager yields the pager's stdin pipe, so testing the
+    yielded stream reports "not a tty" in exactly the case — a user at a
+    terminal — where color is wanted.
+    """
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    if os.environ.get("NO_COLOR", ""):
+        return False
+    if os.environ.get("TERM", "") == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+def paint(text: str, color: str, enabled: bool = True) -> str:
+    """Wrap `text` in `color` when `enabled`; return it untouched otherwise.
+
+    `color` is one or more space-separated names from COLORS, so attributes
+    compose: 'bold blue' emits weight and hue together.
+
+    Two ways to "just raise the contrast" that don't work, both verified
+    against a real Solarized Light terminal:
+      - the bright slots (90-97): Solarized repurposes them as greys, so
+        bright green is base01, not a brighter green;
+      - 'bold': terminals with "draw bold text in bright colors" enabled
+        route it to those same grey slots, so bolding a hue can *remove* it.
+    Prefer picking a better-separated hue over reaching for either.
+
+    An unknown name is skipped rather than raising: a miscolored line should
+    never take down an otherwise working command.
+    """
+    if not enabled or not text:
+        return text
+    codes = [COLORS[name] for name in color.split() if name in COLORS]
+    return f"{''.join(codes)}{text}{RESET}" if codes else text
+
+
 # --- Dolt / git plumbing -------------------------------------------------
 #
 # Shared by the Dolt-aware scripts (bd-dolt-check, bd-dolt-diff). Every

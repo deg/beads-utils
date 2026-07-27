@@ -16,7 +16,7 @@ needs `rich`).
 | [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review |
 | [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
 | [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state |
-| [`bd-log`](bd-log) | Git-log-style timeline of bead lifecycle events — create, start, close (auto-paged) |
+| [`bd-log`](bd-log) | Git-log-style timeline of bead lifecycle events — create, start, close (color-coded, auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |

@@ -95,10 +95,13 @@ _beads_bd_log() {
     --id)
       __beads_values ids
       return ;;
+    --color)
+      COMPREPLY=( $(compgen -W "auto always never" -- "$cur") )
+      return ;;
     -n|--limit|--only|--since) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-n --limit --only --status --open --id --children --since --no-pager --version -h --help"
+    __beads_flags "-n --limit --only --status --open --id --children --since --no-pager --color --version -h --help"
   else
     __beads_dirs
   fi

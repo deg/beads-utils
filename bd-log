@@ -9,12 +9,15 @@ import sys
 from pathlib import Path
 
 from bdutils import (
+    add_color_arg,
     add_version_arg,
     error,
     format_priority,
     format_ts,
     paged_output,
+    paint,
     resolve_project_path,
+    want_color,
     warn,
 )
 
@@ -26,6 +29,21 @@ EVENT_TS_FIELD = {
 }
 EVENT_GLYPH = {"create": "+", "start": "▶", "close": "✓"}
 EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
+# Traffic-light semantics, one hue per event kind: red goes on the event where
+# work stops (close), green on the one where it goes (start -- a play button is
+# green), and blue on create, which is neither.
+#
+# The obvious alternative maps the *sequence* instead (create green -> start
+# yellow -> close red). It's rejected on legibility: in Solarized Light -- and
+# low-contrast light themes generally -- ANSI green and yellow are both olive
+# (#859900 / #b58900), so it would put two near-identical colors on adjacent
+# lifecycle events. Blue/green/red are the three most separated hues available.
+# Plain hues, deliberately no 'bold'. Bold looks like the free way to raise
+# contrast, but terminals with "draw bold text in bright colors" enabled remap
+# it to the bright slots (90-97) -- which Solarized repurposes as greys. Tried
+# and rejected empirically: bold green rendered as grey base01, i.e. the start
+# events lost their color entirely. See the bright-slot note in bdutils.paint.
+EVENT_COLOR = {"create": "blue", "start": "green", "close": "red"}
 
 
 def scope_args(status: str | None, open_only: bool) -> list[str]:
@@ -144,7 +162,7 @@ def event_actor(kind: str, issue: dict) -> str:
     return issue.get("assignee") or issue.get("owner") or ""
 
 
-def render(ts: str, kind: str, issue: dict) -> list[str]:
+def render(ts: str, kind: str, issue: dict, color: bool = False) -> list[str]:
     glyph = EVENT_GLYPH[kind]
     iid = issue.get("id", "?")
     prio = format_priority(issue.get("priority"))
@@ -160,7 +178,13 @@ def render(ts: str, kind: str, issue: dict) -> list[str]:
         reason = collapse(issue.get("close_reason") or "")
         if reason:
             lines.append(f"  {reason}")
-    return lines
+    # The whole entry is tinted, not just the leading stamp. A stamp is ~18
+    # chars of an ~80-char entry -- too little area to judge a hue against, so
+    # the kinds read alike no matter which colors are picked. Painting each
+    # line separately (rather than one span across the newlines) keeps every
+    # line independently reset, which is what pagers and line-oriented tools
+    # downstream expect.
+    return [paint(line, EVENT_COLOR[kind], color) for line in lines]
 
 
 def parse_only(value: str) -> set[str]:
@@ -188,10 +212,11 @@ def main() -> int:
         description="Show recent beads events (create/start/close) in a git-log-style view.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Event kinds (default: all three):\n"
-            "  + create   issue was created\n"
-            "  ▶ start    issue was claimed / moved to in_progress\n"
-            "  ✓ close    issue was closed\n"
+            "Event kinds (default: all three). On a tty the whole entry is\n"
+            "tinted by kind, traffic-light style:\n"
+            "  + create   blue   issue was created\n"
+            "  ▶ start    green  issue was claimed / moved to in_progress (go)\n"
+            "  ✓ close    red    issue was closed (stop)\n"
             "\n"
             "Filtering has three orthogonal axes:\n"
             "  --only=KINDS      which event kinds to render (above)\n"
@@ -219,6 +244,11 @@ def main() -> int:
             "Output is paged through $PAGER (or 'less -FRX') when stdout is a\n"
             "tty; -F makes less exit immediately when content fits one screen,\n"
             "so short output looks direct. Use --no-pager to disable.\n"
+            "\n"
+            "Color follows --color (default 'auto': a tty, NO_COLOR unset, TERM\n"
+            "not 'dumb'). 'less -FRX' passes the escapes through via -R; a\n"
+            "$PAGER without -R will show them literally, so use --color=never\n"
+            "there. --color=always keeps color through a pipe (e.g. into grep).\n"
         ),
     )
     parser.add_argument(
@@ -264,6 +294,7 @@ def main() -> int:
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
     )
+    add_color_arg(parser)
     add_version_arg(parser)
     args = parser.parse_args()
 
@@ -336,7 +367,10 @@ def main() -> int:
         print("no matching events")
         return 0
 
-    blocks = [render(ts, kind, issue) for ts, kind, issue in events]
+    # Resolved here, not inside the `with`: paged_output yields the pager's
+    # stdin pipe, which never looks like a tty even when the user is at one.
+    color = want_color(args.color)
+    blocks = [render(ts, kind, issue, color) for ts, kind, issue in events]
     with paged_output(no_pager=args.no_pager) as out:
         for i, block in enumerate(blocks):
             if i:
