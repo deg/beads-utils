@@ -1,5 +1,6 @@
 ## Unreleased
 
+* [feature] Limit `bd-log` to named beads with `--id=LIST`, or to their whole subtrees with `--children`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
 
 ## v0.3.0 (27Jul26)

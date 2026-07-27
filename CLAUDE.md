@@ -69,13 +69,36 @@ Current scripts:
 - `bd-log` — Shows recent beads lifecycle events (create/start/close) in a
   git-log-style timeline, newest first. Wraps `bd list ... --json` and
   synthesizes one event per non-empty `created_at`/`started_at`/`closed_at`
-  timestamp on each issue. Two orthogonal filter axes: `--only=KINDS`
+  timestamp on each issue. Three orthogonal filter axes: `--only=KINDS`
   (comma-separated event kinds — `create,start,close`; default all) selects
-  which *events* to render, and `--status=LIST` (comma-separated statuses,
-  passed straight through to `bd list --status`; bd owns the vocabulary and
-  validation) scopes to beads by *current* status. `--open` is shorthand for
+  which *events* to render, while `--status=LIST` and `--id=LIST` both scope
+  which *beads* to include. `--status` (comma-separated statuses, passed
+  straight through to `bd list --status`; bd owns the vocabulary and
+  validation) selects by *current* status; `--open` is shorthand for
   "not closed" (mutually exclusive with `--status`); with neither flag the
-  default is `bd list --all` (everything, incl. closed). Also `-n/--limit`
+  default is `bd list --all` (everything, incl. closed). `--id`
+  (comma-separated **full** bead ids, delegated to `bd list --id`, so bd owns
+  the id vocabulary — short suffixes like `y13` match nothing, and
+  `bd-complete` emits full ids for exactly that reason) composes with either.
+  `--children` widens each `--id` to its whole subtree, at any depth; it is
+  the one filter that can't delegate (bd's `--id` doesn't expand children and
+  `--parent` walks one level per call), so it matches locally: the transitive
+  closure over the `parent` field, walked over the whole `bd list --all` set
+  and only then intersected with the scoped one. Walking the scoped set instead
+  would let `--open`/`--status` hide an intermediate bead and silently sever
+  the chain to everything below it, so `--children` costs a second `bd list
+  --all` whenever a scope filter is in play (with the default scope, that
+  *is* the fetch already made). Nothing matches on id *text*: a dotted id
+  like `proj-a1b.4` looks like it encodes parentage, but `bd update --parent`
+  reparents without renumbering, so a moved bead keeps an id naming its
+  former parent. A requested id that ends up with
+  no events warns on stderr (neutrally: a bead can be absent because it
+  doesn't exist *or* because a filter excluded it) without changing the exit
+  code. The warning names only the filters actually passed — listing every
+  filter that *could* explain the absence sends the reader hunting for a
+  `--since` they never typed — so with no other flags it reads just
+  `(not found)`. The check runs before `-n` trims, so a truncated list never
+  false-alarms. Also `-n/--limit`
   (default 0 = unlimited, like `git log`) and `--since DATE`
   (timestamp filter applied to every event kind). Pages through
   `bdutils.paged_output()` (`$PAGER` or `less -FRX` when stdout is a tty).
@@ -239,6 +262,8 @@ project (this repo itself is one):
 ./bd-log                                       # All lifecycle events (incl. closed)
 ./bd-log --open                                # Events for beads still open
 ./bd-log --only=start --status=in_progress     # What's actively being worked
+./bd-log --id beads-utils-s4s                  # One bead's whole history
+./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree
 ./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
 ./claude-session-find 'bd-log'                 # Sessions in this project matching
 ./claude-session-find -g 'paged_output'        # All projects

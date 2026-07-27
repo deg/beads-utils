@@ -50,7 +50,9 @@ session can create, claim, and close half a dozen beads while your
 attention was on the code, and afterwards you want to know what it
 actually did. `bd-log` shows the lifecycle events — created, started,
 closed — newest first, git-log style. `bd-log --open` narrows to beads
-still open: the to-do list the session left behind.
+still open: the to-do list the session left behind, and `bd-log --id
+<id> --children` narrows the other way — one bead, or one epic and
+everything under it, from creation to close.
 
 Sometimes the right reading tool is a spreadsheet — sorting issues for a
 triage meeting, or sharing the list with someone who doesn't live in a

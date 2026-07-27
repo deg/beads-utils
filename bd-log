@@ -8,7 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bdutils import add_version_arg, error, format_priority, format_ts, paged_output, resolve_project_path
+from bdutils import (
+    add_version_arg,
+    error,
+    format_priority,
+    format_ts,
+    paged_output,
+    resolve_project_path,
+    warn,
+)
 
 EVENT_KINDS = ("create", "start", "close")
 EVENT_TS_FIELD = {
@@ -20,18 +28,31 @@ EVENT_GLYPH = {"create": "+", "start": "▶", "close": "✓"}
 EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
 
 
-def run_bd_list(project_path: Path, status: str | None, open_only: bool) -> str:
-    # Three scopes, mutually exclusive by construction:
-    #   --status=LIST -> delegate the filter (and its vocabulary) to bd
-    #   --open        -> plain 'bd list', whose default already means "not closed"
-    #   neither       -> --all, the backward-compatible everything-incl-closed view
+def scope_args(status: str | None, open_only: bool) -> list[str]:
+    """The 'bd list' flags for the requested scope.
+
+    Three scopes, mutually exclusive by construction:
+      --status=LIST -> delegate the filter (and its vocabulary) to bd
+      --open        -> plain 'bd list', whose default already means "not closed"
+      neither       -> --all, the backward-compatible everything-incl-closed view
+    """
     if status:
-        scope = [f"--status={status}"]
-    elif open_only:
-        scope = []
-    else:
-        scope = ["--all"]
+        return [f"--status={status}"]
+    if open_only:
+        return []
+    return ["--all"]
+
+
+def run_bd_list(
+    project_path: Path, scope: list[str], ids: list[str] | None,
+) -> list[dict]:
     cmd = ["bd", "list", *scope, "--limit", "0", "--json"]
+    # The id filter is orthogonal to scope and composes with all three. Like
+    # --status, it delegates to bd rather than matching locally, so bd owns the
+    # id vocabulary (full ids only -- 'bd list --id y13' matches nothing).
+    # --children is the one case that cannot delegate; see select_subtrees.
+    if ids:
+        cmd.append(f"--id={','.join(ids)}")
     try:
         result = subprocess.run(
             cmd, cwd=project_path, capture_output=True, text=True, check=True,
@@ -42,7 +63,65 @@ def run_bd_list(project_path: Path, status: str | None, open_only: bool) -> str:
         if exc.stderr:
             sys.stderr.write(exc.stderr)
         error(f"bd list failed (exit {exc.returncode})")
-    return result.stdout
+    try:
+        return json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        error(f"could not parse bd list JSON output: {exc}")
+
+
+def select_subtrees(
+    issues: list[dict], topology: list[dict], roots: list[str],
+) -> tuple[list[dict], dict[str, set[str]]]:
+    """Narrow `issues` to the subtree under each of `roots` (root included).
+
+    Returns the surviving issues plus a per-root map of the in-scope ids it
+    claimed, so the caller can tell which roots came back empty.
+
+    bd cannot do this for us: 'bd list --id' does not expand children, and
+    --parent walks a single level per call. So membership is the transitive
+    closure over the 'parent' field -- walked over `topology` (the whole
+    'bd list --all' set) rather than over `issues`, because a scope filter that
+    hides an intermediate bead would otherwise sever the chain to everything
+    below it. Only the final membership test is scoped.
+
+    Nothing here matches on id *text*. Dotted ids like 'proj-a1b.4' look like
+    they encode parentage, but 'bd update --parent' reparents without
+    renumbering, so a moved bead keeps an id that names its former parent.
+    """
+    children: dict[str, list[str]] = {}
+    for issue in topology:
+        parent = issue.get("parent")
+        iid = issue_id(issue)
+        if parent and iid:
+            children.setdefault(parent, []).append(iid)
+
+    in_scope = {issue_id(i) for i in issues}
+    members: dict[str, set[str]] = {}
+    for root in roots:
+        found: set[str] = set()
+        # `seen` bounds the walk, so a parent cycle (which bd should never emit,
+        # but nothing here guarantees) terminates instead of spinning.
+        stack = [root]
+        seen = {root}
+        while stack:
+            current = stack.pop()
+            if current in in_scope:
+                found.add(current)
+            for child in children.get(current, []):
+                if child not in seen:
+                    seen.add(child)
+                    stack.append(child)
+        members[root] = found
+
+    keep: set[str] = set()
+    for found in members.values():
+        keep |= found
+    return [i for i in issues if issue_id(i) in keep], members
+
+
+def issue_id(issue: dict) -> str:
+    """Id of an issue, normalized to '' when absent so it can't match a root."""
+    return issue.get("id") or ""
 
 
 def collapse(s: str) -> str:
@@ -97,6 +176,13 @@ def parse_only(value: str) -> set[str]:
     return set(parts)
 
 
+def parse_ids(value: str) -> list[str]:
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        error("--id must list at least one bead id")
+    return list(dict.fromkeys(parts))  # dedupe, preserve the order given
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Show recent beads events (create/start/close) in a git-log-style view.",
@@ -107,11 +193,14 @@ def main() -> int:
             "  ▶ start    issue was claimed / moved to in_progress\n"
             "  ✓ close    issue was closed\n"
             "\n"
-            "Filtering has two orthogonal axes:\n"
+            "Filtering has three orthogonal axes:\n"
             "  --only=KINDS      which event kinds to render (above)\n"
             "  --status=LIST     which beads to include, by *current* status\n"
             "                    (passed through to 'bd list --status'; comma-\n"
             "                    separated). --open is shorthand for \"not closed\".\n"
+            "  --id=LIST         which beads to include, by id (comma-separated\n"
+            "                    full ids, as 'bd list --id' expects). --children\n"
+            "                    widens each id to its whole subtree.\n"
             "\n"
             "Examples:\n"
             "  bd-log                         All events, incl. closed (paged)\n"
@@ -121,6 +210,9 @@ def main() -> int:
             "  bd-log --only=start --open     What's actively being worked\n"
             "  bd-log --only=close            Closures only (previous default)\n"
             "  bd-log --only=create,close     Narrow to two kinds\n"
+            "  bd-log --id bd-1               One bead's whole history\n"
+            "  bd-log --id bd-1,bd-5          Several beads\n"
+            "  bd-log --id bd-1 --children    That bead and everything under it\n"
             "  bd-log --since 2026-04-01      Events on/after date\n"
             "  bd-log /path/to/project        Check a different project\n"
             "\n"
@@ -154,6 +246,16 @@ def main() -> int:
         help="Shorthand: include only beads that are still open (not closed).",
     )
     parser.add_argument(
+        "--id", default=None, metavar="LIST",
+        help="Include only these beads (comma-separated full bead ids; passed "
+             "through to 'bd list --id'). Composes with --status/--open.",
+    )
+    parser.add_argument(
+        "--children", action="store_true",
+        help="With --id, also include every bead under each named id "
+             "(the whole subtree, at any depth).",
+    )
+    parser.add_argument(
         "--since", default=None, metavar="DATE",
         help="Show only events on/after DATE (YYYY-MM-DD or RFC3339, UTC). "
              "Applies to every event kind, not just closures.",
@@ -168,21 +270,62 @@ def main() -> int:
     if args.limit < 0:
         error("--limit must be >= 0 (0 means unlimited)")
 
+    # 'is not None', not truthiness: --id '' is a passed-but-empty flag (an
+    # unset shell variable, typically), which parse_ids rejects by name. Reading
+    # it as "absent" would silently drop the filter and log the whole project.
+    if args.children and args.id is None:
+        error("--children needs --id (it widens the named ids to their subtrees)")
+
     kinds = parse_only(args.only) if args.only else set(EVENT_KINDS)
+    ids = parse_ids(args.id) if args.id is not None else None
 
     project_path = resolve_project_path(args.project_path)
 
-    raw = run_bd_list(project_path, args.status, args.open)
-    try:
-        issues = json.loads(raw) if raw.strip() else []
-    except json.JSONDecodeError as exc:
-        error(f"could not parse bd list JSON output: {exc}")
+    scope = scope_args(args.status, args.open)
+    # Under --children the ids are matched locally, so bd must return the whole
+    # scope for the subtree walk to have anything to narrow.
+    issues = run_bd_list(project_path, scope, None if args.children else ids)
+
+    members: dict[str, set[str]] = {}
+    if ids and args.children:
+        # The walk needs the unfiltered topology (see select_subtrees). When the
+        # scope already is --all -- the default -- that is what we just fetched.
+        topology = issues if scope == ["--all"] else run_bd_list(
+            project_path, ["--all"], None,
+        )
+        issues, members = select_subtrees(issues, topology, ids)
 
     events = synthesize_events(issues, kinds)
 
     if args.since:
         since = args.since
         events = [e for e in events if e[0] >= since]
+
+    if ids:
+        # Checked against the surviving events but *before* --limit trims them,
+        # so a requested id only gets flagged when a filter (or a typo) really
+        # left it with nothing -- never merely because -n cut it off.
+        covered = {issue_id(e[2]) for e in events}
+        if args.children:
+            missing = [r for r in ids if not (members.get(r, set()) & covered)]
+        else:
+            missing = [r for r in ids if r not in covered]
+        if missing:
+            # Name only the filters actually in play. Listing every filter that
+            # *could* explain the absence sends the reader hunting for a --since
+            # they never passed.
+            active = [
+                flag
+                for flag, given in (
+                    ("--status", args.status), ("--open", args.open),
+                    ("--only", args.only), ("--since", args.since),
+                )
+                if given
+            ]
+            cause = "not found"
+            if active:
+                cause += f", or excluded by {'/'.join(active)}"
+            warn(f"no events for: {', '.join(missing)} ({cause})")
 
     events.sort(key=lambda e: (e[0], -EVENT_ORDER[e[1]], e[2].get("id", "")), reverse=True)
 
