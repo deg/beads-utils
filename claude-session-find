@@ -9,59 +9,30 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import claudeutils
 from bdutils import add_version_arg, error, paged_output, warn
+from claudeutils import find_project_dir, project_label
 
-
-CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-
-
-def mangle_cwd(cwd: Path) -> str:
-    """Claude encodes project cwd as the path with '/' and '.' replaced by '-'."""
-    return re.sub(r"[/.]", "-", str(cwd))
-
-
-def find_project_dir(cwd: Path) -> Path | None:
-    """Return the ~/.claude/projects/<mangled> dir for cwd, or None if missing.
-
-    Tries the direct mangled lookup first; on miss, scans every project dir
-    and returns the one whose first-entry 'cwd' matches (belt-and-suspenders
-    in case Claude's encoding rules change).
-    """
-    direct = CLAUDE_PROJECTS / mangle_cwd(cwd)
-    if direct.is_dir():
-        return direct
-    target = str(cwd)
-    for pdir in CLAUDE_PROJECTS.iterdir():
-        if not pdir.is_dir():
-            continue
-        for jsonl in pdir.glob("*.jsonl"):
-            recorded = first_cwd(jsonl)
-            if recorded and recorded == target:
-                return pdir
-            break  # one file is enough to identify the project
-    return None
-
-
-def first_cwd(jsonl: Path) -> str | None:
-    """Return the 'cwd' field from the first conversational entry of a session."""
-    try:
-        with jsonl.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(obj, dict) and "cwd" in obj:
-                    return obj["cwd"]
-    except OSError:
-        return None
-    return None
+# This script predates claudeutils.py and used to carry its own copies of
+# mangle_cwd / first_cwd / find_project_dir / project_label. They drifted:
+# claudeutils.find_project_dir gained a guard for a missing projects directory
+# and the copy here never did, so it raised FileNotFoundError where its own
+# docstring promised None (beads-utils-8ju).
+#
+# That was latent rather than user-visible: main() happens to check the same
+# directory a few lines earlier and exit cleanly, which masked it. The point
+# is that two copies of one function had already drifted apart in a way
+# nothing would catch -- so the copies are gone and there is one
+# implementation.
+#
+# CLAUDE_PROJECTS is deliberately *not* from-imported. A `from` import binds a
+# second name to the same path, and the imported functions would still read
+# claudeutils' own global -- so patching one would silently miss the other,
+# which is precisely the class of bug this change removes.
 
 
 def extract_text(content, include_tool_content: bool) -> str:
@@ -193,15 +164,6 @@ def scan_session(jsonl: Path, needle: str, search_all: bool,
     return total, snips[:max_snips]
 
 
-def project_label(jsonl: Path) -> str:
-    """Short label for a session's project — prefer the recorded cwd's basename."""
-    cwd = first_cwd(jsonl)
-    if cwd:
-        base = os.path.basename(cwd.rstrip("/")) or cwd
-        return base
-    return jsonl.parent.name
-
-
 def format_mtime(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
@@ -253,13 +215,15 @@ def main() -> int:
         error("--limit must be >= 0 (0 means unlimited)")
     if not args.query:
         error("query string must be non-empty")
-    if not CLAUDE_PROJECTS.is_dir():
-        error(f"no such directory: {CLAUDE_PROJECTS}")
+    if not claudeutils.CLAUDE_PROJECTS.is_dir():
+        error(f"no such directory: {claudeutils.CLAUDE_PROJECTS}")
 
     if args.global_:
-        project_dirs = [p for p in CLAUDE_PROJECTS.iterdir() if p.is_dir()]
+        project_dirs = [
+            p for p in claudeutils.CLAUDE_PROJECTS.iterdir() if p.is_dir()
+        ]
         if not project_dirs:
-            error(f"no project subdirs in {CLAUDE_PROJECTS}")
+            error(f"no project subdirs in {claudeutils.CLAUDE_PROJECTS}")
     else:
         cwd = Path.cwd().resolve()
         pdir = find_project_dir(cwd)

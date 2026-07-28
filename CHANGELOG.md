@@ -8,6 +8,7 @@
   * Run the suite in CI on every push and pull request
 * [feature] Add a `Makefile` covering test, lint, coverage, and Dolt-sync commands — `make help` lists them all
 * [fix] Lint `claudeutils.py`, which shebang-based discovery had been skipping
+* [refactor] Fold `claude-session-find`'s duplicated session helpers into `claudeutils`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
 
 ## v0.3.0 (27Jul26)

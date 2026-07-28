@@ -479,6 +479,42 @@ def test_claude_session_find_quiet_prints_only_uuids(run_script, fake_home):
     assert result.stdout.strip() == "abcd1234-ef56-7890"
 
 
+def test_claude_session_find_global_spans_every_project(run_script, fake_home):
+    """Covers main()'s --global branch, which walks CLAUDE_PROJECTS directly.
+
+    Added because folding the duplicated helpers into claudeutils
+    (beads-utils-8ju) touched exactly this list comprehension, and nothing
+    else in the suite reaches it: the default branch goes through
+    find_project_dir instead, and a missing projects directory exits at the
+    guard several lines earlier.
+    """
+    other = fake_home / ".claude" / "projects" / "-some-other-project"
+    write_session(other, "9999aaaa-bbbb-cccc", [
+        {"type": "user", "cwd": "/some/other/project",
+         "timestamp": "2026-05-27T07:00:00Z",
+         "message": {"role": "user", "content": "please fix the pager elsewhere"}},
+    ])
+    scoped = run_script("claude-session-find", "pager", env={"HOME": str(fake_home)})
+    assert "9999aaaa-bbbb-cccc" not in scoped.stdout  # cwd's project only
+
+    result = run_script("claude-session-find", "-g", "pager",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode == 0, result.stderr
+    assert "9999aaaa-bbbb-cccc" in result.stdout
+    assert "abcd1234-ef56-7890" in result.stdout
+
+
+def test_claude_session_find_all_searches_tool_content(run_script, fake_home):
+    """-a widens the search domain past human-typed prose."""
+    default = run_script("claude-session-find", "TOOL_INPUT_MARKER",
+                         env={"HOME": str(fake_home)})
+    assert "abcd1234" not in default.stdout
+    widened = run_script("claude-session-find", "-a", "TOOL_INPUT_MARKER",
+                         env={"HOME": str(fake_home)})
+    assert widened.returncode == 0, widened.stderr
+    assert "abcd1234-ef56-7890" in widened.stdout
+
+
 def test_claude_session_find_reports_no_match(run_script, fake_home):
     """Exit 1 and a stderr line -- an empty stdout alone would also be true of
     a crash, or of any of the script's six early error() exits."""

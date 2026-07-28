@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from pathlib import Path
+
 import claudeutils
 from conftest import assistant_entry, load_script, user_entry, write_session
 
@@ -202,68 +204,76 @@ def test_scan_session_does_not_see_tool_content_by_default(tmp_path):
     assert find.scan_session(path, "needle", True, 3, 5)[0] == 1
 
 
-# --- project_label / mangle_cwd / find_project_dir ------------------------
+# --- Delegation to claudeutils --------------------------------------------
+#
+# claude-session-find used to carry its own copies of mangle_cwd, first_cwd,
+# find_project_dir and project_label. They drifted -- only the claudeutils
+# copy ever got the missing-directory guard -- which was beads-utils-8ju.
+#
+# The drift was latent, not user-visible: main() checked the same directory
+# before calling find_project_dir, so the CLI exited cleanly and only a direct
+# caller could have seen the raise. The copies are gone now, so what needs
+# testing here is that the delegation is real; the behavior itself is covered
+# once, in test_claudeutils.py.
 
 
-def test_project_label_uses_the_recorded_cwd_basename(tmp_path):
-    path = write_session(tmp_path / "p", "u1", [{"type": "user", "cwd": "/a/beads-utils"}])
-    assert find.project_label(path) == "beads-utils"
+@pytest.mark.parametrize("name", ["find_project_dir", "project_label"])
+def test_the_helpers_are_claudeutils_own_functions(name):
+    """Identity, not equivalence.
+
+    Two independent implementations that merely agree today are exactly what
+    produced 8ju. Asserting the same function object means they cannot drift
+    apart again without this failing.
+    """
+    assert getattr(find, name) is getattr(claudeutils, name)
 
 
-def test_project_label_falls_back_to_the_directory_name(tmp_path):
-    path = write_session(tmp_path / "-a-b-c", "u1", [{"type": "user"}])
-    assert find.project_label(path) == "-a-b-c"
+def test_no_local_copy_of_the_helpers_survives():
+    """A re-introduced local copy is the regression, so name them explicitly.
+
+    mangle_cwd and first_cwd were only ever used by find_project_dir, so they
+    should have no module-level presence here at all.
+    """
+    source = Path(find.__file__).read_text()
+    for helper in ("mangle_cwd", "first_cwd", "find_project_dir", "project_label"):
+        assert f"def {helper}" not in source
 
 
-def test_mangle_cwd_matches_claudes_encoding(tmp_path):
-    from pathlib import PurePosixPath
+def test_the_projects_path_is_read_through_the_module():
+    """One binding, so patching claudeutils reaches every reader.
 
-    assert find.mangle_cwd(PurePosixPath("/a/b.c")) == "-a-b-c"
+    A `from claudeutils import CLAUDE_PROJECTS` here would bind a second name
+    to the same path while the imported functions kept reading claudeutils'
+    global -- patch one, miss the other, silently. Verified by behavior:
+    redirecting claudeutils alone must change what this script resolves.
+    """
+    assert not hasattr(find, "CLAUDE_PROJECTS")
+    assert "claudeutils.CLAUDE_PROJECTS" in Path(find.__file__).read_text()
+
+
+def test_find_project_dir_now_returns_none_on_a_missing_projects_dir(
+        tmp_path, monkeypatch):
+    """The 8ju fix: the function now honors its own docstring ("or None if
+    missing") instead of raising. Patching claudeutils, not `find`, is what
+    reaches the delegated function -- and that it must be is the point."""
+    monkeypatch.setattr(claudeutils, "CLAUDE_PROJECTS", tmp_path / "absent")
+    assert find.find_project_dir(tmp_path / "myproj") is None
 
 
 def test_find_project_dir_locates_the_mangled_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(find, "CLAUDE_PROJECTS", tmp_path)
+    monkeypatch.setattr(claudeutils, "CLAUDE_PROJECTS", tmp_path)
     cwd = tmp_path / "myproj"
-    target = tmp_path / find.mangle_cwd(cwd)
+    target = tmp_path / claudeutils.mangle_cwd(cwd)
     target.mkdir()
     assert find.find_project_dir(cwd) == target
 
 
-def test_find_project_dir_still_raises_on_a_missing_projects_dir(tmp_path, monkeypatch):
-    """Pins a known defect: beads-utils-8ju.
-
-    This copy of find_project_dir predates claudeutils.py and never received
-    the `if not CLAUDE_PROJECTS.is_dir()` guard its sibling has (see the test
-    below), so on a machine that has never run Claude Code it reaches
-    iterdir() on a missing directory and dies with a raw FileNotFoundError.
-
-    Asserting the *current* behavior, rather than marking the desired one
-    xfail, is deliberate: a passing run stays completely silent. The trade is
-    that fixing 8ju breaks this test -- which is exactly what should happen,
-    and the failure message below says what to do about it.
-    """
-    monkeypatch.setattr(find, "CLAUDE_PROJECTS", tmp_path / "absent")
-    try:
-        result = find.find_project_dir(tmp_path / "myproj")
-    except FileNotFoundError:
-        return  # The defect, still present. Nothing to report.
-    pytest.fail(
-        f"find_project_dir returned {result!r} instead of raising, so "
-        "beads-utils-8ju looks fixed. Replace the body of this test with "
-        "`assert find.find_project_dir(tmp_path / 'myproj') is None`, rename "
-        "it to drop the word 'still', and close the bead."
-    )
-
-
-def test_claudeutils_find_project_dir_guards_the_missing_directory(
-        tmp_path, monkeypatch):
-    """What the test above should say once beads-utils-8ju is fixed.
-
-    Kept adjacent on purpose: the pair is the whole argument for the bead --
-    two copies of one function, only one of which got the guard.
-    """
-    monkeypatch.setattr(claudeutils, "CLAUDE_PROJECTS", tmp_path / "absent")
-    assert claudeutils.find_project_dir(tmp_path / "myproj") is None
+def test_project_label_still_reads_a_label_from_a_session(tmp_path):
+    """The delegated project_label takes an optional `cwd` the old copy did
+    not, but defaulted it produces identical output -- so the one call site in
+    this script needed no change."""
+    path = write_session(tmp_path / "p", "u1", [{"type": "user", "cwd": "/a/beads-utils"}])
+    assert find.project_label(path) == "beads-utils"
 
 
 # --- format_mtime ---------------------------------------------------------

@@ -124,7 +124,10 @@ Current scripts:
   (a user at a terminal) where color is wanted.
 - `claude-session-find` — Finds the UUID of an old Claude Code session by
   grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
-  (mangling = `/` and `.` → `-`). Defaults to the current project and
+  (mangling = `/` and `.` → `-`, via `claudeutils` — this script kept private
+  copies of that and three sibling helpers until beads-utils-8ju; it now reads
+  `claudeutils.CLAUDE_PROJECTS` through the module rather than from-importing
+  it, so there is exactly one binding for tests and callers to redirect). Defaults to the current project and
   human-typed user messages only; `-g/--global` spans all projects,
   `-a/--all` also searches assistant text, thinking, and tool inputs/outputs.
   Git-log-style output with timestamp, project label, full UUID, match count,
@@ -255,8 +258,9 @@ Shared helpers:
   `has_human_prose`, `assistant_turns` count, all returned as a `SessionMeta`
   dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
   and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
-  `claude-session-report`, `claude-session-list`, and `bd-complete`. Also
-  stdlib-only.
+  `claude-session-report`, `claude-session-list`, `claude-session-find`,
+  and `bd-complete` — `claude-session-find` predated this module and carried
+  its own copies until beads-utils-8ju folded them in. Also stdlib-only.
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.

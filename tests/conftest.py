@@ -294,27 +294,22 @@ def run_script(project):
 
 @pytest.fixture
 def claude_home(tmp_path, monkeypatch) -> Path:
-    """An empty stand-in for ~/.claude/projects, wired into every consumer.
+    """An empty stand-in for ~/.claude/projects, wired into claudeutils.
 
     Every session-reading test uses this so the suite never reads (or is
     perturbed by) the developer's real session history.
 
-    Patching `claudeutils` alone is not enough: claude-session-find predates
-    that module and still computes its own `CLAUDE_PROJECTS` from Path.home()
-    at import time, which load_script() then freezes in sys.modules — so a
-    later HOME change cannot redirect it. Any already-loaded script module
-    with its own copy is patched here too, or a test pairing this fixture with
-    that script would silently read the real directory: present on a
-    developer's machine, absent in CI. (Cleaning that duplication up is
-    beads-utils-8ju; this stays correct either way.)
+    Patching `claudeutils` alone is sufficient, and that is a property worth
+    keeping: it holds only because `claudeutils.CLAUDE_PROJECTS` is the single
+    binding every consumer reads through. When claude-session-find carried its
+    own copy (beads-utils-8ju), this fixture silently missed it — the patch
+    succeeded and changed nothing, so a test would have read the developer's
+    real directory. test_claude_session_find.py asserts the single-binding
+    invariant directly, which is what keeps this one-liner honest.
     """
     projects = tmp_path / "claude-projects"
     projects.mkdir()
     monkeypatch.setattr(claudeutils, "CLAUDE_PROJECTS", projects)
-    for module in list(sys.modules.values()):
-        if getattr(module, "__file__", None) and module is not claudeutils:
-            if Path(module.__file__).parent == ROOT and hasattr(module, "CLAUDE_PROJECTS"):
-                monkeypatch.setattr(module, "CLAUDE_PROJECTS", projects)
     return projects
 
 
