@@ -119,6 +119,10 @@ Tab completion for zsh and bash lives in [`completions/`](completions).
 `bd-view` completes bead ids (with titles shown in zsh),
 `claude-session-report` completes session uuids/titles, the project-path
 scripts complete directories, and every script completes its flags.
+Options that take a value complete in either spelling (`--id beads-1` or
+`--id=beads-1`), and the comma-separated ones (`--id`, `--only`,
+`--status`, `--sort`) complete one element at a time, so `--only=create,st`
+finishes as `--only=create,start`.
 
 Source the file for your shell from your rc file:
 
@@ -130,7 +134,10 @@ source /path/to/beads-utils/completions/beads-utils.bash
 ```
 
 The scripts (including `bd-complete`, which feeds the dynamic candidates)
-must be on your `$PATH`. Prefer the autoload convention instead? Drop
+must be on your `$PATH`. The file is read when the shell starts, so after
+pulling a release that adds a flag, start a new shell — an existing one
+still holds the old definitions and will complete nothing for it.
+Prefer the autoload convention instead? Drop
 `beads-utils.zsh` into a directory on your `$fpath`, or `beads-utils.bash`
 into your `bash-completion.d`.
 
