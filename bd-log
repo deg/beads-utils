@@ -156,6 +156,32 @@ def synthesize_events(issues: list[dict], kinds: set[str]) -> list[tuple[str, st
     return events
 
 
+def filter_since(events: list[tuple[str, str, dict]], since: str) -> list[tuple[str, str, dict]]:
+    """Drop events older than `since`, comparing the timestamps as strings.
+
+    That works because RFC3339 is fixed-width and zero-padded, so lexical
+    order is chronological order -- and a bare 'YYYY-MM-DD' bound is a prefix
+    of every timestamp on that date, so it sorts before all of them and the
+    whole day is included.
+    """
+    return [e for e in events if e[0] >= since]
+
+
+def sort_events(events: list[tuple[str, str, dict]]) -> list[tuple[str, str, dict]]:
+    """Newest first, with same-timestamp events in lifecycle order.
+
+    The kind rank is negated because the whole sort is reversed: that keeps
+    create -> start -> close reading top-down within a single timestamp, while
+    the timestamps themselves run newest-first. The id is the final tiebreak,
+    so two beads stamped the same second don't swap places between runs.
+    """
+    return sorted(
+        events,
+        key=lambda e: (e[0], -EVENT_ORDER[e[1]], e[2].get("id", "")),
+        reverse=True,
+    )
+
+
 def event_actor(kind: str, issue: dict) -> str:
     if kind == "create":
         return issue.get("created_by") or issue.get("owner") or ""
@@ -329,8 +355,7 @@ def main() -> int:
     events = synthesize_events(issues, kinds)
 
     if args.since:
-        since = args.since
-        events = [e for e in events if e[0] >= since]
+        events = filter_since(events, args.since)
 
     if ids:
         # Checked against the surviving events but *before* --limit trims them,
@@ -358,7 +383,7 @@ def main() -> int:
                 cause += f", or excluded by {'/'.join(active)}"
             warn(f"no events for: {', '.join(missing)} ({cause})")
 
-    events.sort(key=lambda e: (e[0], -EVENT_ORDER[e[1]], e[2].get("id", "")), reverse=True)
+    events = sort_events(events)
 
     if args.limit > 0:
         events = events[:args.limit]

@@ -92,6 +92,27 @@ the tool calls and every other channel too. The result is a document you can
 review at leisure, commit next to the code it produced, or hand to a
 colleague who asks "how did you get Claude to do that?"
 
+## Tests and tooling
+
+There's still no package and no build step — but there is a `Makefile`, so you
+don't have to remember any of the invocations. `make help` lists everything:
+
+```bash
+make test        # run the test suite
+make check       # ruff, plus a --version smoke test of every script
+make ci          # everything CI runs
+make dolt-check  # verify this repo's own beads data is pushed
+```
+
+Dependencies resolve through `uv` into a throwaway environment, so nothing is
+installed globally. CI runs these same targets, so a green `make ci` locally
+means a green CI.
+
+The suite in [`tests/`](tests) is fixtures all the way down: `bd` and `dolt`
+are replaced by programmable fakes on `PATH`, and Claude session history by
+synthetic `.jsonl` trees under a temporary `HOME`. Nothing touches a real beads
+project or your session history.
+
 ## Shell completion
 
 Tab completion for zsh and bash lives in [`completions/`](completions).

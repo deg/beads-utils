@@ -279,8 +279,86 @@ alone.
 
 ## Running & Testing
 
-No build system. There are no automated tests — verify manually against a real beads
-project (this repo itself is one):
+No build system, no package — but a `Makefile` as the single front door for
+every routine command, so neither a returning maintainer nor CI has to recall
+an invocation. `make help` lists all of it; `make` alone shows that help.
+
+```bash
+make test                                     # the suite (rich installed, nothing skips)
+make test PYTEST_ARGS='tests/test_bd_log.py -k SelectSubtreesBranches'
+make test-minimal                             # without rich: 3 skips, no failures
+make check                                    # ruff + a --version smoke test of each script
+make ci                                       # exactly what CI runs
+make coverage                                 # suite + htmlcov/
+make dolt-check / dolt-diff / export-csv      # this repo's own beads data
+make outdated                                 # newer releases of the pinned tools
+```
+
+`.github/workflows/lint.yml` invokes `make check` and `make test` rather than
+spelling the commands out, so a command and its pinned tool version exist in
+exactly one place. Add a target rather than documenting a raw invocation.
+
+Two Makefile details worth knowing before editing it:
+
+- `SCRIPTS` is discovered by shebang, via `HASH := \#` indirection. An inline
+  `'^#!'` inside `$(shell ...)` does not work: make strips `#` and everything
+  after it *before* parsing the function call, truncating it mid-expression.
+- `LINT_TARGETS` names `*.py` and `tests/` explicitly alongside `$(SCRIPTS)`.
+  Shebang discovery finds neither the helper modules (no shebang — which is
+  how `claudeutils.py` went unlinted until the Makefile landed) nor anything
+  in a subdirectory.
+
+Tests are a pytest suite under `tests/`, run through `uv` so nothing is
+installed into any global environment (`pytest.ini` is config, not packaging —
+a `pyproject.toml` would read as packaging the collection).
+
+Design of the suite, and the traps it exists to survive:
+
+- `tests/conftest.py` provides `load_script("bd-log")` — the scripts are
+  executables with no `.py` extension and hyphens in their names, so a normal
+  import can't reach them. `pytest.ini` sets `pythonpath = . tests`, which is
+  what makes the scripts' own `from bdutils import ...` resolve.
+- **No real external state.** `bd` and `dolt` are replaced by programmable
+  fakes on `PATH` (`fake_bd` / `fake_dolt`, matching rules against argv in the
+  order added — a bare token can shadow a longer one, so register the specific
+  rule first). Claude session history is synthetic `.jsonl` under `tmp_path`
+  with `claudeutils.CLAUDE_PROJECTS` monkeypatched, or a fake `HOME` for
+  subprocess runs. Nothing reads a real beads project or the user's sessions.
+- `bdutils.error()` calls `sys.exit(str)`; the message is printed by the
+  interpreter's top-level handler, which never runs under `pytest.raises`, so
+  assert on `excinfo.value.code`. `warn()` writes to stderr directly and *is*
+  visible to `capsys`. Two different assertion styles, same module.
+- `format_ts()` renders **local** time via `.astimezone()`, so a session
+  fixture pins `TZ=UTC` (with `time.tzset()`, which is what actually makes it
+  take). Without it, literal-timestamp assertions pass on a Mac and fail in CI.
+- `have_dolt()` is `@functools.cache`d: an autouse fixture clears it around
+  every test, or a monkeypatched `shutil.which` either does nothing (warm
+  cache) or leaks into later tests.
+- Scripts do `from bdutils import X`, so patches must target the **script**
+  module's attribute, not `bdutils`'.
+- Piping stdout inverts two defaults — `want_color("auto")` is False and
+  `_open_pager()` returns None — so end-to-end output is plain and unpaged
+  unless a flag says otherwise. Color is tested with `--color=always`.
+- `tests/test_e2e.py` runs each script as `sys.executable ./<script>`, not
+  `./<script>`: the latter sends `bd-view` back through its `uv run --script`
+  shebang, which re-resolves `rich` per call.
+- `bd-view`'s rich-path tests are `skipif(not HAVE_RICH)` rather than silently
+  exercising only the plain-text fallback; CI passes `--with rich` so the
+  branch a user actually gets is the one covered.
+- `tests/` is named explicitly in CI's ruff arguments. Shebang discovery uses
+  `grep -lE -d skip '^#!' *`, which only looks at the repo root and skips
+  subdirectories, so the tests would otherwise never be linted.
+
+The `select_subtrees` tests in `tests/test_bd_log.py::TestSelectSubtreesBranches`
+are load-bearing in a way the rest are not: they cover four `--children`
+behaviors this repo's own bead data cannot reach (a scope filter severing the
+chain to a deeper descendant, an all-non-dotted chain, a reparented bead that
+must not appear under its former parent, a parent cycle). Two of the four
+correspond to defects found only by an ad-hoc version of that check. Each was
+verified by mutation — walking the scoped set instead of the topology, dropping
+the cycle guard, or inferring parentage from dotted id text each breaks them.
+
+Also verify manually against a real beads project (this repo itself is one):
 
 ```bash
 ./bd-export-csv .                             # Export this repo to CSV in cwd

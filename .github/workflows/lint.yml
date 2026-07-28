@@ -1,42 +1,43 @@
 name: lint
 
-# Single lint check (plus a script smoke test) for the collection. Runs on
-# direct pushes to main (the maintainer's workflow) and on pull requests.
+# Lint + smoke test + the pytest suite for the collection. Runs on direct
+# pushes to main (the maintainer's workflow) and on pull requests.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:   # allow manual runs (gh workflow run lint.yml)
 
+# Both jobs delegate to the Makefile rather than spelling out commands here.
+# That keeps one definition of "how you lint" and "how you test": a contributor
+# runs `make check` / `make test` locally and gets exactly what CI runs, and
+# the pinned tool versions live in one place (the Makefile) instead of drifting
+# between this file and the docs.
 jobs:
-  ruff:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v8.1.0   # setup-uv ships only full-version tags (no moving @v8)
         with:
           enable-cache: false   # no lock files in this repo to key a cache on
-      - name: ruff check
-        # Each script is found by its shebang, so new scripts are linted
-        # automatically. `-d skip` makes grep ignore subdirectories (e.g.
-        # completions/) rather than erroring on them: under `bash -e` a grep
-        # exit-2 on a directory aborts the whole step before ruff runs. `|| true`
-        # keeps the explicit empty-result guard reachable (a no-match grep exits
-        # 1, which set -e would otherwise treat as fatal). Fail loudly if
-        # discovery finds nothing rather than silently checking only bdutils.py.
-        # xargs builds the file list (not shell word-splitting), so this behaves
-        # identically under any shell.
-        run: |
-          scripts="$(grep -lE -d skip '^#!' * 2>/dev/null)" || true
-          [ -n "$scripts" ] || { echo "::error::shebang discovery found no scripts"; exit 1; }
-          printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
-      - name: smoke test (--version)
-        # ruff is static-only; actually invoke each script (bd-view via its
-        # uv-run shebang) to catch argparse/import breakage. `-d skip` ignores
-        # subdirectories (see ruff check); read -r line by line, so no
-        # word-splitting assumptions.
-        run: |
-          grep -lE -d skip '^#!' * 2>/dev/null | while IFS= read -r s; do
-            echo "== $s --version =="
-            "./$s" --version
-          done
+      # ruff over every script (discovered by shebang), the shared helper
+      # modules, and the test suite — plus a --version smoke test of each
+      # script, since ruff is static-only and won't catch an import or
+      # argparse break. bd-view runs via its `uv run --script` shebang there,
+      # which nothing else exercises.
+      - name: make check
+        run: make check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.1.0   # see the check job for why the tag is pinned
+        with:
+          enable-cache: false
+      # `uv run --with` resolves the test dependencies into a throwaway
+      # environment, so the repo keeps its no-package / no-build-step shape:
+      # no pyproject.toml, no lock file, nothing installed globally.
+      - name: make test
+        run: make test

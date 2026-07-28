@@ -2,6 +2,12 @@
 
 * [feature] Limit `bd-log` to named beads with `--id=LIST`, or to their whole subtrees with `--children`
 * [feature] Color `bd-log` events by kind, with `--color=auto|always|never`
+* [feature] Add a pytest suite covering every script — run it with `make test`:
+  * Exercise `bd` and `dolt` through programmable fakes, and Claude sessions through synthetic transcripts, so no test touches a real project
+  * Pin the `bd-log --children` subtree behaviors that live bead data can't reach
+  * Run the suite in CI on every push and pull request
+* [feature] Add a `Makefile` covering test, lint, coverage, and Dolt-sync commands — `make help` lists them all
+* [fix] Lint `claudeutils.py`, which shebang-based discovery had been skipping
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
 
 ## v0.3.0 (27Jul26)

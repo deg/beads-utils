@@ -3,14 +3,14 @@
 Thanks for your interest! This is a small collection of Python CLI scripts that
 augment the [`bd`](https://github.com/steveyegge/beads) issue tracker.
 
-The current setup is deliberately minimal — no package, no CI, no automated
-tests — but that's a starting point, not a principle. Contributions are
+The current setup is deliberately minimal — no package, no build step, no
+installer — but that's a starting point, not a principle. Contributions are
 welcome, including:
 
 - **New scripts** that fit the collection — something else useful built on top
   of `bd`, its Dolt storage, or Claude Code sessions.
-- **Improvements to the project itself** — tests, a CI check, packaging, or
-  other tooling. The bar is low here; if you want to add scaffolding this repo
+- **Improvements to the project itself** — packaging, more CI, or other
+  tooling. The bar is low here; if you want to add scaffolding this repo
   doesn't have yet, go for it.
 - **Fixes and refinements** to the existing scripts.
 
@@ -35,15 +35,46 @@ only, except `bd-view`, whose `#!/usr/bin/env -S uv run --script` shebang pulls
 
 ## Testing
 
-There is no automated test suite. Verify changes **manually against a real
-beads project** — this repo is itself one:
+There is a pytest suite in [`tests/`](tests). Everything runs through the
+`Makefile` — `make help` lists every target:
 
 ```bash
-./bd-export-csv .                 # exercise against this repo
-python3 -m py_compile <files>     # at minimum, confirm everything still compiles
+make test                                          # the whole suite
+make test PYTEST_ARGS=tests/test_bd_log.py         # one file
+make check                                         # ruff + a --version smoke test
+make ci                                            # everything CI runs
 ```
 
-When you open a PR, describe what you ran and what you observed.
+Dependencies resolve through `uv` into a throwaway environment, so nothing
+lands in a global one. CI invokes these same targets, so a green `make ci`
+locally is a green CI.
+
+How it's put together, if you're adding to it:
+
+- **Loading the scripts.** They're executables with no `.py` extension, so
+  `tests/conftest.py` provides `load_script("bd-log")` (a `SourceFileLoader`
+  import). `pytest.ini` puts the repo root on `sys.path` so the scripts'
+  `from bdutils import ...` resolves the way it does in real use.
+- **No real external state.** `bd` and `dolt` are replaced by programmable
+  fakes on `PATH` (the `fake_bd` / `fake_dolt` fixtures); Claude session
+  history is synthetic `.jsonl` written under `tmp_path`. The suite never
+  reads a real beads project or your session history.
+- **Two failure-output styles.** `bdutils.error()` calls `sys.exit(str)`, whose
+  message the interpreter prints — invisible to `capsys`, so assert on
+  `excinfo.value.code`. `warn()` writes to stderr directly and *is* captured.
+- **Timezone.** `format_ts()` renders local time, so a session fixture pins
+  `TZ=UTC`. Don't assert a formatted timestamp without it.
+- **Optional deps.** `make test` installs `rich` so bd-view's rendering tests
+  run; `make test-minimal` omits it, and they should *skip* — three of them,
+  loudly. That's the check that the fallback path isn't quietly standing in
+  for the real one.
+
+Also verify changes **manually against a real beads project** — this repo is
+itself one — and describe what you ran in the PR:
+
+```bash
+make export-csv                   # exercise against this repo
+```
 
 ## Conventions
 
@@ -85,8 +116,8 @@ there too.
 
 1. Fork and create a topic branch.
 2. Keep changes focused and match the surrounding style.
-3. Run the affected script(s) manually and `python3 -m py_compile` on what you
-   touched.
+3. Run the test suite, and the affected script(s) manually. New behavior wants
+   a test; a bug fix wants the test that would have caught it.
 4. Open a pull request and fill out the template.
 
 Contributions are accepted under the project's [MIT License](LICENSE).
