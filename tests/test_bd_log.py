@@ -411,6 +411,19 @@ def test_render_oneline_pads_the_id_and_meta_columns_to_the_given_widths():
     assert line == "+ 2026-04-01 13:05  a-1       P2 task     T"
 
 
+@pytest.mark.parametrize("row", [{}, {"id": ""}, {"id": None}])
+def test_display_id_falls_back_for_every_falsy_id(row):
+    """'' and None are the cases plain .get('id', '?') lets through.
+
+    A '' id would size the column to 0 and leave a four-space hole where the
+    id belongs; a None would raise TypeError out of the join. Both render as
+    '?' instead. Distinct from issue_id(), which normalizes to '' precisely so
+    a falsy id cannot match a requested --id root.
+    """
+    assert bd_log.display_id(row) == "?"
+    assert bd_log.issue_id(row) == ""
+
+
 def test_render_oneline_always_has_a_meta_cell_to_render():
     """There is no empty-meta case to special-case, and that's load-bearing.
 

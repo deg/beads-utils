@@ -200,7 +200,8 @@ def main() -> int:
     brevity = parser.add_mutually_exclusive_group()
     brevity.add_argument(
         "--oneline", action="store_true",
-        help="One row per session: drop the snippet lines, keep the header",
+        help="One row per session: keep each entry's own first line, drop "
+             "its snippets. (No column-header row is printed.)",
     )
     brevity.add_argument(
         "-q", "--quiet", action="store_true",

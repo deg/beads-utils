@@ -529,7 +529,14 @@ def test_claude_session_find_quiet_prints_only_uuids(run_script, fake_home):
 
 def test_claude_session_find_oneline_drops_the_snippet_lines(run_script,
                                                              fake_home):
-    """Same header line as the block form, nothing under it."""
+    """One line per hit, carrying the same fields, with the snippets gone.
+
+    Not "identical to the block form's first line": --oneline pads the project
+    label to align the columns, so the two forms diverge the moment two hits
+    have labels of different widths. That padding is covered separately, by
+    the --global test below -- it cannot be reached here, where every hit
+    comes from one project dir and therefore shares one label.
+    """
     block = run_script("claude-session-find", "pager",
                        env={"HOME": str(fake_home)})
     assert any(ln.startswith('  "') for ln in block.stdout.splitlines())
@@ -541,6 +548,34 @@ def test_claude_session_find_oneline_drops_the_snippet_lines(run_script,
     assert len(lines) == 1
     assert "abcd1234-ef56-7890" in lines[0]
     assert "(1 hit)" in lines[0]
+
+
+def test_claude_session_find_oneline_aligns_across_project_labels(run_script,
+                                                                  fake_home):
+    """The label padding, which is the whole point of the --oneline layout.
+
+    It can only ever do anything under --global: within one project dir every
+    hit shares a label, so max() equals every element and the padding is a
+    no-op. The default-scope test above therefore passes without touching this
+    code at all -- a second project with a deliberately longer name is the
+    only way to reach it.
+    """
+    other = fake_home / ".claude" / "projects" / "-a-much-longer-project-name"
+    write_session(other, "9999aaaa-bbbb-cccc", [
+        # Label is the cwd's basename, so this one is 26 chars against the
+        # `project` fixture's 7 -- the width gap the padding has to close.
+        {"type": "user", "cwd": "/somewhere/a-much-longer-project-name",
+         "timestamp": "2026-05-27T07:00:00Z",
+         "message": {"role": "user", "content": "please fix the pager here too"}},
+    ])
+    result = run_script("claude-session-find", "-g", "--oneline", "pager",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert len(lines) == 2
+    # Both uuids start at the same column despite labels of different lengths.
+    columns = {ln.index(ln.split()[3]) for ln in lines}
+    assert len(columns) == 1, lines
 
 
 def test_claude_session_find_rejects_oneline_with_quiet(run_script, fake_home):

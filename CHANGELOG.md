@@ -9,6 +9,7 @@
   * Fail when either completion file drifts from a script's flags
   * Run the suite in CI on every push and pull request
 * [feature] Add a `Makefile` covering test, lint, coverage, and Dolt-sync commands — `make help` lists them all
+* [fix] Show `?` for a bead whose id is missing or empty in `bd-log`, rather than a gap in the id column
 * [fix] Complete options written as `--opt=value` in both shells, not just `--opt value`
 * [fix] Complete each element of a comma-separated option, so `--only=create,st` finishes
 * [fix] Complete `claude-session-report`'s `--prompts`, `--replies` and `--slash-commands`, which neither completion file listed

@@ -142,6 +142,17 @@ def issue_id(issue: dict) -> str:
     return issue.get("id") or ""
 
 
+def display_id(issue: dict) -> str:
+    """Id for *display*, falling back to '?' when missing, empty, or null.
+
+    Deliberately not issue_id(), which normalizes the same field to '' --
+    that one feeds id matching, where a falsy id must not collide with a
+    requested root. Here '' would render as a hole in the id column (and
+    None would crash the join), so both become '?'.
+    """
+    return issue.get("id") or "?"
+
+
 def collapse(s: str) -> str:
     return " ".join(s.split())
 
@@ -202,7 +213,7 @@ def event_meta(issue: dict) -> str:
 
 def render(ts: str, kind: str, issue: dict, color: bool = False) -> list[str]:
     glyph = EVENT_GLYPH[kind]
-    iid = issue.get("id", "?")
+    iid = display_id(issue)
     actor = event_actor(kind, issue)
     title = collapse(issue.get("title") or "(no title)")
 
@@ -229,7 +240,7 @@ def oneline_widths(events: list[tuple[str, str, dict]]) -> tuple[int, int]:
     Called after --limit trims, so a long-tail id in a truncated run doesn't
     pad every visible row (same rule as claude-session-list --oneline).
     """
-    id_w = max((len(e[2].get("id", "?")) for e in events), default=0)
+    id_w = max((len(display_id(e[2])) for e in events), default=0)
     meta_w = max((len(event_meta(e[2])) for e in events), default=0)
     return id_w, meta_w
 
@@ -248,7 +259,7 @@ def render_oneline(ts: str, kind: str, issue: dict, id_w: int, meta_w: int,
     """
     bits = [
         f"{EVENT_GLYPH[kind]} {format_ts(ts)}",
-        f"{issue.get('id', '?'):<{id_w}}",
+        f"{display_id(issue):<{id_w}}",
         f"{event_meta(issue):<{meta_w}}",
         collapse(issue.get("title") or "(no title)"),
     ]
