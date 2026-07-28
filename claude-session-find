@@ -177,6 +177,7 @@ def main() -> int:
             "  claude-session-find 'bd-log'                   Search cwd's sessions\n"
             "  claude-session-find -g 'paged_output'          Search all projects\n"
             "  claude-session-find -a 'dolt push'             Include tool I/O\n"
+            "  claude-session-find --oneline 'bd-log'         One row per session, no snippets\n"
             "  claude-session-find -q 'search string'         UUIDs only, pipe-friendly\n"
             "  claude --resume $(claude-session-find -q foo | head -1)\n"
             "\n"
@@ -196,7 +197,12 @@ def main() -> int:
         help="Search assistant text, thinking, and tool inputs/outputs too "
              "(default: human-typed user messages only)",
     )
-    parser.add_argument(
+    brevity = parser.add_mutually_exclusive_group()
+    brevity.add_argument(
+        "--oneline", action="store_true",
+        help="One row per session: drop the snippet lines, keep the header",
+    )
+    brevity.add_argument(
         "-q", "--quiet", action="store_true",
         help="Print only matching session IDs, one per line",
     )
@@ -240,7 +246,9 @@ def main() -> int:
     # Newest first by mtime
     sessions.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
-    max_snips = 3
+    # Neither --oneline nor -q prints snippets, and scan_session skips the
+    # extraction entirely at 0 rather than gathering them to be discarded.
+    max_snips = 0 if (args.oneline or args.quiet) else 3
     context = 80
     hits: list[tuple[Path, int, list[str]]] = []
     for jsonl in sessions:
@@ -260,18 +268,32 @@ def main() -> int:
     # paged_output(no_pager=True) gives us BrokenPipeError safety on plain
     # stdout without invoking a pager — critical for `… -q | head -1` pipelines.
     no_pager = True if args.quiet else args.no_pager
+    # project_label() re-reads the session file to recover its cwd, so labels
+    # are resolved once here -- --oneline needs each one twice, to size the
+    # column and to fill it.
+    labels = [] if args.quiet else [project_label(j) for j, _, _ in hits]
+    # --oneline pads the label so the uuid and hit-count columns line up, over
+    # the hits actually shown (--limit has already trimmed). The block form
+    # leaves it unpadded: with one entry per several lines there is no column
+    # to align to.
+    label_w = max((len(x) for x in labels), default=0) if args.oneline else 0
     with paged_output(no_pager=no_pager) as out:
         for i, (jsonl, total, snips) in enumerate(hits):
             if args.quiet:
                 print(jsonl.stem, file=out)
                 continue
-            if i:
+            if i and not args.oneline:
                 print(file=out)
             ts = format_mtime(jsonl.stat().st_mtime)
-            label = project_label(jsonl)
+            label = labels[i]
             uuid = jsonl.stem
             hits_word = "hit" if total == 1 else "hits"
-            print(f"{ts}  {label}  {uuid}  ({total} {hits_word})", file=out)
+            print(
+                f"{ts}  {label:<{label_w}}  {uuid}  ({total} {hits_word})",
+                file=out,
+            )
+            if args.oneline:
+                continue
             for s in snips:
                 print(f'  "{s}"', file=out)
         out.flush()

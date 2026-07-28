@@ -122,6 +122,23 @@ Current scripts:
   resolved from `sys.stdout` before that context manager is entered —
   testing the yielded stream would report "not a tty" in precisely the case
   (a user at a terminal) where color is wanted.
+  `--oneline` collapses each event to one row —
+  `glyph ts  id  P3 task  title` — dropping the actor (near-constant in a
+  single-owner project) and the close reason (a full paragraph in practice;
+  shedding it *is* the point of the flag). Purely a render mode: the filter
+  axes above are untouched. Deliberately **no header row**, unlike
+  `claude-session-list --oneline`: this is a git-log-style view whose columns
+  are self-describing where that script's (`8f3a2b1c`, `3h ago`, `12p/47r`)
+  are not, every row is tinted by kind so a header would sit uncolored atop a
+  colored table, and the output gets grepped. Titles are not truncated to
+  terminal width — git doesn't, and it keeps pipes honest. The id and
+  priority/type columns auto-size over the rows actually rendered, i.e.
+  *after* `-n` trims, so a long id that got cut off doesn't pad what survived.
+  One caveat inherited from the color work above: a row is ~70 colored
+  characters against a block entry's ~160–240. That is still well clear of the
+  ~18 characters at which hues stopped separating in Solarized Light, but it
+  is a 2–3× cut in the one dimension that has regressed before, so a palette
+  change should be re-checked at one-line width too.
 - `claude-session-find` — Finds the UUID of an old Claude Code session by
   grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
   (mangling = `/` and `.` → `-`, via `claudeutils` — this script kept private
@@ -131,8 +148,17 @@ Current scripts:
   human-typed user messages only; `-g/--global` spans all projects,
   `-a/--all` also searches assistant text, thinking, and tool inputs/outputs.
   Git-log-style output with timestamp, project label, full UUID, match count,
-  and up to 3 snippets per session; `-q/--quiet` prints only UUIDs
-  (pipe-friendly for `claude --resume`). Pages via `bdutils.paged_output()`.
+  and up to 3 snippets per session; `--oneline` keeps each entry's own first
+  line and drops its snippets (padding the project label so the uuid and
+  hit-count columns align — the block form has no column to align to). Like
+  `bd-log --oneline` and for the same reason, it prints no column-header row:
+  timestamp, project, uuid and hit count are self-describing, where
+  `claude-session-list`'s `8f3a2b1c` / `3h ago` / `12p/47r` are not.
+  `-q/--quiet`
+  prints only UUIDs (pipe-friendly for `claude --resume`). The three form the
+  same block → oneline → quiet ladder `claude-session-list` has, and
+  `--oneline`/`-q` share its mutex group. Neither brief mode gathers snippets
+  it won't print. Pages via `bdutils.paged_output()`.
 - `bd-view` — Pretty-prints a single bead with rendered Markdown. Where `bd
   show` dumps fields as plain text and `bd edit` shows raw markdown one
   section at a time, this renders the full bead (header metadata,
@@ -407,9 +433,12 @@ Also verify manually against a real beads project (this repo itself is one):
 ./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
 ./bd-log --color=always | cat                  # Keep color through a pipe
 ./bd-log --color=never                         # Force plain (also: NO_COLOR=1)
+./bd-log --oneline                             # One row per event
+./bd-log --oneline -n 20                       # ...and columns sized to those 20
 ./claude-session-find 'bd-log'                 # Sessions in this project matching
 ./claude-session-find -g 'paged_output'        # All projects
 ./claude-session-find -a 'dolt push'           # Include assistant/tool content
+./claude-session-find --oneline 'bd-log'       # One row per session, no snippets
 ./claude-session-find -q foo | head -1         # UUID only (for `claude --resume`)
 ./bd-view beads-utils-s4s                      # Pretty-print a single bead
 ./claude-session-report <uuid>                 # Default discussion-only render

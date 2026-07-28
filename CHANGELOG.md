@@ -2,6 +2,7 @@
 
 * [feature] Limit `bd-log` to named beads with `--id=LIST`, or to their whole subtrees with `--children`
 * [feature] Color `bd-log` events by kind, with `--color=auto|always|never`
+* [feature] Collapse each entry to a single row with `--oneline`, in both `bd-log` and `claude-session-find`
 * [feature] Add a pytest suite covering every script — run it with `make test`:
   * Exercise `bd` and `dolt` through programmable fakes, and Claude sessions through synthetic transcripts, so no test touches a real project
   * Pin the `bd-log --children` subtree behaviors that live bead data can't reach

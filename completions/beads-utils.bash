@@ -179,7 +179,8 @@ _beads_bd_log() {
     -n|--limit|--since) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-n --limit --only --status --open --id --children --since --no-pager --color --version -h --help"
+    __beads_flags "-n --limit --only --status --open --id --children --since \
+      --oneline --no-pager --color --version -h --help"
   else
     __beads_dirs
   fi
@@ -235,7 +236,7 @@ _beads_claude_session_find() {
     -n|--limit) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-g --global -a --all -q --quiet -n --limit --no-pager \
+    __beads_flags "-g --global -a --all --oneline -q --quiet -n --limit --no-pager \
       --version -h --help"
   fi
   # positional is a free-text query — nothing to complete.

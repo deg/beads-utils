@@ -163,6 +163,7 @@ _beads_dispatch() {
       '--id=[include only these beads (comma-separated full bead ids)]:ids:__beads_ids' \
       '--children[with --id, also include every bead under each named id]' \
       '--since=[show only events on/after DATE]:date' \
+      '--oneline[collapse each event to a single row]' \
       '--no-pager[write directly to stdout; skip the pager]' \
       '--color=[colorize events by kind]:when:(auto always never)' \
       '1:project:_files -/'
@@ -201,7 +202,8 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-g --global)'{-g,--global}'[search all projects under ~/.claude/projects]' \
       '(-a --all)'{-a,--all}'[search assistant/thinking/tool content too]' \
-      '(-q --quiet)'{-q,--quiet}'[print only matching session IDs]' \
+      '(--oneline -q --quiet)--oneline[one row per session; no snippet lines]' \
+      '(--oneline -q --quiet)'{-q,--quiet}'[print only matching session IDs]' \
       '(-n --limit)-n+[max matching sessions to show (0 = unlimited)]:count' \
       '(-n --limit)--limit=[max matching sessions to show (0 = unlimited)]:count' \
       '--no-pager[write directly to stdout; skip the pager]' \

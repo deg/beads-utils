@@ -178,6 +178,54 @@ def test_bd_log_children_walks_the_whole_subtree(run_script, fake_bd):
     assert "p-other" not in result.stdout
 
 
+def test_bd_log_oneline_emits_exactly_one_row_per_event(run_script, fake_bd):
+    """Two events, two lines -- no title line, and no blank separator either."""
+    fake_bd.issues([
+        issue("p-1", title="First", created_at="2026-04-01T10:00:00Z",
+              closed_at="2026-04-02T10:00:00Z", close_reason="a whole "
+              "paragraph that the block form would put on its own line"),
+    ])
+    result = run_script("bd-log", "--oneline")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert len(lines) == 2
+    assert all(ln.strip() for ln in lines)
+    assert all("First" in ln for ln in lines)
+    assert "paragraph" not in result.stdout
+
+
+def test_bd_log_oneline_aligns_the_id_column_across_rows(run_script, fake_bd):
+    fake_bd.issues([
+        issue("p-1", title="Short id", created_at="2026-04-01T10:00:00Z"),
+        issue("p-considerably-longer", title="Long id",
+              created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--oneline")
+    lines = result.stdout.splitlines()
+    assert len(lines) == 2
+    assert [ln.index("Short id") for ln in lines if "Short id" in ln] == \
+           [ln.index("Long id") for ln in lines if "Long id" in ln]
+
+
+def test_bd_log_oneline_sizes_columns_after_the_limit_trims(run_script, fake_bd):
+    """A long id that -n cut off must not pad the rows that survived."""
+    fake_bd.issues([
+        issue("p-1", title="Kept", created_at="2026-04-02T10:00:00Z"),
+        issue("p-considerably-longer", title="Trimmed",
+              created_at="2026-04-01T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--oneline", "-n", "1")
+    assert result.stdout.splitlines() == [
+        "+ 2026-04-02 10:00  p-1  P2 task  Kept",
+    ]
+
+
+def test_bd_log_oneline_keeps_the_per_kind_color(run_script, fake_bd):
+    fake_bd.issues([issue("p-1")])
+    result = run_script("bd-log", "--oneline", "--color=always")
+    assert "\033[34m" in result.stdout
+
+
 def test_bd_log_color_always_survives_a_pipe(run_script, fake_bd):
     fake_bd.issues([issue("p-1")])
     result = run_script("bd-log", "--color=always")
@@ -477,6 +525,29 @@ def test_claude_session_find_locates_a_matching_session(run_script, fake_home):
 def test_claude_session_find_quiet_prints_only_uuids(run_script, fake_home):
     result = run_script("claude-session-find", "-q", "pager", env={"HOME": str(fake_home)})
     assert result.stdout.strip() == "abcd1234-ef56-7890"
+
+
+def test_claude_session_find_oneline_drops_the_snippet_lines(run_script,
+                                                             fake_home):
+    """Same header line as the block form, nothing under it."""
+    block = run_script("claude-session-find", "pager",
+                       env={"HOME": str(fake_home)})
+    assert any(ln.startswith('  "') for ln in block.stdout.splitlines())
+
+    result = run_script("claude-session-find", "--oneline", "pager",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    assert "abcd1234-ef56-7890" in lines[0]
+    assert "(1 hit)" in lines[0]
+
+
+def test_claude_session_find_rejects_oneline_with_quiet(run_script, fake_home):
+    result = run_script("claude-session-find", "--oneline", "-q", "pager",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode != 0
+    assert "not allowed with" in result.stderr
 
 
 def test_claude_session_find_global_spans_every_project(run_script, fake_home):

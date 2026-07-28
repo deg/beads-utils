@@ -188,15 +188,25 @@ def event_actor(kind: str, issue: dict) -> str:
     return issue.get("assignee") or issue.get("owner") or ""
 
 
+def event_meta(issue: dict) -> str:
+    """The 'P3 task' priority+type cell.
+
+    Never empty: format_priority() falls back to 'P?' rather than ''. That is
+    what lets render_oneline pad the column unconditionally instead of
+    carrying an unreachable zero-width branch.
+    """
+    prio = format_priority(issue.get("priority"))
+    itype = issue.get("issue_type", "") or ""
+    return f"{prio} {itype}".strip()
+
+
 def render(ts: str, kind: str, issue: dict, color: bool = False) -> list[str]:
     glyph = EVENT_GLYPH[kind]
     iid = issue.get("id", "?")
-    prio = format_priority(issue.get("priority"))
-    itype = issue.get("issue_type", "") or ""
     actor = event_actor(kind, issue)
     title = collapse(issue.get("title") or "(no title)")
 
-    head_bits = [f"{glyph} {format_ts(ts)}", iid, f"{prio} {itype}".strip()]
+    head_bits = [f"{glyph} {format_ts(ts)}", iid, event_meta(issue)]
     if actor:
         head_bits.append(actor)
     lines = ["  ".join(head_bits), f"  {title}"]
@@ -211,6 +221,38 @@ def render(ts: str, kind: str, issue: dict, color: bool = False) -> list[str]:
     # line independently reset, which is what pagers and line-oriented tools
     # downstream expect.
     return [paint(line, EVENT_COLOR[kind], color) for line in lines]
+
+
+def oneline_widths(events: list[tuple[str, str, dict]]) -> tuple[int, int]:
+    """Column widths for --oneline, sized to the events actually rendered.
+
+    Called after --limit trims, so a long-tail id in a truncated run doesn't
+    pad every visible row (same rule as claude-session-list --oneline).
+    """
+    id_w = max((len(e[2].get("id", "?")) for e in events), default=0)
+    meta_w = max((len(event_meta(e[2])) for e in events), default=0)
+    return id_w, meta_w
+
+
+def render_oneline(ts: str, kind: str, issue: dict, id_w: int, meta_w: int,
+                   color: bool = False) -> str:
+    """One row per event: 'glyph ts  id  P3 task  title'.
+
+    Drops the actor (near-constant in a single-owner project) and the close
+    reason (which is a full paragraph in practice -- shedding it is the point
+    of the flag). Deliberately no header row, unlike claude-session-list
+    --oneline: this is a git-log-style view whose columns are self-describing,
+    every row is tinted by event kind so a header would sit uncolored atop a
+    colored table, and the output gets grepped. Titles are not truncated to
+    terminal width -- git doesn't, and it keeps pipes honest.
+    """
+    bits = [
+        f"{EVENT_GLYPH[kind]} {format_ts(ts)}",
+        f"{issue.get('id', '?'):<{id_w}}",
+        f"{event_meta(issue):<{meta_w}}",
+        collapse(issue.get("title") or "(no title)"),
+    ]
+    return paint("  ".join(bits), EVENT_COLOR[kind], color)
 
 
 def parse_only(value: str) -> set[str]:
@@ -256,6 +298,7 @@ def main() -> int:
             "Examples:\n"
             "  bd-log                         All events, incl. closed (paged)\n"
             "  bd-log -n 10                   Last 10 events\n"
+            "  bd-log --oneline               One row per event\n"
             "  bd-log --open                  Events for beads that are still open\n"
             "  bd-log --status=in_progress    Only currently in-progress beads\n"
             "  bd-log --only=start --open     What's actively being worked\n"
@@ -315,6 +358,11 @@ def main() -> int:
         "--since", default=None, metavar="DATE",
         help="Show only events on/after DATE (YYYY-MM-DD or RFC3339, UTC). "
              "Applies to every event kind, not just closures.",
+    )
+    parser.add_argument(
+        "--oneline", action="store_true",
+        help="Collapse each event to a single row (drops the actor and the "
+             "close reason). Purely a render mode; the filters are unaffected.",
     )
     parser.add_argument(
         "--no-pager", action="store_true",
@@ -395,10 +443,19 @@ def main() -> int:
     # Resolved here, not inside the `with`: paged_output yields the pager's
     # stdin pipe, which never looks like a tty even when the user is at one.
     color = want_color(args.color)
-    blocks = [render(ts, kind, issue, color) for ts, kind, issue in events]
+    if args.oneline:
+        id_w, meta_w = oneline_widths(events)
+        blocks = [
+            [render_oneline(ts, kind, issue, id_w, meta_w, color)]
+            for ts, kind, issue in events
+        ]
+    else:
+        blocks = [render(ts, kind, issue, color) for ts, kind, issue in events]
     with paged_output(no_pager=args.no_pager) as out:
         for i, block in enumerate(blocks):
-            if i:
+            # A blank line separates multi-line blocks; --oneline rows are one
+            # per event and run together, like 'git log --oneline'.
+            if i and not args.oneline:
                 print(file=out)
             for line in block:
                 print(line, file=out)

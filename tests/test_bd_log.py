@@ -386,6 +386,87 @@ def test_render_emits_no_escapes_when_color_is_off():
         assert "\033[" not in line
 
 
+# --- render_oneline -------------------------------------------------------
+
+
+def test_render_oneline_lays_out_glyph_stamp_id_meta_and_title():
+    row = issue("a-1", priority=1, issue_type="bug", title="Fix   it")
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "start", row, 3, 6)
+    assert line == "▶ 2026-04-01 13:05  a-1  P1 bug  Fix it"
+
+
+def test_render_oneline_drops_the_actor_and_the_close_reason():
+    """The whole point of the flag: one row, whatever the entry carries."""
+    row = issue("a-1", priority=1, issue_type="bug", assignee="ann",
+                title="Done", close_reason="a whole paragraph of context")
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "close", row, 3, 6)
+    assert "\n" not in line
+    assert "ann" not in line
+    assert "paragraph" not in line
+
+
+def test_render_oneline_pads_the_id_and_meta_columns_to_the_given_widths():
+    row = issue("a-1", priority=2, issue_type="task", title="T")
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "create", row, 8, 10)
+    assert line == "+ 2026-04-01 13:05  a-1       P2 task     T"
+
+
+def test_render_oneline_always_has_a_meta_cell_to_render():
+    """There is no empty-meta case to special-case, and that's load-bearing.
+
+    format_priority() falls back to 'P?' rather than '', so event_meta() is
+    never empty and meta_w is only 0 for an empty event list -- which main()
+    returns early on. render_oneline can therefore pad unconditionally.
+    """
+    assert bd_log.event_meta({}) == "P?"
+    assert bd_log.oneline_widths([("t", "create", {})]) == (1, 2)
+
+
+def test_render_oneline_falls_back_for_a_missing_id_and_title():
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "create", {}, 1, 2)
+    assert line == "+ 2026-04-01 13:05  ?  P?  (no title)"
+
+
+@pytest.mark.parametrize(
+    "kind,code",
+    [("create", "\033[34m"), ("start", "\033[32m"), ("close", "\033[31m")],
+)
+def test_render_oneline_tints_the_row_by_event_kind(kind, code):
+    """Same traffic-light hues as the block form, over the whole row.
+
+    A row is ~70 colored chars against a block entry's ~160-240 -- still well
+    above the area where hues stopped separating in Solarized Light, but it is
+    the dimension that regressed before, so the color must reach end of line.
+    """
+    row = issue("a-1", title="Colored")
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", kind, row, 3, 6,
+                                 color=True)
+    assert line.startswith(code)
+    assert line.endswith("\033[0m")
+
+
+def test_render_oneline_emits_no_escapes_when_color_is_off():
+    row = issue("a-1", title="Plain")
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "close", row, 3, 6)
+    assert "\033[" not in line
+
+
+def test_oneline_widths_size_each_column_to_its_widest_value():
+    events = [
+        ("2026-04-01T00:00:00Z", "create", issue("a-1", priority=2,
+                                                 issue_type="task")),
+        ("2026-04-01T00:00:00Z", "create", issue("project-longer-id",
+                                                 priority=1,
+                                                 issue_type="feature")),
+    ]
+    assert bd_log.oneline_widths(events) == (len("project-longer-id"),
+                                             len("P1 feature"))
+
+
+def test_oneline_widths_of_nothing_are_zero():
+    assert bd_log.oneline_widths([]) == (0, 0)
+
+
 def test_event_kind_tables_stay_in_step_with_each_other():
     """Every kind needs a timestamp field, a glyph, an order and a color."""
     for table in (bd_log.EVENT_TS_FIELD, bd_log.EVENT_GLYPH,

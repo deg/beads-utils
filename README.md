@@ -52,7 +52,9 @@ actually did. `bd-log` shows the lifecycle events — created, started,
 closed — newest first, git-log style. `bd-log --open` narrows to beads
 still open: the to-do list the session left behind, and `bd-log --id
 <id> --children` narrows the other way — one bead, or one epic and
-everything under it, from creation to close.
+everything under it, from creation to close. `--oneline` collapses each
+event to a single row when you want the shape of the week rather than
+the detail of any one entry.
 
 Sometimes the right reading tool is a spreadsheet — sorting issues for a
 triage meeting, or sharing the list with someone who doesn't live in a
@@ -82,8 +84,9 @@ script the newest UUID.
 That covers "which session was most recent"; `claude-session-find`
 covers "which session was it where we discussed the pager?" It greps
 the transcripts for a substring and lists the matching sessions with
-snippets for context. `claude --resume $(claude-session-find -q pager |
-head -1)` drops you straight back into the conversation.
+snippets for context — or, with `--oneline`, just the sessions and their
+hit counts. `claude --resume $(claude-session-find -q pager | head -1)`
+drops you straight back into the conversation.
 
 And when a session turns out to be worth keeping — a design discussion,
 a long debugging hunt — `claude-session-report` renders it as a
