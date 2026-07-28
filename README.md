@@ -120,9 +120,10 @@ Tab completion for zsh and bash lives in [`completions/`](completions).
 `claude-session-report` completes session uuids/titles, the project-path
 scripts complete directories, and every script completes its flags.
 Options that take a value complete in either spelling (`--id beads-1` or
-`--id=beads-1`), and the comma-separated ones (`--id`, `--only`,
-`--status`, `--sort`) complete one element at a time, so `--only=create,st`
-finishes as `--only=create,start`.
+`--id=beads-1`), and the comma-separated ones with a known vocabulary
+(`bd-log`'s `--id`, `--only` and `--status`; `claude-session-list --sort`)
+complete one element at a time, so `--only=create,st` finishes as
+`--only=create,start`.
 
 Source the file for your shell from your rc file:
 

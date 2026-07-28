@@ -10,7 +10,8 @@
 * [feature] Add a `Makefile` covering test, lint, coverage, and Dolt-sync commands — `make help` lists them all
 * [fix] Complete options written as `--opt=value` in both shells, not just `--opt value`
 * [fix] Complete each element of a comma-separated option, so `--only=create,st` finishes
-* [fix] Offer `claude-session-report`'s `--prompts`, `--replies` and `--slash-commands`, and `bd-log --only` / `claude-session-list --sort` candidates, which no completion file listed
+* [fix] Complete `claude-session-report`'s `--prompts`, `--replies` and `--slash-commands`, which neither completion file listed
+* [fix] Offer candidates for `bd-log --only` and `claude-session-list --sort`, which previously completed nothing
 * [fix] Lint `claudeutils.py`, which shebang-based discovery had been skipping
 * [refactor] Fold `claude-session-find`'s duplicated session helpers into `claudeutils`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`

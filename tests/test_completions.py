@@ -145,6 +145,26 @@ def bash_flags() -> dict[str, set[str]]:
 # --- the checks -----------------------------------------------------------
 
 
+def test_command_list_matches_registrations():
+    """COMMANDS covers exactly the commands both files register.
+
+    That list is hand-maintained, so a script wired up with `compdef` /
+    `complete -F` but left out of it would go unchecked by everything below —
+    the same drift this module exists to catch, one level up. All three
+    registration points (zsh's `#compdef` header and its `compdef` call, plus
+    bash's `complete -F` lines) have to agree with it.
+    """
+    zsh_text = ZSH_FILE.read_text()
+    header = set(zsh_text.splitlines()[0].removeprefix("#compdef").split())
+    compdef = zsh_text.split("\ncompdef _beads_dispatch", 1)[1]
+    registered = set(compdef.replace("\\\n", " ").split())
+    bash = set(re.findall(r"^complete -F \S+ (\S+)$", BASH_FILE.read_text(), re.M))
+
+    assert header == set(COMMANDS), "zsh #compdef header"
+    assert registered == set(COMMANDS), "zsh compdef call"
+    assert bash == set(COMMANDS), "bash complete -F lines"
+
+
 @pytest.mark.parametrize("command", COMMANDS)
 def test_zsh_covers_every_option(command, monkeypatch):
     """Every option argparse defines is in the zsh specs, and vice versa."""

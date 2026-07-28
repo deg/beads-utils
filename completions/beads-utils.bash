@@ -47,18 +47,26 @@ __beads_split_list() {
   # complete) and `__pfx` (the part to re-attach, empty when there is no
   # comma). Assignment rather than an echoed result on purpose: a command
   # substitution runs in a subshell, where the caller would never see `__pfx`.
+  #
+  # $1 = an optional further prefix to hold aside, for a per-element modifier
+  # that no candidate carries: --sort's leading `-` (descending) is the one
+  # such case, and without this `-st` would match no sort key at all.
   __pfx=""
   __word=$cur
   if [[ $__word == *,* ]]; then
     __pfx="${__word%,*},"
     __word="${__word##*,}"
   fi
+  if [[ -n $1 && $__word == "$1"* ]]; then
+    __pfx="$__pfx$1"
+    __word="${__word#"$1"}"
+  fi
 }
 
 __beads_values() {
   # $1 = bd-complete subcommand (ids|sessions). Completes the value column.
   local __pfx __word values
-  __beads_split_list
+  __beads_split_list ""
   values=$(bd-complete "$1" 2>/dev/null | cut -f1)
   COMPREPLY=($(compgen -W "$values" -- "$__word"))
   if [[ -n $__pfx ]]; then
@@ -69,8 +77,9 @@ __beads_values() {
 
 __beads_wordlist() {
   # $1 = space-separated candidates for one element of a comma-separated list.
+  # $2 = optional per-element prefix to hold aside (see __beads_split_list).
   local __pfx __word
-  __beads_split_list
+  __beads_split_list "$2"
   COMPREPLY=($(compgen -W "$1" -- "$__word"))
   if [[ -n $__pfx ]]; then
     COMPREPLY=("${COMPREPLY[@]/#/$__pfx}")
@@ -138,7 +147,7 @@ _beads_claude_session_list() {
   __beads_split_eq
   case $prev in
     -s|--sort)
-      __beads_wordlist "started last duration prompts replies turns title project id"
+      __beads_wordlist "started last duration prompts replies turns title project id" "-"
       return ;;
     -n|--limit|--min-prompts|-m|--match) return ;;
   esac
