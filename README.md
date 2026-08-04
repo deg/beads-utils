@@ -16,7 +16,7 @@ needs `rich`).
 | [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review |
 | [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
 | [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state |
-| [`bd-log`](bd-log) | Git-log-style timeline of bead lifecycle events — create, start, close (color-coded, auto-paged) |
+| [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended (color-coded, auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
@@ -55,6 +55,19 @@ still open: the to-do list the session left behind, and `bd-log --id
 everything under it, from creation to close. `--oneline` collapses each
 event to a single row when you want the shape of the week rather than
 the detail of any one entry.
+
+Beads are only half of what a session leaves behind. The other half is
+what it *learned* — the memories `bd remember` accumulates, which shape
+every future session and which nothing otherwise shows you the history
+of. `bd remember` stores no timestamps, so `bd-log` reconstructs them
+from the Dolt commits underneath and folds them into the same timeline:
+`--about=memories` for that history on its own, `--about=memories
+--only=end` for the ones that were dropped. Events are a small grid —
+`--only` picks the verb (`create`, `change`, `end`), `--about` picks
+whether it happened to a bead or to a memory — and both default to
+everything, so a plain `bd-log` now answers "what happened here" for
+both. This one part needs the `dolt` CLI; without it the bead half still
+works exactly as before.
 
 Sometimes the right reading tool is a spreadsheet — sorting issues for a
 triage meeting, or sharing the list with someone who doesn't live in a
@@ -124,9 +137,9 @@ Tab completion for zsh and bash lives in [`completions/`](completions).
 scripts complete directories, and every script completes its flags.
 Options that take a value complete in either spelling (`--id beads-1` or
 `--id=beads-1`), and the comma-separated ones with a known vocabulary
-(`bd-log`'s `--id`, `--only` and `--status`; `claude-session-list --sort`)
-complete one element at a time, so `--only=create,st` finishes as
-`--only=create,start`.
+(`bd-log`'s `--id`, `--only`, `--about` and `--status`;
+`claude-session-list --sort`) complete one element at a time, so
+`--only=create,ch` finishes as `--only=create,change`.
 
 Source the file for your shell from your rc file:
 

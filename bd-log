@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show recent beads events (create/start/close) in a git-log-style view."""
+"""Show recent beads and memory events in a git-log-style view."""
 from __future__ import annotations
 
 import argparse
@@ -11,30 +11,82 @@ from pathlib import Path
 from bdutils import (
     add_color_arg,
     add_version_arg,
+    dolt_sql_json,
     error,
     format_priority,
     format_ts,
+    have_dolt,
+    locate_dolt_db,
     paged_output,
     paint,
+    read_metadata,
     resolve_project_path,
     want_color,
     warn,
 )
 
-EVENT_KINDS = ("create", "start", "close")
+# --- The event grid -------------------------------------------------------
+#
+# Two orthogonal axes rather than one flat list of event kinds. A bead and a
+# memory have parallel lifecycles, so the same three verbs describe both:
+#
+#               create        change      end
+#   beads       created       started     closed
+#   memories    remembered    revised     forgotten
+#
+# --only picks the column, --about picks the row. The pairing is what lets the
+# palette below stay at three hues: color follows the *verb*, so both creates
+# are blue and both ends are red, and the entity rides on the glyph (and is
+# spelled out in the meta cell) instead of claiming a fourth hue.
+ENTITIES = ("beads", "memories")
+VERBS = ("create", "change", "end")
+# bd-log shipped with --only=create,start,close, and those spellings stay valid
+# forever: they are the beads row's own verbs, and they are all over this
+# repo's epilogs, CLAUDE.md and both completion files.
+VERB_ALIASES = {"start": "change", "close": "end"}
+ENTITY_ALIASES = {"bead": "beads", "memory": "memories"}
+
+BEAD_KINDS = ("create", "start", "close")
+MEMORY_KINDS = ("remember", "revise", "forget")
+MEMORY_KIND_SET = frozenset(MEMORY_KINDS)
+EVENT_KINDS = BEAD_KINDS + MEMORY_KINDS
+KIND_BY_ENTITY_VERB = {
+    "beads": dict(zip(VERBS, BEAD_KINDS)),
+    "memories": dict(zip(VERBS, MEMORY_KINDS)),
+}
+
+# Beads carry their own timestamps; memory events are reconstructed from Dolt
+# commit history instead, so only the beads row appears here.
 EVENT_TS_FIELD = {
     "create": "created_at",
     "start": "started_at",
     "close": "closed_at",
 }
-EVENT_GLYPH = {"create": "+", "start": "▶", "close": "✓"}
-EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
-# Traffic-light semantics, one hue per event kind: red goes on the event where
-# work stops (close), green on the one where it goes (start -- a play button is
-# green), and blue on create, which is neither.
+# Memory glyphs are ASCII on purpose. '▶' is East-Asian-ambiguous and already
+# mis-columns in some terminals (beads-utils-fh0); adding three more wide
+# glyphs would widen that bug rather than leave it where it is.
+EVENT_GLYPH = {
+    "create": "+", "start": "▶", "close": "✓",
+    "remember": "*", "revise": "~", "forget": "x",
+}
+EVENT_ORDER = {
+    "create": 0, "start": 1, "close": 2,
+    "remember": 0, "revise": 1, "forget": 2,
+}
+# What each glyph means, for the trailing legend. Past tense: the legend
+# describes what a row *records*, not what the flag asks for -- --only takes
+# the verb ('create'), a row reports the event ('created').
+KIND_LABEL = {
+    "create": "created", "start": "started", "close": "closed",
+    "remember": "remembered", "revise": "revised", "forget": "forgotten",
+}
+# Traffic-light semantics, one hue per *verb*: red goes on the event where work
+# stops (a bead closed, a memory forgotten), green on the one where it moves (a
+# bead started -- a play button is green -- or a memory revised), and blue on
+# create, which is neither.
 #
-# The obvious alternative maps the *sequence* instead (create green -> start
-# yellow -> close red). It's rejected on legibility: in Solarized Light -- and
+# The obvious alternative maps the *sequence* instead (create green -> change
+# yellow -> end red). It's rejected on legibility: in Solarized Light -- and
 # low-contrast light themes generally -- ANSI green and yellow are both olive
 # (#859900 / #b58900), so it would put two near-identical colors on adjacent
 # lifecycle events. Blue/green/red are the three most separated hues available.
@@ -43,7 +95,52 @@ EVENT_ORDER = {"create": 0, "start": 1, "close": 2}
 # it to the bright slots (90-97) -- which Solarized repurposes as greys. Tried
 # and rejected empirically: bold green rendered as grey base01, i.e. the start
 # events lost their color entirely. See the bright-slot note in bdutils.paint.
-EVENT_COLOR = {"create": "blue", "start": "green", "close": "red"}
+EVENT_COLOR = {
+    "create": "blue", "start": "green", "close": "red",
+    "remember": "blue", "revise": "green", "forget": "red",
+}
+
+# 'bd remember' stores a memory as a row in the Dolt `config` table, keyed
+# 'kv.memory.<key>' -- key and value, no timestamps anywhere, and bd's own
+# `events` audit table records only issue lifecycle rows. So the *only* source
+# for when a memory appeared or changed is Dolt's commit history.
+MEMORY_PREFIX = "kv.memory."
+MEMORY_QUERY = (
+    "select to_key, from_key, to_commit, to_commit_date, diff_type, "
+    "to_value, from_value from dolt_diff_config "
+    f"where coalesce(to_key, from_key) like '{MEMORY_PREFIX}%';"
+)
+MEMORY_DIFF_KIND = {"added": "remember", "modified": "revise", "removed": "forget"}
+# Memory keys run to ~50 characters against ~17 for a bead id, so in --oneline
+# an uncapped key sets the column width for every bead row too -- which is
+# beads-utils-u20's failure mode, and visibly so: on this repo's own log it
+# padded 15-character ids out to 32. 24 was picked off the rendered output as
+# the point where keys stay recognizable ('checkpoint-commit-bef...') while the
+# dead space on bead rows drops to a few characters. The block form passes no
+# cap at all, having no column to protect.
+MEMORY_KEY_MAX = 24
+MEMORY_VALUE_MAX = 100
+ELLIPSIS = "..."  # ASCII, for the same width reason as the glyphs above
+
+STAMP_WIDTH = len("YYYY-MM-DD HH:MM")
+UNCOMMITTED = "(uncommitted)"
+# An event with no timestamp is a memory change sitting in Dolt's working set.
+# It is a *descendant* of every commit, so it leads -- but that is a DAG fact,
+# not a wall-clock one, and the two must not be confused. In a repo where bd
+# commits the issue tables but never `config`, the working set is long-lived:
+# on nutshell-mvp its HEAD is minutes old while the newest *committed* memory
+# change is three weeks back, so those pending edits fall somewhere in a
+# three-week window that nothing can narrow. dolt offers no other clock --
+# to_commit_date is NULL, dolt_status has no time column, and from_commit_date
+# dates HEAD rather than the edit.
+#
+# So they are shown as a labelled group ahead of the dated log rather than
+# merged into it, and '' sorts *lowest* -- the bottom of a reversed sort --
+# which is why the sort key substitutes a sentinel that outranks every real
+# timestamp.
+NO_TIMESTAMP_SORTS_AS = "\uffff"
+PENDING_HEADER = "uncommitted -- no date until committed"
+LEGEND_INDENT = "  "
 
 
 def scope_args(status: str | None, open_only: bool) -> list[str]:
@@ -157,13 +254,92 @@ def collapse(s: str) -> str:
     return " ".join(s.split())
 
 
+def truncate(text: str, limit: int) -> str:
+    """`text` cut to `limit` characters, with an ASCII ellipsis when it was."""
+    if len(text) <= limit:
+        return text
+    return text[:limit - len(ELLIPSIS)] + ELLIPSIS
+
+
+def is_memory(kind: str) -> bool:
+    return kind in MEMORY_KIND_SET
+
+
 def synthesize_events(issues: list[dict], kinds: set[str]) -> list[tuple[str, str, dict]]:
+    """One event per non-empty lifecycle timestamp on each issue.
+
+    Memory kinds are silently ignored rather than raising: `kinds` is the whole
+    grid selection, and it is the caller's convenience -- not a contract -- that
+    the memory half is fetched elsewhere.
+    """
     events: list[tuple[str, str, dict]] = []
     for issue in issues:
         for kind in kinds:
-            ts = issue.get(EVENT_TS_FIELD[kind]) or ""
+            field = EVENT_TS_FIELD.get(kind)
+            ts = issue.get(field) or "" if field else ""
             if ts:
                 events.append((ts, kind, issue))
+    return events
+
+
+def normalize_dolt_ts(raw: str | None) -> str:
+    """Dolt's '2026-08-02 19:55:33.460000' (UTC) as bd's '2026-08-02T19:55:33Z'.
+
+    The two must share one spelling: the merged timeline sorts events as plain
+    strings, and --since compares a bare 'YYYY-MM-DD' as a prefix of them. A
+    missing date -- which is what an uncommitted working-set change has, since
+    Dolt's JSON output omits NULL columns entirely -- becomes '', the marker the
+    rest of the script reads as "no timestamp".
+    """
+    text = (raw or "").strip()
+    if len(text) < 19:
+        return ""
+    return text[:19].replace(" ", "T") + "Z"
+
+
+def memory_events(project_path: Path, kinds: set[str]) -> list[tuple[str, str, dict]] | None:
+    """Memory add/change/remove events, or None if the history can't be read.
+
+    None and [] are different answers on purpose: [] means the history was read
+    and holds nothing, None means there was nothing to read it from (no Dolt
+    CLI, a JSONL-only repo, an unreadable database). Only the caller knows
+    whether the user asked for memories explicitly, and so whether to complain.
+    """
+    beads_dir = project_path / ".beads"
+    # read_metadata() exits the process when metadata.json is missing, which is
+    # the right behavior for the dolt scripts and the wrong one here -- bd-log
+    # must still print bead events for a repo with no Dolt database at all.
+    if not (beads_dir / "metadata.json").is_file() or not have_dolt():
+        return None
+    db_name, _ = read_metadata(beads_dir)
+    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
+    if dolt_db_dir is None:
+        return None
+    rows = dolt_sql_json(dolt_db_dir, MEMORY_QUERY)
+    if rows is None:
+        return None
+
+    events: list[tuple[str, str, dict]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        kind = MEMORY_DIFF_KIND.get(row.get("diff_type", ""))
+        if kind is None or kind not in kinds:
+            continue
+        full_key = row.get("to_key") or row.get("from_key") or ""
+        # A merge commit can re-report one logical change, so a (key, commit)
+        # pair is taken once. Working-set rows all share the same sentinel
+        # commit, which is why the key is part of the identity too.
+        identity = (full_key, row.get("to_commit", ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        # A removal's value only survives on the `from` side.
+        value = row.get("from_value") if kind == "forget" else row.get("to_value")
+        events.append((
+            normalize_dolt_ts(row.get("to_commit_date")),
+            kind,
+            {"key": full_key[len(MEMORY_PREFIX):], "value": value or ""},
+        ))
     return events
 
 
@@ -174,8 +350,13 @@ def filter_since(events: list[tuple[str, str, dict]], since: str) -> list[tuple[
     order is chronological order -- and a bare 'YYYY-MM-DD' bound is a prefix
     of every timestamp on that date, so it sorts before all of them and the
     whole day is included.
+
+    Undated events (uncommitted memory changes) always survive: they are newer
+    than every commit, so no `since` bound can exclude them. Pushing the bound
+    into SQL instead would have dropped them silently -- a NULL date fails
+    every comparison.
     """
-    return [e for e in events if e[0] >= since]
+    return [e for e in events if not e[0] or e[0] >= since]
 
 
 def sort_events(events: list[tuple[str, str, dict]]) -> list[tuple[str, str, dict]]:
@@ -183,46 +364,113 @@ def sort_events(events: list[tuple[str, str, dict]]) -> list[tuple[str, str, dic
 
     The kind rank is negated because the whole sort is reversed: that keeps
     create -> start -> close reading top-down within a single timestamp, while
-    the timestamps themselves run newest-first. The id is the final tiebreak,
-    so two beads stamped the same second don't swap places between runs.
+    the timestamps themselves run newest-first. The id (or memory key) is the
+    final tiebreak, so two events stamped the same second don't swap places
+    between runs.
     """
     return sorted(
         events,
-        key=lambda e: (e[0], -EVENT_ORDER[e[1]], e[2].get("id", "")),
+        key=lambda e: (
+            e[0] or NO_TIMESTAMP_SORTS_AS,
+            -EVENT_ORDER[e[1]],
+            e[2].get("id") or e[2].get("key") or "",
+        ),
         reverse=True,
     )
 
 
-def event_actor(kind: str, issue: dict) -> str:
+def event_actor(kind: str, payload: dict) -> str:
+    """Who did it -- for beads only.
+
+    A memory event has no recoverable actor: Dolt records the committer as
+    'root', and the real name appears only inside the commit *message* text,
+    which is too fragile to parse.
+    """
+    if is_memory(kind):
+        return ""
     if kind == "create":
-        return issue.get("created_by") or issue.get("owner") or ""
-    return issue.get("assignee") or issue.get("owner") or ""
+        return payload.get("created_by") or payload.get("owner") or ""
+    return payload.get("assignee") or payload.get("owner") or ""
 
 
-def event_meta(issue: dict) -> str:
-    """The 'P3 task' priority+type cell.
+def event_id(kind: str, payload: dict, cap: int | None = None) -> str:
+    """The id cell: a bead id, or a memory key with its 'kv.memory.' prefix gone.
+
+    `cap` truncates a long key, and only --oneline passes one. The block form
+    has no column to protect -- it is the render_oneline caller that has to
+    care, because there the widest cell pads every other row, and memory keys
+    (~50 chars) would otherwise set the width for bead ids (~17) that are
+    nowhere near it. Bead ids are never capped here; that is beads-utils-u20's
+    territory, and shortening an id would break the copy-paste this column
+    exists for.
+    """
+    if is_memory(kind):
+        key = payload.get("key") or "?"
+        return truncate(key, cap) if cap else key
+    return display_id(payload)
+
+
+def event_meta(kind: str, payload: dict) -> str:
+    """The 'P3 task' priority+type cell, or 'memory' for a memory event.
 
     Never empty: format_priority() falls back to 'P?' rather than ''. That is
     what lets render_oneline pad the column unconditionally instead of
     carrying an unreachable zero-width branch.
     """
-    prio = format_priority(issue.get("priority"))
-    itype = issue.get("issue_type", "") or ""
+    if is_memory(kind):
+        return "memory"
+    prio = format_priority(payload.get("priority"))
+    itype = payload.get("issue_type", "") or ""
     return f"{prio} {itype}".strip()
 
 
-def render(ts: str, kind: str, issue: dict, color: bool = False) -> list[str]:
-    glyph = EVENT_GLYPH[kind]
-    iid = display_id(issue)
-    actor = event_actor(kind, issue)
-    title = collapse(issue.get("title") or "(no title)")
+def event_title(kind: str, payload: dict) -> str:
+    """The body line: a bead title, or a memory's value collapsed to one line.
 
-    head_bits = [f"{glyph} {format_ts(ts)}", iid, event_meta(issue)]
+    Memory values run to well over a thousand characters, so unlike a title
+    this one is truncated -- shedding the bulk is the whole point of showing it
+    at the same size as a title.
+    """
+    if is_memory(kind):
+        return truncate(collapse(payload.get("value") or ""), MEMORY_VALUE_MAX) or "(empty)"
+    return collapse(payload.get("title") or "(no title)")
+
+
+def split_pending(events: list[tuple[str, str, dict]]) -> tuple[list, list]:
+    """(undated, dated), each keeping the order it arrived in.
+
+    The undated ones are uncommitted memory changes. They are split out
+    because --limit should not spend its budget on them: -n asks how far back
+    through the *history* to go, and a pending change isn't in the history
+    yet -- 'git log -n 4' doesn't count your working tree against the four
+    either. Without this, a repo carrying half a dozen uncommitted memories
+    answers 'bd-log --open -n 4' with four of those and no beads at all.
+    """
+    return [e for e in events if not e[0]], [e for e in events if e[0]]
+
+
+def event_stamp(ts: str) -> str:
+    """The timestamp cell, padded so the columns behind it line up.
+
+    Padding is a no-op for a real timestamp (format_ts always returns exactly
+    STAMP_WIDTH characters); it exists for the '(uncommitted)' marker, which
+    is shorter.
+    """
+    return f"{format_ts(ts) if ts else UNCOMMITTED:<{STAMP_WIDTH}}"
+
+
+def render(ts: str, kind: str, payload: dict, color: bool = False) -> list[str]:
+    head_bits = [
+        f"{EVENT_GLYPH[kind]} {event_stamp(ts)}",
+        event_id(kind, payload),
+        event_meta(kind, payload),
+    ]
+    actor = event_actor(kind, payload)
     if actor:
         head_bits.append(actor)
-    lines = ["  ".join(head_bits), f"  {title}"]
+    lines = ["  ".join(head_bits), f"  {event_title(kind, payload)}"]
     if kind == "close":
-        reason = collapse(issue.get("close_reason") or "")
+        reason = collapse(payload.get("close_reason") or "")
         if reason:
             lines.append(f"  {reason}")
     # The whole entry is tinted, not just the leading stamp. A stamp is ~18
@@ -240,12 +488,12 @@ def oneline_widths(events: list[tuple[str, str, dict]]) -> tuple[int, int]:
     Called after --limit trims, so a long-tail id in a truncated run doesn't
     pad every visible row (same rule as claude-session-list --oneline).
     """
-    id_w = max((len(display_id(e[2])) for e in events), default=0)
-    meta_w = max((len(event_meta(e[2])) for e in events), default=0)
+    id_w = max((len(event_id(e[1], e[2], MEMORY_KEY_MAX)) for e in events), default=0)
+    meta_w = max((len(event_meta(e[1], e[2])) for e in events), default=0)
     return id_w, meta_w
 
 
-def render_oneline(ts: str, kind: str, issue: dict, id_w: int, meta_w: int,
+def render_oneline(ts: str, kind: str, payload: dict, id_w: int, meta_w: int,
                    color: bool = False) -> str:
     """One row per event: 'glyph ts  id  P3 task  title'.
 
@@ -258,25 +506,91 @@ def render_oneline(ts: str, kind: str, issue: dict, id_w: int, meta_w: int,
     terminal width -- git doesn't, and it keeps pipes honest.
     """
     bits = [
-        f"{EVENT_GLYPH[kind]} {format_ts(ts)}",
-        f"{display_id(issue):<{id_w}}",
-        f"{event_meta(issue):<{meta_w}}",
-        collapse(issue.get("title") or "(no title)"),
+        f"{EVENT_GLYPH[kind]} {event_stamp(ts)}",
+        f"{event_id(kind, payload, MEMORY_KEY_MAX):<{id_w}}",
+        f"{event_meta(kind, payload):<{meta_w}}",
+        event_title(kind, payload),
     ]
     return paint("  ".join(bits), EVENT_COLOR[kind], color)
 
 
+def render_legend(color: bool = False) -> list[str]:
+    """The trailing symbol key, laid out as the grid the flags describe.
+
+    Printing it as a grid rather than a flat list is the point: it is the same
+    shape as --only x --about, so it doubles as a reminder of what those two
+    select. Each cell is tinted like the rows it explains, which makes it a
+    color key as well -- the alternative, naming the hues in words, tells you
+    what they are called rather than what they look like in your theme.
+
+    Widths come from len(), so the two wide glyphs ('▶', '✓') can push their
+    column a character narrow in terminals that render them double-width. Same
+    bug as beads-utils-fh0, same fix when that lands.
+    """
+    cells = {
+        (entity, verb): KIND_BY_ENTITY_VERB[entity][verb]
+        for entity in ENTITIES for verb in VERBS
+    }
+    text = {k: f"{EVENT_GLYPH[kind]} {KIND_LABEL[kind]}" for k, kind in cells.items()}
+    col_w = {v: max(len(text[(e, v)]) for e in ENTITIES) for v in VERBS}
+    label_w = max([len("key")] + [len(LEGEND_INDENT + e) for e in ENTITIES])
+
+    lines = [
+        f"{'key':<{label_w}}  " + "  ".join(f"{v:<{col_w[v]}}" for v in VERBS).rstrip()
+    ]
+    for entity in ENTITIES:
+        # Only the last column goes unpadded: padding inside a colored span
+        # would put trailing blanks between the text and its reset code.
+        painted = [
+            paint(
+                text[(entity, v)] if last else f"{text[(entity, v)]:<{col_w[v]}}",
+                EVENT_COLOR[cells[(entity, v)]],
+                color,
+            )
+            for v, last in ((v, v == VERBS[-1]) for v in VERBS)
+        ]
+        lines.append(f"{LEGEND_INDENT + entity:<{label_w}}  " + "  ".join(painted))
+    return lines
+
+
 def parse_only(value: str) -> set[str]:
+    """The verb axis: 'create,change,end', plus the pre-grid names for two of them."""
     parts = [p.strip() for p in value.split(",") if p.strip()]
     if not parts:
-        error("--only must list at least one event kind")
-    unknown = [p for p in parts if p not in EVENT_KINDS]
+        error("--only must list at least one event verb")
+    verbs = {VERB_ALIASES.get(p, p) for p in parts}
+    unknown = [p for p in parts if VERB_ALIASES.get(p, p) not in VERBS]
+    if unknown:
+        aliases = ", ".join(f"{a}={v}" for a, v in VERB_ALIASES.items())
+        error(
+            f"unknown event verb(s): {', '.join(unknown)} "
+            f"(known: {', '.join(VERBS)}; also accepted: {aliases})"
+        )
+    return verbs
+
+
+def parse_about(value: str) -> set[str]:
+    """The entity axis: 'beads,memories', singular spellings accepted."""
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        error("--about must list at least one entity")
+    entities = {ENTITY_ALIASES.get(p, p) for p in parts}
+    unknown = [p for p in parts if ENTITY_ALIASES.get(p, p) not in ENTITIES]
     if unknown:
         error(
-            f"unknown event kind(s): {', '.join(unknown)} "
-            f"(known: {', '.join(EVENT_KINDS)})"
+            f"unknown entity/entities: {', '.join(unknown)} "
+            f"(known: {', '.join(ENTITIES)})"
         )
-    return set(parts)
+    return entities
+
+
+def select_kinds(entities: set[str], verbs: set[str]) -> set[str]:
+    """The cells of the grid that both axes select."""
+    return {
+        KIND_BY_ENTITY_VERB[entity][verb]
+        for entity in entities
+        for verb in verbs
+    }
 
 
 def parse_ids(value: str) -> list[str]:
@@ -288,33 +602,56 @@ def parse_ids(value: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Show recent beads events (create/start/close) in a git-log-style view.",
+        description="Show recent beads and memory events in a git-log-style view.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Event kinds (default: all three). On a tty the whole entry is\n"
-            "tinted by kind, traffic-light style:\n"
-            "  + create   blue   issue was created\n"
-            "  ▶ start    green  issue was claimed / moved to in_progress (go)\n"
-            "  ✓ close    red    issue was closed (stop)\n"
+            "Events form a grid: --only picks the verb, --about picks what the\n"
+            "verb happened to. Both default to everything.\n"
             "\n"
-            "Filtering has three orthogonal axes:\n"
-            "  --only=KINDS      which event kinds to render (above)\n"
+            "              create        change        end\n"
+            "  beads       + created     ▶ started     ✓ closed\n"
+            "  memories    * remembered  ~ revised     x forgotten\n"
+            "\n"
+            "On a tty the whole entry is tinted by verb, traffic-light style:\n"
+            "blue on create, green on change (where work moves -- a play button\n"
+            "is green), red on end (where it stops). 'start' and 'close' are\n"
+            "still accepted as --only values, for the change and end columns.\n"
+            "A tinted copy of that grid prints as a key below the log, so the\n"
+            "colors are shown rather than named; --legend controls it.\n"
+            "\n"
+            "Memory history comes from Dolt's commit log, since 'bd remember'\n"
+            "records no timestamps of its own. That means it needs the 'dolt'\n"
+            "CLI and a Dolt-backed repo. A memory written but not yet committed\n"
+            "has no date at all, so those changes are listed as a labelled\n"
+            "group ahead of the dated log, and -n does not count them against\n"
+            "its budget -- they are not in the history yet.\n"
+            "\n"
+            "The bead-scoping filters are orthogonal to both axes:\n"
             "  --status=LIST     which beads to include, by *current* status\n"
             "                    (passed through to 'bd list --status'; comma-\n"
             "                    separated). --open is shorthand for \"not closed\".\n"
             "  --id=LIST         which beads to include, by id (comma-separated\n"
             "                    full ids, as 'bd list --id' expects). --children\n"
             "                    widens each id to its whole subtree.\n"
+            "--id and --status imply --about=beads -- a memory is never one\n"
+            "of the ids you listed, and bd (not bd-log) owns the status\n"
+            "vocabulary, so there is no telling whether a status list means\n"
+            "live or done. --open does not: it means 'still in force', which\n"
+            "covers memories too. Pass --about explicitly to override either.\n"
             "\n"
             "Examples:\n"
-            "  bd-log                         All events, incl. closed (paged)\n"
+            "  bd-log                         Everything, beads and memories\n"
             "  bd-log -n 10                   Last 10 events\n"
             "  bd-log --oneline               One row per event\n"
+            "  bd-log --about=memories        Memory history on its own\n"
+            "  bd-log --about=memories -n 5   The five most recent memory events\n"
+            "  bd-log --about=beads           Beads only (the pre-grid behavior)\n"
+            "  bd-log --only=create           Beads created and memories added\n"
             "  bd-log --open                  Events for beads that are still open\n"
             "  bd-log --status=in_progress    Only currently in-progress beads\n"
             "  bd-log --only=start --open     What's actively being worked\n"
-            "  bd-log --only=close            Closures only (previous default)\n"
-            "  bd-log --only=create,close     Narrow to two kinds\n"
+            "  bd-log --only=close            Closures only\n"
+            "  bd-log --only=create,close     Narrow to two verbs\n"
             "  bd-log --id bd-1               One bead's whole history\n"
             "  bd-log --id bd-1,bd-5          Several beads\n"
             "  bd-log --id bd-1 --children    That bead and everything under it\n"
@@ -337,12 +674,21 @@ def main() -> int:
     )
     parser.add_argument(
         "-n", "--limit", type=int, default=0,
-        help="Maximum events to show (default: 0 = unlimited, like 'git log')",
+        help="Maximum dated events to show (default: 0 = unlimited, like "
+             "'git log'). Uncommitted memory changes are not counted against "
+             "it -- they are not in the history yet.",
     )
     parser.add_argument(
-        "--only", default=None, metavar="KINDS",
-        help="Comma-separated event kinds to include "
-             f"(known: {', '.join(EVENT_KINDS)}). Default: all.",
+        "--only", default=None, metavar="VERBS",
+        help="Comma-separated event verbs to include "
+             f"(known: {', '.join(VERBS)}; 'start' and 'close' also accepted). "
+             "Default: all.",
+    )
+    parser.add_argument(
+        "--about", default=None, metavar="ENTITIES",
+        help=f"Comma-separated entities to log ({', '.join(ENTITIES)}). "
+             "Default: both, narrowing to beads under --id/--status "
+             "(--open leaves the memories alone).",
     )
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument(
@@ -376,6 +722,12 @@ def main() -> int:
              "close reason). Purely a render mode; the filters are unaffected.",
     )
     parser.add_argument(
+        "--legend", choices=("auto", "always", "never"), default="auto",
+        metavar="WHEN",
+        help="Print the trailing symbol key (auto|always|never; default auto = "
+             "only when stdout is a terminal, so pipes stay clean).",
+    )
+    parser.add_argument(
         "--no-pager", action="store_true",
         help="Write directly to stdout; skip the pager ($PAGER or less -FRX).",
     )
@@ -392,35 +744,96 @@ def main() -> int:
     if args.children and args.id is None:
         error("--children needs --id (it widens the named ids to their subtrees)")
 
-    kinds = parse_only(args.only) if args.only else set(EVENT_KINDS)
+    verbs = parse_only(args.only) if args.only else set(VERBS)
     ids = parse_ids(args.id) if args.id is not None else None
 
+    # Every bead filter narrows the beads row. Which of them additionally
+    # implies "...and only the beads row" turns on whether this script knows
+    # what the filter *means*.
+    #
+    # --id/--children enumerate what to log, and a memory is never one of the
+    # ids typed, so logging every memory beside them buries the answer -- two
+    # bead events under nineteen memory rows, on a repo with a few years of
+    # 'bd remember' behind it.
+    #
+    # --status is an uninterpreted pass-through: bd owns that vocabulary and
+    # its validation, and bd has custom statuses, so bd-log cannot tell a
+    # live-ish list from a done-ish one and must not guess. Not knowing, it
+    # reads --status as "asking about beads, by status". Guessing produced a
+    # real defect: --status=closed used to return the whole memory log, so at
+    # -n 8 it was six-eighths identical to --status=open.
+    #
+    # --open is the one predicate bd-log defines itself -- bd's default scope,
+    # i.e. not closed, i.e. still in force -- so its meaning *can* be carried
+    # across: every memory that hasn't been forgotten is in force too. It
+    # therefore narrows the beads row and leaves the memories alone.
+    #
+    # (--open is not merely shorthand for --status=open. It passes no status
+    # flag at all, so it also covers in_progress/blocked/deferred. The two are
+    # different filters, which is what lets them differ here.)
+    beads_only = [
+        flag
+        for flag, given in (
+            ("--id", args.id is not None), ("--children", args.children),
+            ("--status", args.status),
+        )
+        if given
+    ]
+    if args.about is not None:
+        entities = parse_about(args.about)
+        # --open joins the list only to be reported: it is just as inert as the
+        # others when there is no beads row for it to filter.
+        inert = beads_only + (["--open"] if args.open else [])
+        if inert and "beads" not in entities:
+            warn(f"{'/'.join(inert)} has no effect without --about=beads")
+    else:
+        entities = {"beads"} if beads_only else set(ENTITIES)
+
+    kinds = select_kinds(entities, verbs)
     project_path = resolve_project_path(args.project_path)
 
-    scope = scope_args(args.status, args.open)
-    # Under --children the ids are matched locally, so bd must return the whole
-    # scope for the subtree walk to have anything to narrow.
-    issues = run_bd_list(project_path, scope, None if args.children else ids)
-
+    issues: list[dict] = []
     members: dict[str, set[str]] = {}
-    if ids and args.children:
-        # The walk needs the unfiltered topology (see select_subtrees). When the
-        # scope already is --all -- the default -- that is what we just fetched.
-        topology = issues if scope == ["--all"] else run_bd_list(
-            project_path, ["--all"], None,
-        )
-        issues, members = select_subtrees(issues, topology, ids)
+    scope = scope_args(args.status, args.open)
+    if "beads" in entities:
+        # Under --children the ids are matched locally, so bd must return the
+        # whole scope for the subtree walk to have anything to narrow.
+        issues = run_bd_list(project_path, scope, None if args.children else ids)
+
+        if ids and args.children:
+            # The walk needs the unfiltered topology (see select_subtrees). When
+            # the scope already is --all -- the default -- that is what we just
+            # fetched.
+            topology = issues if scope == ["--all"] else run_bd_list(
+                project_path, ["--all"], None,
+            )
+            issues, members = select_subtrees(issues, topology, ids)
 
     events = synthesize_events(issues, kinds)
+
+    if "memories" in entities:
+        from_dolt = memory_events(project_path, kinds)
+        if from_dolt is None:
+            # Silent under the default entity set: a repo with no Dolt database
+            # (or no dolt CLI) would otherwise print this on every single run.
+            # Only a user who named memories asked a question worth answering.
+            if args.about is not None:
+                warn(
+                    "no memory history available (needs the 'dolt' CLI and a "
+                    "Dolt-backed beads repo)"
+                )
+        else:
+            events += from_dolt
 
     if args.since:
         events = filter_since(events, args.since)
 
-    if ids:
+    if ids and "beads" in entities:
         # Checked against the surviving events but *before* --limit trims them,
         # so a requested id only gets flagged when a filter (or a typo) really
-        # left it with nothing -- never merely because -n cut it off.
-        covered = {issue_id(e[2]) for e in events}
+        # left it with nothing -- never merely because -n cut it off. Memory
+        # events are skipped rather than relied on to carry no 'id' field.
+        covered = {issue_id(e[2]) for e in events if not is_memory(e[1])}
         if args.children:
             missing = [r for r in ids if not (members.get(r, set()) & covered)]
         else:
@@ -442,33 +855,52 @@ def main() -> int:
                 cause += f", or excluded by {'/'.join(active)}"
             warn(f"no events for: {', '.join(missing)} ({cause})")
 
-    events = sort_events(events)
-
+    # --limit trims the dated log only; see split_pending.
+    pending, dated = split_pending(sort_events(events))
     if args.limit > 0:
-        events = events[:args.limit]
+        dated = dated[:args.limit]
+    events = pending + dated
 
     if not events:
         print("no matching events")
         return 0
 
-    # Resolved here, not inside the `with`: paged_output yields the pager's
-    # stdin pipe, which never looks like a tty even when the user is at one.
+    # Both resolved here, not inside the `with`: paged_output yields the
+    # pager's stdin pipe, which never looks like a tty even when the user is at
+    # one. Testing the yielded stream would answer "no" in exactly the case
+    # each of these is for.
     color = want_color(args.color)
+    legend = args.legend == "always" or (
+        args.legend == "auto" and sys.stdout.isatty()
+    )
     if args.oneline:
         id_w, meta_w = oneline_widths(events)
         blocks = [
-            [render_oneline(ts, kind, issue, id_w, meta_w, color)]
-            for ts, kind, issue in events
+            [render_oneline(ts, kind, payload, id_w, meta_w, color)]
+            for ts, kind, payload in events
         ]
     else:
-        blocks = [render(ts, kind, issue, color) for ts, kind, issue in events]
+        blocks = [render(ts, kind, payload, color) for ts, kind, payload in events]
     with paged_output(no_pager=args.no_pager) as out:
+        # The pending group is labelled rather than left to be inferred from
+        # the '(uncommitted)' stamps: the point that needs making is not that
+        # these rows lack a date, which the stamp already says, but *why* --
+        # that a date arrives when they are committed. Deliberately uncolored,
+        # unlike every event line: color here means a verb, and this is not one.
+        if pending:
+            print(PENDING_HEADER, file=out)
         for i, block in enumerate(blocks):
             # A blank line separates multi-line blocks; --oneline rows are one
-            # per event and run together, like 'git log --oneline'.
-            if i and not args.oneline:
+            # per event and run together, like 'git log --oneline'. The one
+            # blank --oneline does get closes the pending group off from the
+            # dated log, which is a section break rather than an entry break.
+            if i and (not args.oneline or i == len(pending)):
                 print(file=out)
             for line in block:
+                print(line, file=out)
+        if legend:
+            print(file=out)
+            for line in render_legend(color):
                 print(line, file=out)
 
     return 0

@@ -9,9 +9,12 @@ load-bearing rather than decorative.
 """
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
+
+import bdutils
 
 from conftest import load_script
 
@@ -238,24 +241,73 @@ def test_scope_args_maps_each_scope_to_bd_list_flags(status, open_only, expected
 # --- parse_only / parse_ids ----------------------------------------------
 
 
-def test_parse_only_accepts_known_kinds_and_trims_whitespace():
-    assert bd_log.parse_only("create, close") == {"create", "close"}
-    assert bd_log.parse_only("start") == {"start"}
-    assert bd_log.parse_only("create,start,close") == set(bd_log.EVENT_KINDS)
+def test_parse_only_accepts_the_verbs_and_trims_whitespace():
+    assert bd_log.parse_only("create, end") == {"create", "end"}
+    assert bd_log.parse_only("change") == {"change"}
+    assert bd_log.parse_only("create,change,end") == set(bd_log.VERBS)
 
 
-def test_parse_only_rejects_an_unknown_kind_by_name():
+def test_parse_only_still_accepts_the_pre_grid_kind_names():
+    """`--only=start,close` predates the entity axis and must keep working.
+
+    Those two spellings are in the epilog, in CLAUDE.md and in both completion
+    files, so they are an interface, not an implementation detail.
+    """
+    assert bd_log.parse_only("start") == {"change"}
+    assert bd_log.parse_only("close") == {"end"}
+    assert bd_log.parse_only("create,start,close") == set(bd_log.VERBS)
+
+
+def test_parse_only_rejects_an_unknown_verb_by_name():
     with pytest.raises(SystemExit) as excinfo:
         bd_log.parse_only("create,finish")
     assert "finish" in str(excinfo.value.code)
     assert str(excinfo.value.code).startswith("error: ")
 
 
+def test_parse_only_rejects_a_memory_kind_name():
+    """The entity lives on --about; `--only=remember` would blur the axes."""
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.parse_only("remember")
+    assert "remember" in str(excinfo.value.code)
+
+
 @pytest.mark.parametrize("value", ["", ",", "  ", ", ,"])
 def test_parse_only_rejects_an_empty_list(value):
     with pytest.raises(SystemExit) as excinfo:
         bd_log.parse_only(value)
-    assert "at least one event kind" in str(excinfo.value.code)
+    assert "at least one event verb" in str(excinfo.value.code)
+
+
+# --- parse_about / select_kinds ------------------------------------------
+
+
+def test_parse_about_accepts_both_entities_and_their_singulars():
+    assert bd_log.parse_about("beads,memories") == {"beads", "memories"}
+    assert bd_log.parse_about("memory") == {"memories"}
+    assert bd_log.parse_about(" bead ") == {"beads"}
+
+
+def test_parse_about_rejects_an_unknown_entity_by_name():
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.parse_about("beads,widgets")
+    assert "widgets" in str(excinfo.value.code)
+
+
+@pytest.mark.parametrize("value", ["", ",", "  "])
+def test_parse_about_rejects_an_empty_list(value):
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.parse_about(value)
+    assert "at least one entity" in str(excinfo.value.code)
+
+
+def test_select_kinds_picks_the_named_cells_of_the_grid():
+    assert bd_log.select_kinds({"beads"}, {"create"}) == {"create"}
+    assert bd_log.select_kinds({"memories"}, {"create"}) == {"remember"}
+    assert bd_log.select_kinds({"memories"}, {"change", "end"}) == {"revise", "forget"}
+    assert bd_log.select_kinds(set(bd_log.ENTITIES), set(bd_log.VERBS)) == set(
+        bd_log.EVENT_KINDS
+    )
 
 
 def test_parse_ids_dedupes_while_preserving_the_order_given():
@@ -431,7 +483,8 @@ def test_render_oneline_always_has_a_meta_cell_to_render():
     never empty and meta_w is only 0 for an empty event list -- which main()
     returns early on. render_oneline can therefore pad unconditionally.
     """
-    assert bd_log.event_meta({}) == "P?"
+    assert bd_log.event_meta("create", {}) == "P?"
+    assert bd_log.event_meta("remember", {}) == "memory"
     assert bd_log.oneline_widths([("t", "create", {})]) == (1, 2)
 
 
@@ -481,10 +534,80 @@ def test_oneline_widths_of_nothing_are_zero():
 
 
 def test_event_kind_tables_stay_in_step_with_each_other():
-    """Every kind needs a timestamp field, a glyph, an order and a color."""
-    for table in (bd_log.EVENT_TS_FIELD, bd_log.EVENT_GLYPH,
-                  bd_log.EVENT_ORDER, bd_log.EVENT_COLOR):
+    """Every kind needs a glyph, an order and a color.
+
+    Not a timestamp field: beads carry their own, while memory events are
+    reconstructed from Dolt commit dates, so EVENT_TS_FIELD covers the beads
+    row of the grid alone.
+    """
+    for table in (bd_log.EVENT_GLYPH, bd_log.EVENT_ORDER, bd_log.EVENT_COLOR,
+                  bd_log.KIND_LABEL):
         assert set(table) == set(bd_log.EVENT_KINDS)
+    assert set(bd_log.EVENT_TS_FIELD) == set(bd_log.BEAD_KINDS)
+
+
+def test_the_grid_covers_every_entity_and_verb_exactly_once():
+    """Both axes must be total, and no cell may be shared by two of them."""
+    assert set(bd_log.KIND_BY_ENTITY_VERB) == set(bd_log.ENTITIES)
+    cells = []
+    for entity in bd_log.ENTITIES:
+        assert set(bd_log.KIND_BY_ENTITY_VERB[entity]) == set(bd_log.VERBS)
+        cells += list(bd_log.KIND_BY_ENTITY_VERB[entity].values())
+    assert sorted(cells) == sorted(bd_log.EVENT_KINDS)
+
+
+def test_color_is_keyed_on_the_verb_not_the_entity():
+    """The palette stays at three hues because both rows share them.
+
+    That is the whole reason the grid earns its keep visually: a fourth hue for
+    memories would have to come from the plain 30-37 range, where the remaining
+    candidates (yellow, cyan) are the two that Solarized Light renders as olive
+    and as a near-blue. Entity rides on the glyph instead.
+    """
+    for verb in bd_log.VERBS:
+        hues = {
+            bd_log.EVENT_COLOR[bd_log.KIND_BY_ENTITY_VERB[entity][verb]]
+            for entity in bd_log.ENTITIES
+        }
+        assert len(hues) == 1, f"{verb} is not one hue across entities"
+    assert len(set(bd_log.EVENT_COLOR.values())) == len(bd_log.VERBS)
+
+
+def test_legend_lays_out_the_same_grid_the_flags_select():
+    lines = bd_log.render_legend()
+    assert lines[0].split() == ["key", *bd_log.VERBS]
+    assert lines[1].split()[0] == "beads"
+    assert lines[2].split()[0] == "memories"
+    # Every glyph the log can print is explained, none is explained twice.
+    glyphs = [tok for ln in lines[1:] for tok in ln.split()
+              if tok in set(bd_log.EVENT_GLYPH.values())]
+    assert sorted(glyphs) == sorted(bd_log.EVENT_GLYPH.values())
+
+
+def test_legend_tints_each_cell_like_the_rows_it_explains():
+    """It is a color key as well as a symbol key -- naming the hues in words
+    would say what they are called, not what they look like in your theme."""
+    lines = bd_log.render_legend(color=True)
+    for entity, line in zip(bd_log.ENTITIES, lines[1:]):
+        for verb in bd_log.VERBS:
+            kind = bd_log.KIND_BY_ENTITY_VERB[entity][verb]
+            # COLORS values are whole escape sequences, not bare SGR numbers.
+            code = bdutils.COLORS[bd_log.EVENT_COLOR[kind]]
+            assert f"{code}{bd_log.EVENT_GLYPH[kind]}" in line
+
+
+def test_legend_emits_no_escapes_when_color_is_off():
+    assert not any("\033[" in ln for ln in bd_log.render_legend(color=False))
+
+
+def test_memory_glyphs_are_ascii():
+    """beads-utils-fh0: '▶' is East-Asian-ambiguous and mis-columns already.
+
+    The new kinds must not widen that bug, so their glyphs stay in ASCII.
+    """
+    for kind in bd_log.MEMORY_KINDS:
+        assert bd_log.EVENT_GLYPH[kind].isascii()
+    assert bd_log.ELLIPSIS.isascii()
 
 
 # --- filter_since ---------------------------------------------------------
@@ -576,6 +699,363 @@ def test_sort_events_tolerates_an_event_whose_issue_has_no_id():
 def test_sort_events_returns_a_new_list():
     events = [event("2026-04-01T00:00:00Z"), event("2026-04-03T00:00:00Z")]
     assert bd_log.sort_events(events) is not events
+
+
+# --- memory events --------------------------------------------------------
+#
+# 'bd remember' records no timestamps of its own -- a memory is a key/value row
+# in Dolt's `config` table, and bd's `events` audit table holds only issue
+# lifecycle rows. So these events are reconstructed from `dolt_diff_config`,
+# which is why every test here goes through a fake `dolt` rather than `bd`.
+
+
+@pytest.fixture
+def dolt_project(project):
+    """`project`, plus the Dolt database directory locate_dolt_db() looks for.
+
+    The plain `project` fixture deliberately lacks it: that is a repo with no
+    Dolt database, where memory history is simply unavailable.
+    """
+    (project / ".beads" / "embeddeddolt" / "testdb" / ".dolt").mkdir(parents=True)
+    return project
+
+
+def diff_row(key, diff_type="added", commit="c1", date="2026-04-01 13:05:00.000000",
+             to_value=None, from_value=None):
+    """One `dolt_diff_config` row, in the shape dolt's JSON output really has.
+
+    NULL columns are *omitted* rather than sent as null (see
+    bdutils.dolt_sql_json), so this builder drops them too -- an added row has
+    no from_key, and an uncommitted one has no to_commit_date at all.
+    """
+    row = {"diff_type": diff_type, "to_commit": commit}
+    if date is not None:
+        row["to_commit_date"] = date
+    if diff_type == "removed":
+        row["from_key"] = bd_log.MEMORY_PREFIX + key
+    else:
+        row["to_key"] = bd_log.MEMORY_PREFIX + key
+    if to_value is not None:
+        row["to_value"] = to_value
+    if from_value is not None:
+        row["from_value"] = from_value
+    return row
+
+
+def program_dolt(fake_dolt, *rows):
+    fake_dolt.default(stdout=json.dumps({"rows": list(rows)}))
+    return fake_dolt
+
+
+ALL_MEMORY_KINDS = set(bd_log.MEMORY_KINDS)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2026-08-02 19:55:33.460000", "2026-08-02T19:55:33Z"),
+        ("2026-08-02 19:55:33", "2026-08-02T19:55:33Z"),
+        # A working-set row has no date at all; dolt's JSON omits the column.
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+        ("2026-08-02", ""),  # too short to be a timestamp; treated as absent
+    ],
+)
+def test_normalize_dolt_ts_matches_bds_own_spelling(raw, expected):
+    """Dolt returns UTC space-separated, bd returns RFC3339 with a Z.
+
+    They have to agree: the merged timeline sorts events as plain strings, and
+    --since compares a bare 'YYYY-MM-DD' as a prefix of them.
+    """
+    assert bd_log.normalize_dolt_ts(raw) == expected
+
+
+def test_memory_events_maps_each_diff_type_to_its_verb(fake_dolt, dolt_project):
+    program_dolt(
+        fake_dolt,
+        diff_row("added-one", "added", commit="c1", to_value="new"),
+        diff_row("changed-one", "modified", commit="c2", to_value="after",
+                 from_value="before"),
+        diff_row("gone-one", "removed", commit="c3", from_value="what it said"),
+    )
+    events = bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    assert {(kind, payload["key"]) for _, kind, payload in events} == {
+        ("remember", "added-one"),
+        ("revise", "changed-one"),
+        ("forget", "gone-one"),
+    }
+
+
+def test_memory_events_strip_the_kv_memory_prefix_from_the_key(fake_dolt, dolt_project):
+    program_dolt(fake_dolt, diff_row("plain-key", to_value="v"))
+    (_, _, payload), = bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    assert payload["key"] == "plain-key"
+
+
+def test_memory_events_read_a_removals_value_from_the_from_side(fake_dolt, dolt_project):
+    """A deletion has no to_value -- the text that existed is on `from`."""
+    program_dolt(fake_dolt, diff_row("gone", "removed", from_value="it said this"))
+    (_, kind, payload), = bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    assert kind == "forget"
+    assert payload["value"] == "it said this"
+
+
+def test_memory_events_leave_an_uncommitted_row_undated(fake_dolt, dolt_project):
+    """Working-set changes are real and common -- a repo with dolt auto-commit
+    off accumulates them -- and they carry no date to report."""
+    program_dolt(fake_dolt, diff_row("fresh", commit="WORKING", date=None,
+                                     to_value="just written"))
+    (ts, _, _), = bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    assert ts == ""
+
+
+def test_memory_events_dedupe_one_change_reported_by_a_merge(fake_dolt, dolt_project):
+    """A merge commit can surface the same logical change more than once."""
+    program_dolt(
+        fake_dolt,
+        diff_row("dup", commit="c1", to_value="v"),
+        diff_row("dup", commit="c1", to_value="v"),
+    )
+    assert len(bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)) == 1
+
+
+def test_memory_events_keep_the_same_key_changed_in_two_commits(fake_dolt, dolt_project):
+    """The dedup key is (key, commit) -- a memory's history is not one row."""
+    program_dolt(
+        fake_dolt,
+        diff_row("k", commit="c1", to_value="first"),
+        diff_row("k", "modified", commit="c2", to_value="second", from_value="first"),
+    )
+    assert len(bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)) == 2
+
+
+def test_memory_events_honor_the_requested_kinds(fake_dolt, dolt_project):
+    program_dolt(
+        fake_dolt,
+        diff_row("a", "added", commit="c1", to_value="v"),
+        diff_row("b", "removed", commit="c2", from_value="v"),
+    )
+    events = bd_log.memory_events(dolt_project, {"forget"})
+    assert [kind for _, kind, _ in events] == ["forget"]
+
+
+def test_memory_events_ignore_a_diff_type_they_do_not_know(fake_dolt, dolt_project):
+    program_dolt(fake_dolt, diff_row("weird", "renamed", to_value="v"))
+    assert bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS) == []
+
+
+def test_memory_events_read_nothing_but_memories(fake_dolt, dolt_project):
+    """The `config` table also holds bd's own settings; the query filters."""
+    program_dolt(fake_dolt)
+    bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    argv, = fake_dolt.calls
+    assert f"like '{bd_log.MEMORY_PREFIX}%'" in " ".join(argv)
+
+
+def test_memory_events_do_not_push_since_into_the_query(fake_dolt, dolt_project):
+    """A 'to_commit_date >= ...' clause would silently drop every working-set
+    row, because a NULL date fails every comparison. --since is applied in
+    Python instead, and filter_since keeps undated events unconditionally."""
+    program_dolt(fake_dolt)
+    bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS)
+    argv, = fake_dolt.calls
+    assert "to_commit_date >" not in " ".join(argv)
+
+
+# The None-vs-[] distinction: only the caller knows whether the user named
+# memories explicitly, and so whether an empty answer deserves a warning.
+
+
+def test_memory_events_are_none_without_a_dolt_cli(project, monkeypatch):
+    monkeypatch.setenv("PATH", str(project))  # no `dolt` anywhere on it
+    assert bd_log.memory_events(project, ALL_MEMORY_KINDS) is None
+
+
+def test_memory_events_are_none_without_a_dolt_database(fake_dolt, project):
+    """A JSONL-only (`no-db`) repo has no history to read, and must not crash."""
+    program_dolt(fake_dolt, diff_row("k", to_value="v"))
+    assert bd_log.memory_events(project, ALL_MEMORY_KINDS) is None
+
+
+def test_memory_events_are_none_without_metadata_json(fake_dolt, tmp_path):
+    """bdutils.read_metadata() exits the process when metadata.json is absent.
+
+    That is right for the dolt scripts and wrong here -- bd-log still has bead
+    events to print -- so the file is checked before it is read.
+    """
+    bare = tmp_path / "bare"
+    (bare / ".beads").mkdir(parents=True)
+    assert bd_log.memory_events(bare, ALL_MEMORY_KINDS) is None
+
+
+def test_memory_events_are_none_when_the_query_fails(fake_dolt, dolt_project):
+    fake_dolt.default(stderr="boom", exit_code=1)
+    assert bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS) is None
+
+
+def test_memory_events_of_an_empty_history_are_an_empty_list(fake_dolt, dolt_project):
+    program_dolt(fake_dolt)
+    assert bd_log.memory_events(dolt_project, ALL_MEMORY_KINDS) == []
+
+
+# --- rendering a memory event --------------------------------------------
+
+
+def memory(key="a-key", value="some value"):
+    return {"key": key, "value": value}
+
+
+def test_render_shows_the_memory_key_and_its_value():
+    lines = bd_log.render("2026-04-01T13:05:00Z", "remember", memory("my-key", "hello"))
+    assert lines == ["* 2026-04-01 13:05  my-key  memory", "  hello"]
+
+
+def test_render_marks_an_undated_memory_event_as_uncommitted():
+    lines = bd_log.render("", "revise", memory("k", "v"))
+    assert lines[0].startswith("~ (uncommitted)")
+
+
+def test_event_stamp_pads_uncommitted_to_the_width_of_a_real_timestamp():
+    """So the columns behind it line up in --oneline."""
+    assert len(bd_log.event_stamp("")) == len(
+        bd_log.event_stamp("2026-04-01T13:05:00Z")
+    )
+
+
+def test_a_memory_event_has_no_actor():
+    """Dolt records the committer as 'root'; the real name lives only inside
+    the commit message text, which is too fragile to parse."""
+    assert bd_log.event_actor("remember", memory()) == ""
+    assert bd_log.render("2026-04-01T13:05:00Z", "remember", memory())[0].count("  ") == 2
+
+
+LONG_KEY = "checkpoint-commit-before-second-round-of-changes"
+
+
+def test_a_long_memory_key_is_capped_in_the_columnar_form():
+    """Keys run to ~50 characters against ~17 for a bead id, and in --oneline
+    the widest cell pads every row -- beads-utils-u20's failure mode."""
+    cell = bd_log.event_id("remember", memory(LONG_KEY), bd_log.MEMORY_KEY_MAX)
+    assert len(cell) == bd_log.MEMORY_KEY_MAX
+    assert cell.endswith(bd_log.ELLIPSIS)
+    assert LONG_KEY.startswith(cell[:-len(bd_log.ELLIPSIS)])
+
+
+def test_the_block_form_leaves_a_long_memory_key_whole():
+    """It has no column to protect, so there is nothing to trade legibility for."""
+    assert bd_log.event_id("remember", memory(LONG_KEY)) == LONG_KEY
+    assert LONG_KEY in bd_log.render("2026-04-01T13:05:00Z", "remember",
+                                     memory(LONG_KEY))[0]
+
+
+def test_a_long_memory_key_does_not_widen_the_bead_id_column_without_limit():
+    events = [
+        ("2026-04-01T00:00:00Z", "create", issue("p-1")),
+        ("2026-04-01T00:00:00Z", "remember", memory(LONG_KEY)),
+    ]
+    id_w, _ = bd_log.oneline_widths(events)
+    assert id_w == bd_log.MEMORY_KEY_MAX
+    assert id_w < len(LONG_KEY)
+
+
+def test_a_long_memory_value_is_truncated_unlike_a_bead_title():
+    """Titles are left whole on purpose (git doesn't truncate either), but a
+    memory value is a multi-paragraph essay -- shedding it is the point."""
+    body = bd_log.event_title("remember", memory(value="x" * 500))
+    assert len(body) == bd_log.MEMORY_VALUE_MAX
+    assert body.endswith(bd_log.ELLIPSIS)
+
+
+def test_a_memory_value_is_collapsed_to_one_line():
+    body = bd_log.event_title("remember", memory(value="first\n\nsecond   para"))
+    assert body == "first second para"
+
+
+def test_an_empty_memory_value_still_renders_a_body():
+    assert bd_log.event_title("remember", memory(value="")) == "(empty)"
+
+
+@pytest.mark.parametrize(
+    "kind,code", [("remember", "\033[34m"), ("revise", "\033[32m"),
+                  ("forget", "\033[31m")],
+)
+def test_memory_events_share_the_bead_hues_verb_for_verb(kind, code):
+    """Blue create, green change, red end -- the same three, not a fourth."""
+    for line in bd_log.render("2026-04-01T13:05:00Z", kind, memory(), color=True):
+        assert line.startswith(code)
+        assert line.endswith("\033[0m")
+
+
+def test_render_oneline_lays_a_memory_event_out_like_a_bead():
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "forget",
+                                 memory("gone", "was this"), 6, 6)
+    assert line == "x 2026-04-01 13:05  gone    memory  was this"
+
+
+def test_oneline_widths_size_the_id_column_across_both_entities():
+    events = [
+        ("2026-04-01T00:00:00Z", "create", issue("p-1", priority=2,
+                                                 issue_type="task")),
+        ("2026-04-01T00:00:00Z", "remember", memory("a-longer-memory-key")),
+    ]
+    id_w, meta_w = bd_log.oneline_widths(events)
+    assert id_w == len("a-longer-memory-key")
+    assert meta_w == len("P2 task")
+
+
+# --- the two entity rows, merged -----------------------------------------
+
+
+def test_sort_events_float_undated_memory_changes_to_the_top():
+    """An uncommitted change postdates every commit in the database, so it is
+    the newest thing there is. '' sorts *lowest*, which under a reversed sort
+    would have sunk it to the bottom -- hence the sentinel in the sort key."""
+    events = [
+        ("2026-04-01T00:00:00Z", "create", issue("p-1")),
+        ("", "remember", memory("fresh")),
+        ("2026-05-01T00:00:00Z", "create", issue("p-2")),
+    ]
+    ordered = bd_log.sort_events(events)
+    assert ordered[0][2].get("key") == "fresh"
+
+
+def test_split_pending_separates_undated_events_keeping_order():
+    events = [
+        ("", "remember", memory("fresh-a")),
+        ("2026-05-01T00:00:00Z", "create", issue("p-1")),
+        ("", "revise", memory("fresh-b")),
+        ("2026-04-01T00:00:00Z", "create", issue("p-2")),
+    ]
+    pending, dated = bd_log.split_pending(events)
+    assert [e[2]["key"] for e in pending] == ["fresh-a", "fresh-b"]
+    assert [e[2]["id"] for e in dated] == ["p-1", "p-2"]
+
+
+def test_split_pending_of_an_all_dated_list_yields_no_pending():
+    events = [("2026-05-01T00:00:00Z", "create", issue("p-1"))]
+    assert bd_log.split_pending(events) == ([], events)
+
+
+def test_filter_since_never_drops_an_undated_event():
+    events = [("", "remember", memory("fresh")),
+              ("2026-01-01T00:00:00Z", "create", issue("old"))]
+    kept = bd_log.filter_since(events, "2027-01-01")
+    assert [e[2].get("key") for e in kept] == ["fresh"]
+
+
+def test_sort_events_break_ties_between_two_memories_on_their_key():
+    same = "2026-04-01T00:00:00Z"
+    events = [(same, "remember", memory("k-1")), (same, "remember", memory("k-2"))]
+    assert [e[2]["key"] for e in bd_log.sort_events(events)] == ["k-2", "k-1"]
+
+
+def test_synthesize_events_ignores_memory_kinds():
+    """It receives the whole grid selection; the memory half is fetched
+    elsewhere, and a KeyError here would be a crash rather than a no-op."""
+    rows = [issue("a-1", created_at="2026-01-01T00:00:00Z")]
+    events = bd_log.synthesize_events(rows, {"create", "remember", "forget"})
+    assert [kind for _, kind, _ in events] == ["create"]
 
 
 # --- run_bd_list ----------------------------------------------------------

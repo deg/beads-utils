@@ -165,7 +165,12 @@ _beads_bd_log() {
   __beads_split_eq
   case $prev in
     --only)
-      __beads_wordlist "create start close"
+      # Only the canonical three; `start` and `close` still work as --only
+      # values but are not advertised (see the zsh file for the same note).
+      __beads_wordlist "create change end"
+      return ;;
+    --about)
+      __beads_wordlist "beads memories"
       return ;;
     --status)
       __beads_wordlist "open in_progress blocked deferred closed pinned hooked"
@@ -173,14 +178,14 @@ _beads_bd_log() {
     --id)
       __beads_values ids
       return ;;
-    --color)
+    --color|--legend)
       COMPREPLY=($(compgen -W "auto always never" -- "$cur"))
       return 0 ;;
     -n|--limit|--since) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-n --limit --only --status --open --id --children --since \
-      --oneline --no-pager --color --version -h --help"
+    __beads_flags "-n --limit --only --about --status --open --id --children \
+      --since --oneline --legend --no-pager --color --version -h --help"
   else
     __beads_dirs
   fi

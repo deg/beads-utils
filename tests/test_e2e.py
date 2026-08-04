@@ -220,6 +220,231 @@ def test_bd_log_oneline_sizes_columns_after_the_limit_trims(run_script, fake_bd)
     ]
 
 
+# --- bd-log: the memory row of the grid -----------------------------------
+#
+# Memory history is reconstructed from Dolt commit history (bd records no
+# timestamps for a memory), so these runs need a fake `dolt` *and* a database
+# directory for locate_dolt_db() to find. Without both, memory events are
+# simply unavailable -- which is itself the subject of two tests below.
+
+
+@pytest.fixture
+def dolt_db(project):
+    (project / ".beads" / "embeddeddolt" / "testdb" / ".dolt").mkdir(parents=True)
+    return project
+
+
+def memory_rows(fake_dolt, *rows):
+    fake_dolt.default(stdout=json.dumps({"rows": list(rows)}))
+
+
+def memory_row(key, diff_type="added", commit="c1",
+               date="2026-04-05 13:05:00.000000", value="remembered text"):
+    row = {"diff_type": diff_type, "to_commit": commit,
+           "to_key": f"kv.memory.{key}"}
+    if date is not None:
+        row["to_commit_date"] = date
+    row["from_value" if diff_type == "removed" else "to_value"] = value
+    return row
+
+
+def test_bd_log_shows_memory_events_beside_bead_events(run_script, fake_bd,
+                                                      fake_dolt, dolt_db):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert "a-memory" in result.stdout
+    assert "p-1" in result.stdout
+
+
+def test_bd_log_about_memories_drops_the_bead_half(run_script, fake_bd,
+                                                   fake_dolt, dolt_db):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--about=memories", cwd=dolt_db)
+    assert "a-memory" in result.stdout
+    assert "p-1" not in result.stdout
+
+
+def test_bd_log_only_and_about_select_one_cell_of_the_grid(run_script, fake_bd,
+                                                          fake_dolt, dolt_db):
+    memory_rows(
+        fake_dolt,
+        memory_row("added-one", "added"),
+        memory_row("gone-one", "removed", commit="c2", value="was here"),
+    )
+    result = run_script("bd-log", "--about=memories", "--only=end", cwd=dolt_db)
+    assert "gone-one" in result.stdout
+    assert "added-one" not in result.stdout
+
+
+def test_bd_log_open_leaves_the_memory_row_alone(run_script, fake_bd,
+                                                 fake_dolt, dolt_db):
+    """--open is the one predicate bd-log defines itself, so it can be carried
+    across entities: 'still in force' covers every memory not yet forgotten."""
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--open", cwd=dolt_db)
+    assert "p-1" in result.stdout
+    assert "a-memory" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--id", "p-1"),
+        ("--id", "p-1", "--children"),
+        ("--status=open",),
+        ("--status=closed",),
+    ],
+)
+def test_bd_log_filters_it_cannot_interpret_imply_the_bead_row(args, run_script,
+                                                               fake_bd,
+                                                               fake_dolt,
+                                                               dolt_db):
+    """--id enumerates what to log, and a memory is never one of those ids;
+    without this, asking about one bead returns its two events under every
+    memory in the repo -- nineteen of them, on a real project.
+
+    --status is an uninterpreted pass-through (bd owns the vocabulary, and it
+    has custom statuses), so bd-log cannot tell a live-ish list from a done-ish
+    one. Guessing shipped a real defect: --status=closed returned the whole
+    memory log, leaving it six-eighths identical to --status=open at -n 8.
+    Both spellings are covered because the answer must not turn on the value.
+    """
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", *args, cwd=dolt_db)
+    assert "p-1" in result.stdout
+    assert "a-memory" not in result.stdout
+
+
+def test_bd_log_open_is_not_a_synonym_for_status_open(run_script, fake_bd,
+                                                      fake_dolt, dolt_db):
+    """The premise that let --status inherit --open's behavior was simply
+    false, and this pins why: --open passes *no* status flag, taking bd's own
+    default scope, so it also covers in_progress/blocked/deferred.
+    """
+    fake_bd.issues([])
+    run_script("bd-log", "--open", cwd=dolt_db)
+    run_script("bd-log", "--status=open", cwd=dolt_db)
+    open_argv, status_argv = fake_bd.calls
+    assert not [a for a in open_argv if a.startswith("--status")]
+    assert "--status=open" in status_argv
+
+
+def test_bd_log_explicit_about_overrides_the_implication(run_script, fake_bd,
+                                                         fake_dolt, dolt_db):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--id", "p-1", "--about=beads,memories",
+                        cwd=dolt_db)
+    assert "a-memory" in result.stdout
+
+
+def test_bd_log_says_when_a_bead_filter_cannot_apply(run_script, fake_bd,
+                                                     fake_dolt, dolt_db):
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--about=memories", "--open", cwd=dolt_db)
+    assert result.returncode == 0
+    assert "--open has no effect" in result.stderr
+
+
+def test_bd_log_is_silent_about_missing_memory_history_by_default(run_script,
+                                                                 fake_bd, project):
+    """`project` has no Dolt database. Complaining here would put a warning on
+    every single run in a JSONL-only repo, for something never asked for."""
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    result = run_script("bd-log")
+    assert result.returncode == 0
+    assert "memory" not in result.stderr
+    assert "p-1" in result.stdout
+
+
+def test_bd_log_reports_missing_memory_history_when_asked_for_it(run_script,
+                                                                 fake_bd, project):
+    result = run_script("bd-log", "--about=memories")
+    assert result.returncode == 0
+    assert "no memory history available" in result.stderr
+
+
+def test_bd_log_sorts_an_uncommitted_memory_change_first(run_script, fake_bd,
+                                                         fake_dolt, dolt_db):
+    fake_bd.issues([issue("p-1", created_at="2026-09-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("fresh", commit="WORKING", date=None))
+    result = run_script("bd-log", "--oneline", cwd=dolt_db)
+    # Line 0 is the group label; the pending event leads the events themselves.
+    assert result.stdout.splitlines()[1].startswith("* (uncommitted)")
+
+
+def test_bd_log_limit_does_not_budget_for_uncommitted_changes(run_script,
+                                                              fake_bd,
+                                                              fake_dolt,
+                                                              dolt_db):
+    """-n asks how far back through the *history* to go, and a pending change
+    isn't in the history yet -- 'git log -n 1' doesn't count your working tree
+    against the one either. Without this, a repo carrying a few uncommitted
+    memories answers '-n 2' with nothing but those.
+    """
+    fake_bd.issues([issue(f"p-{i}", created_at=f"2026-04-0{i}T13:05:00Z")
+                    for i in range(1, 4)])
+    memory_rows(
+        fake_dolt,
+        memory_row("pending-a", commit="WORKING", date=None),
+        memory_row("pending-b", commit="WORKING", date=None),
+    )
+    result = run_script("bd-log", "--oneline", "-n", "1", cwd=dolt_db)
+    assert "pending-a" in result.stdout
+    assert "pending-b" in result.stdout
+    assert len([ln for ln in result.stdout.splitlines() if "p-3" in ln]) == 1
+    assert "p-2" not in result.stdout
+
+
+def test_bd_log_labels_the_uncommitted_group(run_script, fake_bd, fake_dolt,
+                                             dolt_db):
+    """The '(uncommitted)' stamp says these have no date; the header says why."""
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("pending", commit="WORKING", date=None))
+    for extra in ([], ["--oneline"]):
+        result = run_script("bd-log", *extra, cwd=dolt_db)
+        lines = result.stdout.splitlines()
+        assert lines[0] == "uncommitted -- no date until committed"
+        # ...and the group is closed off from the dated log in either form,
+        # whose entries are 1 and 2 lines tall respectively -- hence finding
+        # the boundary rather than indexing a fixed offset.
+        first_dated = next(i for i, ln in enumerate(lines) if "p-1" in ln)
+        assert lines[first_dated - 1] == ""
+
+
+def test_bd_log_omits_the_label_when_nothing_is_pending(run_script, fake_bd,
+                                                       fake_dolt, dolt_db):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(fake_dolt, memory_row("committed-one"))
+    result = run_script("bd-log", "--oneline", cwd=dolt_db)
+    assert "uncommitted" not in result.stdout
+
+
+def test_bd_log_pending_only_output_has_no_trailing_separator(run_script,
+                                                              fake_bd,
+                                                              fake_dolt,
+                                                              dolt_db):
+    fake_bd.issues([])
+    memory_rows(fake_dolt, memory_row("pending", commit="WORKING", date=None))
+    result = run_script("bd-log", "--oneline", cwd=dolt_db)
+    assert result.stdout.splitlines()[-1].startswith("*")
+
+
+def test_bd_log_since_keeps_an_uncommitted_memory_change(run_script, fake_bd,
+                                                         fake_dolt, dolt_db):
+    """A NULL date fails every SQL comparison, so pushing --since into the
+    query would have dropped exactly the newest events."""
+    fake_bd.issues([])
+    memory_rows(fake_dolt, memory_row("fresh", commit="WORKING", date=None))
+    result = run_script("bd-log", "--since", "2099-01-01", cwd=dolt_db)
+    assert "fresh" in result.stdout
+
+
 def test_bd_log_oneline_keeps_the_per_kind_color(run_script, fake_bd):
     fake_bd.issues([issue("p-1")])
     result = run_script("bd-log", "--oneline", "--color=always")
@@ -263,10 +488,16 @@ def test_bd_log_rejects_a_directory_that_is_not_a_beads_project(run_script, tmp_
     assert "no .beads/ directory" in result.stderr
 
 
-def test_bd_log_rejects_an_unknown_event_kind(run_script, fake_bd):
+def test_bd_log_rejects_an_unknown_event_verb(run_script, fake_bd):
     result = run_script("bd-log", "--only=finish")
     assert result.returncode != 0
-    assert "unknown event kind(s): finish" in result.stderr
+    assert "unknown event verb(s): finish" in result.stderr
+
+
+def test_bd_log_rejects_an_unknown_entity(run_script, fake_bd):
+    result = run_script("bd-log", "--about=widgets")
+    assert result.returncode != 0
+    assert "unknown entity/entities: widgets" in result.stderr
 
 
 def test_bd_log_refuses_status_together_with_open(run_script, fake_bd):

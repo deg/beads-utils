@@ -75,10 +75,19 @@ __beads_sessions() {
   _describe -t sessions 'session' items
 }
 
-__beads_event_kinds() {
+__beads_event_verbs() {
+  # Only the canonical three. `start` and `close` remain valid --only values
+  # (they are what bd-log took before memories joined the grid), but offering
+  # five names for three things reads as five choices.
   compset -P '*,'
-  local -a kinds=(create start close)
-  _describe -t kinds 'event kind' kinds
+  local -a verbs=(create change end)
+  _describe -t verbs 'event verb' verbs
+}
+
+__beads_entities() {
+  compset -P '*,'
+  local -a entities=(beads memories)
+  _describe -t entities 'entity' entities
 }
 
 __beads_statuses() {
@@ -157,7 +166,8 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '(-n --limit)-n+[max events to show (0 = unlimited)]:count' \
       '(-n --limit)--limit=[max events to show (0 = unlimited)]:count' \
-      '--only=[comma-separated event kinds to include]:kinds:__beads_event_kinds' \
+      '--only=[comma-separated event verbs to include]:verbs:__beads_event_verbs' \
+      '--about=[comma-separated entities to log (beads, memories)]:entities:__beads_entities' \
       '(--status --open)--status=[include only beads with these current statuses]:statuses:__beads_statuses' \
       '(--status --open)--open[shorthand: only beads still open (not closed)]' \
       '--id=[include only these beads (comma-separated full bead ids)]:ids:__beads_ids' \
@@ -166,6 +176,7 @@ _beads_dispatch() {
       '--oneline[collapse each event to a single row]' \
       '--no-pager[write directly to stdout; skip the pager]' \
       '--color=[colorize events by kind]:when:(auto always never)' \
+      '--legend=[print the trailing symbol key]:when:(auto always never)' \
       '1:project:_files -/'
     ;;
   bd-export-csv)

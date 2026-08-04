@@ -1,5 +1,11 @@
 ## Unreleased
 
+* [feature] Log memories alongside beads in `bd-log` — when one was remembered, revised, or forgotten:
+  * `--about=beads,memories` picks what to log; `--only=create,change,end` picks the verb, for either
+  * `--only=start` and `--only=close` keep working, as the change and end verbs
+  * A memory written but not yet committed to Dolt has no date, so those changes lead in a labelled group and `-n` doesn't count them
+  * Needs the `dolt` CLI and a Dolt-backed repo, since `bd remember` stores no timestamps
+* [feature] Print a tinted symbol key below `bd-log`'s output, showing what each glyph and color means (`--legend=auto|always|never`; auto = only on a terminal)
 * [feature] Limit `bd-log` to named beads with `--id=LIST`, or to their whole subtrees with `--children`
 * [feature] Color `bd-log` events by kind, with `--color=auto|always|never`
 * [feature] Collapse each entry to a single row with `--oneline`, in both `bd-log` and `claude-session-find`
