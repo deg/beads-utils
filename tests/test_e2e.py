@@ -445,6 +445,57 @@ def test_bd_log_since_keeps_an_uncommitted_memory_change(run_script, fake_bd,
     assert "fresh" in result.stdout
 
 
+# --- bd-log: the trailing symbol key --------------------------------------
+#
+# want_legend() and render_legend() each have unit tests, but nothing tested
+# that they are *wired to stdout*: inverting `if legend:` in main(), or
+# dropping the argparse registration, broke no test. The `auto` default is
+# structurally uncoverable here -- run_script pipes stdout, so auto is False
+# in every e2e run, which is indistinguishable from the feature being off --
+# so these pin the two explicit modes, and the unit test with isatty patched
+# covers auto.
+
+
+def test_bd_log_legend_always_prints_the_key_after_the_log(run_script, fake_bd):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    result = run_script("bd-log", "--oneline", "--legend=always")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("+")           # the log comes first
+    # ...then a blank, then the key's three lines: header, beads, memories.
+    assert lines[-4] == ""
+    assert lines[-3].split() == ["key", "create", "change", "end"]
+    assert lines[-2].split()[0] == "beads"
+    assert lines[-1].split()[0] == "memories"
+
+
+def test_bd_log_legend_never_suppresses_the_key(run_script, fake_bd):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    result = run_script("bd-log", "--oneline", "--legend=never")
+    assert "key" not in result.stdout
+
+
+def test_bd_log_legend_is_off_by_default_through_a_pipe(run_script, fake_bd):
+    """Asserted deliberately, not merely relied upon.
+
+    Several assertions elsewhere in this file (the uncommitted-group ones in
+    particular) index from the end of stdout and would break if the key
+    appeared, so the default has to be pinned somewhere on purpose rather than
+    left as an accident of how these tests capture output.
+    """
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    result = run_script("bd-log", "--oneline")
+    assert result.stdout.splitlines()[-1].startswith("+")
+
+
+def test_bd_log_legend_explains_every_glyph_the_log_can_print(run_script, fake_bd):
+    """A seventh event kind must not be able to appear with nothing naming it."""
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    key = run_script("bd-log", "--legend=always").stdout.splitlines()[-2:]
+    for glyph in ("+", "▶", "✓", "*", "~", "x"):
+        assert any(glyph in ln for ln in key), glyph
+
+
 def test_bd_log_oneline_keeps_the_per_kind_color(run_script, fake_bd):
     fake_bd.issues([issue("p-1")])
     result = run_script("bd-log", "--oneline", "--color=always")
@@ -492,6 +543,19 @@ def test_bd_log_rejects_an_unknown_event_verb(run_script, fake_bd):
     result = run_script("bd-log", "--only=finish")
     assert result.returncode != 0
     assert "unknown event verb(s): finish" in result.stderr
+
+
+def test_bd_log_rejects_an_empty_status(run_script, fake_bd):
+    """An unset shell variable must not read as "no filter".
+
+    `--status="$UNSET_VAR"` used to fall through to --all *and* drop out of
+    the filters implying --about=beads, so it silently returned every bead
+    plus the whole memory log.
+    """
+    fake_bd.issues([issue("p-1")])
+    result = run_script("bd-log", "--status=")
+    assert result.returncode != 0
+    assert "--status must name at least one status" in result.stderr
 
 
 def test_bd_log_rejects_an_unknown_entity(run_script, fake_bd):

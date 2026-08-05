@@ -310,6 +310,26 @@ def test_select_kinds_picks_the_named_cells_of_the_grid():
     )
 
 
+@pytest.mark.parametrize("value", ["", "   "])
+def test_parse_status_rejects_an_empty_value(value):
+    """`--status="$UNSET_VAR"` must fail by name, not widen the log.
+
+    Read as absent it is doubly wrong: scope_args falls through to --all, and
+    --status drops out of the filters implying --about=beads -- so a typo that
+    looks like a narrowing returned every bead *plus* the whole memory log,
+    silently. --id has always been guarded this way; --status was not.
+    """
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.parse_status(value)
+    assert "--status must name at least one status" in str(excinfo.value.code)
+
+
+def test_parse_status_passes_a_real_value_through_untouched():
+    """bd owns the vocabulary -- this guard checks emptiness, nothing more."""
+    assert bd_log.parse_status("open,in_progress") == "open,in_progress"
+    assert bd_log.parse_status("whatever-bd-allows") == "whatever-bd-allows"
+
+
 def test_parse_ids_dedupes_while_preserving_the_order_given():
     assert bd_log.parse_ids("b-2, b-1 ,b-2,b-3") == ["b-2", "b-1", "b-3"]
 
@@ -573,6 +593,36 @@ def test_color_is_keyed_on_the_verb_not_the_entity():
     assert len(set(bd_log.EVENT_COLOR.values())) == len(bd_log.VERBS)
 
 
+@pytest.mark.parametrize(
+    "mode,tty,expected",
+    [
+        ("always", False, True),   # forced on through a pipe
+        ("always", True, True),
+        ("never", True, False),    # forced off at a terminal
+        ("never", False, False),
+        ("auto", True, True),
+        ("auto", False, False),    # the default in a pipeline
+    ],
+)
+def test_want_legend_resolves_the_tri_state(mode, tty, expected, monkeypatch):
+    """The auto branch is only falsifiable with isatty patched.
+
+    Every end-to-end run pipes stdout, so 'auto' is already False there and an
+    assertion over those runs would survive deleting the isatty check
+    outright -- the same trap the color tests document.
+    """
+    monkeypatch.setattr(bd_log.sys.stdout, "isatty", lambda: tty, raising=False)
+    assert bd_log.want_legend(mode) is expected
+
+
+def test_want_legend_defaults_to_auto(monkeypatch):
+    """main() passes args.legend, whose argparse default is 'auto' -- so the
+    signature default only matters to a caller that omits it. Pinned so the
+    two cannot drift apart."""
+    monkeypatch.setattr(bd_log.sys.stdout, "isatty", lambda: True, raising=False)
+    assert bd_log.want_legend() is True
+
+
 def test_legend_lays_out_the_same_grid_the_flags_select():
     lines = bd_log.render_legend()
     assert lines[0].split() == ["key", *bd_log.VERBS]
@@ -810,8 +860,14 @@ def test_memory_events_leave_an_uncommitted_row_undated(fake_dolt, dolt_project)
     assert ts == ""
 
 
-def test_memory_events_dedupe_one_change_reported_by_a_merge(fake_dolt, dolt_project):
-    """A merge commit can surface the same logical change more than once."""
+def test_memory_events_dedupe_identical_rows_at_one_commit(fake_dolt, dolt_project):
+    """Two rows sharing a (key, commit) identity collapse to one event.
+
+    Named for what it actually constructs. It does NOT cover a merge commit
+    re-reporting a change under a *different* to_commit, which the dedupe key
+    would treat as distinct -- no repo on hand has a merge commit to check
+    Dolt's real behavior against, so beads-utils-bld carries that question.
+    """
     program_dolt(
         fake_dolt,
         diff_row("dup", commit="c1", to_value="v"),
@@ -974,6 +1030,21 @@ def test_a_memory_value_is_collapsed_to_one_line():
 
 def test_an_empty_memory_value_still_renders_a_body():
     assert bd_log.event_title("remember", memory(value="")) == "(empty)"
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t\n", None])
+def test_a_blank_bead_title_falls_back_rather_than_painting_whitespace(title):
+    """The fallback has to apply *after* collapsing, not to the raw value.
+
+    '   ' is truthy, so an `or "(no title)"` placed first lets it through and
+    collapse() then reduces it to '' -- rendering a body line that is nothing
+    but padding, with the blanks trapped inside the color span ahead of the
+    reset. The memory branch beside it already got this right.
+    """
+    assert bd_log.event_title("create", {"title": title}) == "(no title)"
+    line = bd_log.render_oneline("2026-04-01T13:05:00Z", "create",
+                                 {"title": title}, 3, 6)
+    assert not line.endswith(" ")
 
 
 @pytest.mark.parametrize(

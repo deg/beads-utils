@@ -359,6 +359,19 @@ def filter_since(events: list[tuple[str, str, dict]], since: str) -> list[tuple[
     return [e for e in events if not e[0] or e[0] >= since]
 
 
+def split_pending(events: list[tuple[str, str, dict]]) -> tuple[list, list]:
+    """(undated, dated), each keeping the order it arrived in.
+
+    The undated ones are uncommitted memory changes. They are split out
+    because --limit should not spend its budget on them: -n asks how far back
+    through the *history* to go, and a pending change isn't in the history
+    yet -- 'git log -n 4' doesn't count your working tree against the four
+    either. Without this, a repo carrying half a dozen uncommitted memories
+    answers 'bd-log --open -n 4' with four of those and no beads at all.
+    """
+    return [e for e in events if not e[0]], [e for e in events if e[0]]
+
+
 def sort_events(events: list[tuple[str, str, dict]]) -> list[tuple[str, str, dict]]:
     """Newest first, with same-timestamp events in lifecycle order.
 
@@ -433,20 +446,11 @@ def event_title(kind: str, payload: dict) -> str:
     """
     if is_memory(kind):
         return truncate(collapse(payload.get("value") or ""), MEMORY_VALUE_MAX) or "(empty)"
-    return collapse(payload.get("title") or "(no title)")
-
-
-def split_pending(events: list[tuple[str, str, dict]]) -> tuple[list, list]:
-    """(undated, dated), each keeping the order it arrived in.
-
-    The undated ones are uncommitted memory changes. They are split out
-    because --limit should not spend its budget on them: -n asks how far back
-    through the *history* to go, and a pending change isn't in the history
-    yet -- 'git log -n 4' doesn't count your working tree against the four
-    either. Without this, a repo carrying half a dozen uncommitted memories
-    answers 'bd-log --open -n 4' with four of those and no beads at all.
-    """
-    return [e for e in events if not e[0]], [e for e in events if e[0]]
+    # Fallback applied *after* collapsing, not to the raw value: a title of
+    # '   ' is truthy, so testing it first lets whitespace through, and the
+    # body then renders as a painted empty line (with the padding trapped
+    # inside the color span, ahead of the reset).
+    return collapse(payload.get("title") or "") or "(no title)"
 
 
 def event_stamp(ts: str) -> str:
@@ -514,6 +518,25 @@ def render_oneline(ts: str, kind: str, payload: dict, id_w: int, meta_w: int,
     return paint("  ".join(bits), EVENT_COLOR[kind], color)
 
 
+def want_legend(mode: str = "auto") -> bool:
+    """Whether to print the trailing key, for --legend=auto|always|never.
+
+    Same tri-state shape as --color, resolved separately: bdutils.want_color
+    also consults NO_COLOR and TERM, which govern *color* and have nothing to
+    say about whether a symbol key is wanted. 'auto' is simply "a human is
+    reading this", so pipes and grep stay clean by default.
+
+    Callers must resolve this against sys.stdout *before* entering
+    paged_output(), which yields the pager's stdin pipe -- never a tty, and so
+    always the wrong answer in exactly the case the key is for.
+    """
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return sys.stdout.isatty()
+
+
 def render_legend(color: bool = False) -> list[str]:
     """The trailing symbol key, laid out as the grid the flags describe.
 
@@ -527,29 +550,31 @@ def render_legend(color: bool = False) -> list[str]:
     column a character narrow in terminals that render them double-width. Same
     bug as beads-utils-fh0, same fix when that lands.
     """
-    cells = {
+    kind_at = {
         (entity, verb): KIND_BY_ENTITY_VERB[entity][verb]
         for entity in ENTITIES for verb in VERBS
     }
-    text = {k: f"{EVENT_GLYPH[kind]} {KIND_LABEL[kind]}" for k, kind in cells.items()}
-    col_w = {v: max(len(text[(e, v)]) for e in ENTITIES) for v in VERBS}
+    cell = {at: f"{EVENT_GLYPH[k]} {KIND_LABEL[k]}" for at, k in kind_at.items()}
+    col_w = {v: max(len(cell[(e, v)]) for e in ENTITIES) for v in VERBS}
     label_w = max([len("key")] + [len(LEGEND_INDENT + e) for e in ENTITIES])
 
-    lines = [
-        f"{'key':<{label_w}}  " + "  ".join(f"{v:<{col_w[v]}}" for v in VERBS).rstrip()
-    ]
+    def row(label: str, cells: list[str]) -> str:
+        return f"{label:<{label_w}}  " + "  ".join(cells)
+
+    lines = [row("key", [f"{v:<{col_w[v]}}" for v in VERBS]).rstrip()]
     for entity in ENTITIES:
-        # Only the last column goes unpadded: padding inside a colored span
-        # would put trailing blanks between the text and its reset code.
-        painted = [
-            paint(
-                text[(entity, v)] if last else f"{text[(entity, v)]:<{col_w[v]}}",
-                EVENT_COLOR[cells[(entity, v)]],
+        painted = []
+        for i, verb in enumerate(VERBS):
+            # The last column goes unpadded: padding inside a colored span
+            # would leave blanks between the text and its reset code.
+            last = i == len(VERBS) - 1
+            body = cell[(entity, verb)]
+            painted.append(paint(
+                body if last else f"{body:<{col_w[verb]}}",
+                EVENT_COLOR[kind_at[(entity, verb)]],
                 color,
-            )
-            for v, last in ((v, v == VERBS[-1]) for v in VERBS)
-        ]
-        lines.append(f"{LEGEND_INDENT + entity:<{label_w}}  " + "  ".join(painted))
+            ))
+        lines.append(row(LEGEND_INDENT + entity, painted))
     return lines
 
 
@@ -591,6 +616,21 @@ def select_kinds(entities: set[str], verbs: set[str]) -> set[str]:
         for entity in entities
         for verb in verbs
     }
+
+
+def parse_status(value: str) -> str:
+    """Reject an empty --status, the way parse_ids rejects an empty --id.
+
+    Same hazard, same reason. `--status="$UNSET_VAR"` is a passed-but-empty
+    flag, and reading it as absent is doubly wrong here: scope_args falls
+    through to --all, *and* --status drops out of the filters that imply
+    --about=beads -- so a typo that looks like a narrowing quietly returns
+    every bead plus the entire memory log. Erroring by name means every
+    downstream truthiness test on args.status is equivalent to 'is not None'.
+    """
+    if not value.strip():
+        error("--status must name at least one status")
+    return value
 
 
 def parse_ids(value: str) -> list[str]:
@@ -746,6 +786,10 @@ def main() -> int:
 
     verbs = parse_only(args.only) if args.only else set(VERBS)
     ids = parse_ids(args.id) if args.id is not None else None
+    # 'is not None' for the same reason as --id above; parse_status then
+    # guarantees a non-empty value, so the truthiness tests below are safe.
+    if args.status is not None:
+        parse_status(args.status)
 
     # Every bead filter narrows the beads row. Which of them additionally
     # implies "...and only the beads row" turns on whether this script knows
@@ -870,9 +914,7 @@ def main() -> int:
     # one. Testing the yielded stream would answer "no" in exactly the case
     # each of these is for.
     color = want_color(args.color)
-    legend = args.legend == "always" or (
-        args.legend == "auto" and sys.stdout.isatty()
-    )
+    legend = want_legend(args.legend)
     if args.oneline:
         id_w, meta_w = oneline_widths(events)
         blocks = [

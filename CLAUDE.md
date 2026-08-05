@@ -94,7 +94,11 @@ Current scripts:
   Orthogonal to both axes, `--status=LIST` and `--id=LIST` scope
   which *beads* to include. `--status` (comma-separated statuses, passed
   straight through to `bd list --status`; bd owns the vocabulary and
-  validation) selects by *current* status; `--open` is shorthand for
+  validation — except *emptiness*, rejected here by name, because a
+  `--status=` from an unset shell variable would otherwise fall through to
+  `--all` **and** drop out of the filters implying `--about=beads`, quietly
+  returning every bead plus the whole memory log) selects by *current*
+  status; `--open` is shorthand for
   "not closed" (mutually exclusive with `--status`); with neither flag the
   default is `bd list --all` (everything, incl. closed). `--id`
   (comma-separated **full** bead ids, delegated to `bd list --id`, so bd owns
