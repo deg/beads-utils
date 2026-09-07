@@ -247,6 +247,18 @@ _beads_claude_session_find() {
   # positional is a free-text query — nothing to complete.
 }
 
+_beads_claude_session_rename() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  if [[ $cur == -* ]]; then
+    __beads_flags "--version -h --help"
+  elif [[ $COMP_CWORD -eq 1 ]]; then
+    __beads_values sessions
+  fi
+  # second positional is the new title -- free text, nothing to complete.
+}
+
 complete -F _beads_bd_view bd-view
 complete -F _beads_claude_session_report claude-session-report
 complete -F _beads_claude_session_list claude-session-list
@@ -255,3 +267,4 @@ complete -F _beads_bd_export_csv bd-export-csv
 complete -F _beads_bd_dolt_check bd-dolt-check
 complete -F _beads_bd_dolt_diff bd-dolt-diff
 complete -F _beads_claude_session_find claude-session-find
+complete -F _beads_claude_session_rename claude-session-rename

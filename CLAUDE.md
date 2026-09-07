@@ -343,6 +343,28 @@ Current scripts:
   Note: Claude Code does not currently persist extended-thinking
   content to disk (only the signature), so `--thinking` is
   forward-compatible but produces no output for current sessions.
+- `claude-session-rename` — Does what the `/rename` slash command does, from
+  the shell and without starting the session: `claude-session-rename
+  <session> <title>`. `/rename` persists a title by appending two records to
+  the session's transcript, `{"type":"custom-title","customTitle":…}` and
+  `{"type":"agent-name","agentName":…}` (both carry `sessionId`, neither a
+  timestamp), and every reader — the `claude --resume` picker,
+  `claudeutils.read_session_meta`, hence the three `claude-session-*` scripts
+  above — takes the *last* `custom-title`. Nothing else stores the title. So
+  the script appends exactly those two records and the job is done; both are
+  written so the transcript is indistinguishable from one `/rename` touched.
+  The session resolves through `claudeutils.resolve_session()` (path, UUID,
+  or title substring; ambiguity lists candidates and exits 1), same as
+  `claude-session-report`. It **refuses a running session**: a live process
+  re-emits its own title on later turns and would silently undo the rename,
+  and `/rename` is right there inside it. Live means a
+  `~/.claude/sessions/<pid>.json` names the session *and* the pid answers a
+  signal-0 probe (`claudeutils.live_session_pid`); a file whose pid is dead
+  is a crash leftover and is ignored, since a dead process clobbers nothing.
+  No `--force` (a simple refusal was the owner's call), no show mode, no
+  `--clear` — set only. The title is stripped and must be a non-empty single
+  line. Prints `<uuid>: <old title> -> <new title>`. Does not page and takes
+  no `--color`: one line of output.
 - `claude-session-list` — Git-log-style listing of recent Claude Code
   sessions. Default scope = current project (matched by mangled-cwd
   lookup under `~/.claude/projects/`); `-g/--global` spans all projects
@@ -407,6 +429,7 @@ Shared helpers:
   out. Widen the colored *area* or pick a better-separated hue instead.
   Imported by scripts in this repo; keep small and stdlib-only.
 - `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
+  `CLAUDE_SESSIONS` + `live_session_pid()` (the running-process registry),
   `mangle_cwd()`, `find_project_dir()`, `project_label()`, `has_human_prose()`
   (strips known wrapper tags listed in `USER_WRAPPER_TAGS` — `<command-name>`,
   `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, etc. — and
@@ -416,15 +439,17 @@ Shared helpers:
   dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
   and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
   `claude-session-report`, `claude-session-list`, `claude-session-find`,
-  and `bd-complete` — `claude-session-find` predated this module and carried
-  its own copies until beads-utils-8ju folded them in. Also stdlib-only.
+  `claude-session-rename`, and `bd-complete` — `claude-session-find`
+  predated this module and carried its own copies until beads-utils-8ju
+  folded them in. Also stdlib-only.
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
 Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
 auto-discovery from the current directory); `claude-session-report` takes a
 Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
-takes no positional args (current project unless `-g/--global`); `bd-complete`
+takes no positional args (current project unless `-g/--global`);
+`claude-session-rename` takes a session and a title; `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
 
 ## Shell completion
@@ -585,6 +610,8 @@ Also verify manually against a real beads project (this repo itself is one):
 ./claude-session-list                                  # Recent sessions for cwd's project
 ./claude-session-list -g --oneline                     # Every project, one row each
 ./claude-session-list -q | head -1                     # Newest UUID (for `claude --resume`)
+./claude-session-rename <uuid> 'Pager design'          # /rename without starting the session
+./claude-session-rename 'old title' 'new title'        # Resolve by title substring
 ./bd-complete ids                                      # Completion feed: short ids + titles
 ./bd-complete sessions                                 # Completion feed: session uuids + titles
 ```

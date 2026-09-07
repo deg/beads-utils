@@ -40,6 +40,7 @@ COMMANDS = [
     "bd-dolt-diff",
     "claude-session-find",
     "claude-session-list",
+    "claude-session-rename",
     "claude-session-report",
 ]
 

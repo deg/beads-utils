@@ -15,6 +15,11 @@ from pathlib import Path
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
+# One file per *running* Claude Code process, named by pid, carrying at
+# least {"pid": N, "sessionId": "<uuid>"}. Removed on clean exit; a crash
+# can leave a stale one, so a file alone does not mean the session is live.
+CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
+
 
 def mangle_cwd(cwd: Path) -> str:
     """Claude encodes a project cwd as the path with '/' and '.' replaced by '-'."""
@@ -219,6 +224,38 @@ def list_sessions(project_dir: Path | None = None) -> list[SessionMeta]:
     out = list(iter_sessions(project_dir))
     out.sort(key=lambda m: m.jsonl.stat().st_mtime, reverse=True)
     return out
+
+
+def live_session_pid(session_id: str) -> int | None:
+    """Return the pid of the running Claude Code process on `session_id`, if any.
+
+    A session is live when some ~/.claude/sessions/<pid>.json names it *and*
+    that pid still answers a signal-0 probe. A file whose pid is gone is a
+    leftover from a crash, not a live session, and is ignored -- a dead
+    process cannot re-emit a title, which is the only reason liveness matters.
+    """
+    if not CLAUDE_SESSIONS.is_dir():
+        return None
+    for entry in CLAUDE_SESSIONS.glob("*.json"):
+        try:
+            obj = json.loads(entry.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(obj, dict) or obj.get("sessionId") != session_id:
+            continue
+        pid = obj.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass  # exists, owned by someone else -- still running
+        except OSError:
+            continue
+        return pid
+    return None
 
 
 def resolve_session(arg: str) -> Path:

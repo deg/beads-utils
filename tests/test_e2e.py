@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 
 import pytest
 
@@ -27,7 +28,7 @@ pytestmark = pytest.mark.e2e
 SCRIPTS = [
     "bd-complete", "bd-dolt-check", "bd-dolt-diff", "bd-export-csv",
     "bd-log", "bd-view", "claude-session-find", "claude-session-list",
-    "claude-session-report",
+    "claude-session-rename", "claude-session-report",
 ]
 
 
@@ -1052,3 +1053,25 @@ def test_no_script_prints_a_traceback_for_a_bad_project_path(run_script, tmp_pat
         result = run_script(script, str(tmp_path))
         assert "Traceback" not in result.stderr, script
         assert result.stderr.startswith("error: "), script
+
+
+def test_claude_session_rename_sets_the_title_the_list_shows(run_script, fake_home):
+    """Rename, then read back through claude-session-list -- the real reader."""
+    result = run_script("claude-session-rename", "abcd1234-ef56-7890", "Renamed here",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "abcd1234-ef56-7890: A recorded session -> Renamed here"
+    listed = run_script("claude-session-list", "--oneline", env={"HOME": str(fake_home)})
+    assert "Renamed here" in listed.stdout
+    assert "A recorded session" not in listed.stdout
+
+
+def test_claude_session_rename_refuses_a_running_session(run_script, fake_home):
+    live = fake_home / ".claude" / "sessions"
+    live.mkdir()
+    (live / "1.json").write_text(json.dumps({"pid": os.getpid(),
+                                             "sessionId": "abcd1234-ef56-7890"}))
+    result = run_script("claude-session-rename", "abcd1234-ef56-7890", "Nope",
+                        env={"HOME": str(fake_home)})
+    assert result.returncode == 1
+    assert f"is running (pid {os.getpid()})" in result.stderr

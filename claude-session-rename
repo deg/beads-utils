@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Rename a Claude Code session from the shell, without starting it.
+
+Does what the /rename slash command does: appends the session's new title to
+its transcript under ~/.claude/projects/<mangled-cwd>/<uuid>.jsonl, where
+`claude --resume`'s picker, claude-session-list, claude-session-find and
+claude-session-report all read it from.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import claudeutils
+from bdutils import add_version_arg, error
+
+# What /rename writes, verified against real transcripts: two records, back to
+# back, both carrying the new name. `custom-title` is the one every reader
+# (including claudeutils.read_session_meta) takes the *last* of; `agent-name`
+# names the process and is re-emitted alongside it. Both are written so the
+# transcript looks exactly as if /rename had run -- a reader that keys on
+# agent-name must not see a name that custom-title has moved on from.
+#
+# Neither record carries a timestamp, so appending one at the end of the file
+# is the whole operation; there is nothing to date and nothing to rewrite.
+
+
+def title_records(session_id: str, title: str) -> list[dict]:
+    return [
+        {"type": "custom-title", "customTitle": title, "sessionId": session_id},
+        {"type": "agent-name", "agentName": title, "sessionId": session_id},
+    ]
+
+
+def append_records(jsonl: Path, records: list[dict]) -> None:
+    """Append `records` as JSONL lines, on a line of their own.
+
+    Every transcript Claude Code writes ends in a newline, but a torn write
+    could leave one that does not; a record glued onto the tail of the
+    previous line would corrupt both, so the last byte is checked first.
+    """
+    with jsonl.open("rb+") as f:
+        size = f.seek(0, 2)
+        needs_newline = False
+        if size:
+            f.seek(size - 1)
+            needs_newline = f.read(1) != b"\n"
+        payload = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+        if needs_newline:
+            payload = "\n" + payload
+        f.write(payload.encode("utf-8"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Rename a Claude Code session without starting it "
+                    "(the /rename slash command, from the shell).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-session-rename <uuid> 'Pager design'          By UUID\n"
+            "  claude-session-rename 'Completion bug' 'dk6 fixed'   By current title\n"
+            "  claude-session-rename ./s.jsonl 'Imported'            By transcript path\n"
+            "\n"
+            "SESSION resolves like claude-session-report's: a path to a .jsonl\n"
+            "transcript, a session UUID, or a case-insensitive substring of the\n"
+            "session's current title. An ambiguous substring lists the candidates\n"
+            "and exits non-zero.\n"
+            "\n"
+            "A session that is currently running is refused: the running process\n"
+            "would write its own title back over this one on its next turn. Use\n"
+            "/rename inside that session instead.\n"
+        ),
+    )
+    parser.add_argument("session", help="session UUID, title substring, or .jsonl path")
+    parser.add_argument("title", help="the new title")
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    title = args.title.strip()
+    if not title:
+        error("title must be non-empty")
+    if "\n" in title or "\r" in title:
+        error("title must be a single line")
+
+    jsonl = claudeutils.resolve_session(args.session)
+    session_id = jsonl.stem
+
+    pid = claudeutils.live_session_pid(session_id)
+    if pid is not None:
+        error(
+            f"session {session_id} is running (pid {pid}); "
+            "use /rename inside it instead"
+        )
+
+    meta = claudeutils.read_session_meta(jsonl)
+    before = meta.custom_title or meta.ai_title
+
+    try:
+        append_records(jsonl, title_records(session_id, title))
+    except OSError as exc:
+        error(f"cannot write {jsonl}: {exc}")
+
+    if before is None:
+        print(f"{session_id}: (untitled) -> {title}")
+    else:
+        print(f"{session_id}: {before} -> {title}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,6 @@
 ## Unreleased
 
+* [feature] Add `claude-session-rename`, which sets a session's title from the shell like `/rename` does, without starting the session (a running session is refused)
 * [feature] Log memories alongside beads in `bd-log` — when one was remembered, revised, or forgotten:
   * `--about=beads,memories` picks what to log; `--only=create,change,end` picks the verb, for either
   * `--only=start` and `--only=close` keep working, as the change and end verbs

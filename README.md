@@ -19,6 +19,7 @@ needs `rich`).
 | [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended (color-coded, auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) |
+| [`claude-session-rename`](claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
@@ -107,6 +108,14 @@ Markdown transcript: your prompts, Claude's replies, and (with `--all`)
 the tool calls and every other channel too. The result is a document you can
 review at leisure, commit next to the code it produced, or hand to a
 colleague who asks "how did you get Claude to do that?"
+
+Titles are what make the picker and these scripts navigable, and
+`/rename` only works from inside a running session. `claude-session-rename`
+sets one from the shell — `claude-session-rename <uuid> 'Pager design'` —
+so an old session can be labelled after the fact, or a batch of them from
+a loop, without resuming each one. It writes exactly what `/rename` would,
+and refuses a session that is currently running, where `/rename` itself is
+the right tool.
 
 ## Tests and tooling
 

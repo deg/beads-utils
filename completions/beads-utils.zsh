@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-report
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-rename claude-session-report
 #
 # zsh tab completion for beads-utils.
 #
@@ -220,9 +220,17 @@ _beads_dispatch() {
       '--no-pager[write directly to stdout; skip the pager]' \
       '1:query:'
     ;;
+  claude-session-rename)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '1:session:__beads_sessions' \
+      '2:title:'
+    ;;
   esac
 }
 
 compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff \
-  claude-session-find claude-session-list claude-session-report
+  claude-session-find claude-session-list claude-session-rename \
+  claude-session-report

@@ -438,3 +438,61 @@ def test_write_session_helper_produces_one_json_object_per_line(tmp_path):
     lines = path.read_text().splitlines()
     assert len(lines) == 2
     assert [json.loads(ln)["type"] for ln in lines] == ["user", "assistant"]
+
+
+# --- live_session_pid -----------------------------------------------------
+
+
+@pytest.fixture
+def sessions_dir(tmp_path, monkeypatch):
+    d = tmp_path / "sessions"
+    d.mkdir()
+    monkeypatch.setattr(claudeutils, "CLAUDE_SESSIONS", d)
+    return d
+
+
+def _live_file(sessions_dir, name, **fields):
+    (sessions_dir / name).write_text(json.dumps(fields))
+
+
+def test_live_session_pid_finds_a_running_process(sessions_dir):
+    """Uses the test process's own pid: the one pid guaranteed to be alive."""
+    _live_file(sessions_dir, "1.json", pid=os.getpid(), sessionId="s1")
+    assert claudeutils.live_session_pid("s1") == os.getpid()
+
+
+def test_live_session_pid_ignores_other_sessions(sessions_dir):
+    _live_file(sessions_dir, "1.json", pid=os.getpid(), sessionId="s1")
+    assert claudeutils.live_session_pid("s2") is None
+
+
+def test_live_session_pid_treats_a_dead_pid_as_not_live(sessions_dir):
+    """A sessions/ file outliving its process is a crash leftover, not a live session.
+
+    Claude Code removes the file on clean exit only. A dead process cannot
+    re-emit a title, so treating the file alone as 'live' would refuse
+    renames for no reason after any crash.
+    """
+    # macOS caps pids at 99998; Linux's default pid_max is exactly 2**22, so
+    # this pid is allocatable there in principle but never reached on a fresh
+    # CI runner. A live process here would need a wrapped-around pid table.
+    _live_file(sessions_dir, "1.json", pid=2 ** 22 - 1, sessionId="s1")
+    assert claudeutils.live_session_pid("s1") is None
+
+
+@pytest.mark.parametrize("pid", [None, "12", 0, -1])
+def test_live_session_pid_ignores_a_malformed_pid(sessions_dir, pid):
+    _live_file(sessions_dir, "1.json", pid=pid, sessionId="s1")
+    assert claudeutils.live_session_pid("s1") is None
+
+
+def test_live_session_pid_skips_unparseable_files(sessions_dir):
+    (sessions_dir / "junk.json").write_text("{not json")
+    (sessions_dir / "list.json").write_text("[1, 2]")
+    _live_file(sessions_dir, "ok.json", pid=os.getpid(), sessionId="s1")
+    assert claudeutils.live_session_pid("s1") == os.getpid()
+
+
+def test_live_session_pid_returns_none_without_a_sessions_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(claudeutils, "CLAUDE_SESSIONS", tmp_path / "absent")
+    assert claudeutils.live_session_pid("s1") is None
