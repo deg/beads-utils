@@ -650,6 +650,19 @@ def parse_status(value: str) -> str:
     return value
 
 
+def given_flags(*pairs: tuple[str, object]) -> list[str]:
+    """The flag names among `pairs` whose value says the user passed them.
+
+    Truthiness, deliberately: a store_true flag is False when absent, and an
+    empty string-valued flag (--only '', --since '') is treated as absent by
+    the code these lists describe, so leaving it unreported matches what
+    happened. The two exceptions are handled by the callers: --status '' is
+    rejected by name before any list is built, and --id passes a precomputed
+    'is not None', since an empty --id is an error rather than an absence.
+    """
+    return [flag for flag, given in pairs if given]
+
+
 def parse_ids(value: str) -> list[str]:
     parts = [p.strip() for p in value.split(",") if p.strip()]
     if not parts:
@@ -845,23 +858,17 @@ def main() -> int:
     #
     # --no-deferred sits with --open: it refines "in force" for beads, and a
     # memory is never deferred, so there is nothing for it to drop on that row.
-    beads_only = [
-        flag
-        for flag, given in (
-            ("--id", args.id is not None), ("--children", args.children),
-            ("--status", args.status),
-        )
-        if given
-    ]
+    beads_only = given_flags(
+        ("--id", args.id is not None), ("--children", args.children),
+        ("--status", args.status),
+    )
     if args.about is not None:
         entities = parse_about(args.about)
         # --open/--no-deferred join the list only to be reported: they are just
         # as inert as the others when there is no beads row for them to filter.
-        inert = beads_only + [
-            flag
-            for flag, given in (("--open", args.open), ("--no-deferred", args.no_deferred))
-            if given
-        ]
+        inert = beads_only + given_flags(
+            ("--open", args.open), ("--no-deferred", args.no_deferred),
+        )
         if inert and "beads" not in entities:
             warn(f"{'/'.join(inert)} has no effect without --about=beads")
     else:
@@ -926,15 +933,11 @@ def main() -> int:
             # Name only the filters actually in play. Listing every filter that
             # *could* explain the absence sends the reader hunting for a --since
             # they never passed.
-            active = [
-                flag
-                for flag, given in (
-                    ("--status", args.status), ("--open", args.open),
-                    ("--no-deferred", args.no_deferred),
-                    ("--only", args.only), ("--since", args.since),
-                )
-                if given
-            ]
+            active = given_flags(
+                ("--status", args.status), ("--open", args.open),
+                ("--no-deferred", args.no_deferred),
+                ("--only", args.only), ("--since", args.since),
+            )
             cause = "not found"
             if active:
                 cause += f", or excluded by {'/'.join(active)}"

@@ -164,18 +164,49 @@ def test_bd_log_no_deferred_composes_with_the_default_scope(run_script, fake_bd)
 def test_bd_log_no_deferred_does_not_sever_a_subtree_through_a_deferred_parent(
     run_script, fake_bd,
 ):
-    """The filter runs after the --children walk, so a parked epic's live
-    children still show; only the epic itself is dropped."""
+    """The filter must run *after* the --children walk, never before it.
+
+    Deferring a bead in the *middle* of a chain is the shape that tells the
+    two orderings apart. The walk starts from the named root unconditionally,
+    so a deferred root with one child passes either way (a cold-eyes review
+    caught exactly that fixture being inert). With a deferred middle bead,
+    dropping it first removes the only parent edge to the leaf, and the leaf
+    is lost; dropping it after the walk keeps the leaf and sheds only the
+    middle. Mirrors test_bd_log's
+    test_scope_filter_on_intermediate_does_not_sever_deeper_descendants.
+    """
     fake_bd.issues([
-        issue("p-epic", status="deferred", created_at="2026-04-01T10:00:00Z"),
-        issue("p-child", parent="p-epic", status="open",
+        issue("p-root", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-mid", parent="p-root", status="deferred",
               created_at="2026-04-02T10:00:00Z"),
+        issue("p-leaf", parent="p-mid", status="open",
+              created_at="2026-04-03T10:00:00Z"),
     ])
-    result = run_script("bd-log", "--id", "p-epic", "--children", "--no-deferred")
+    result = run_script("bd-log", "--id", "p-root", "--children", "--no-deferred")
     assert result.returncode == 0, result.stderr
-    assert "p-child" in result.stdout
-    assert "p-epic" not in result.stdout
+    assert "p-root" in result.stdout
+    assert "p-leaf" in result.stdout
+    assert "p-mid" not in result.stdout
     assert "warning:" not in result.stderr
+
+
+def test_bd_log_no_deferred_composes_with_a_status_list(run_script, fake_bd):
+    """The one documented composition nothing else exercises.
+
+    --status delegates to bd (which here returns both rows, as it would for
+    --status=open,deferred); --no-deferred then narrows locally, and the
+    status list still reaches bd untouched.
+    """
+    fake_bd.issues([
+        issue("p-live", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-parked", status="deferred", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--status=open,deferred", "--no-deferred")
+    assert result.returncode == 0, result.stderr
+    assert "p-live" in result.stdout
+    assert "p-parked" not in result.stdout
+    argv, = fake_bd.calls
+    assert "--status=open,deferred" in argv
 
 
 def test_bd_log_no_deferred_is_named_when_it_empties_a_requested_id(run_script, fake_bd):

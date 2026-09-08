@@ -130,7 +130,10 @@ Current scripts:
   to `--status=open,in_progress,blocked` would hard-code the rest of bd's
   vocabulary, which is exactly what the `--status` pass-through refuses to
   do. Naming `deferred` alone is not that guess — it is the one status `bd
-  defer` itself sets. It runs *after* the `--children` walk, because with
+  defer` itself sets (verified across every beads repo on this machine:
+  all ten beads with a `defer_until` also carry `status: deferred`, and an
+  expired `defer_until` does not un-park one — the bead stays out of `bd
+  ready`). It runs *after* the `--children` walk, because with
   the default scope the fetched list doubles as the topology, and dropping
   a deferred epic before the walk would sever the chain to its live
   children. Like `--open`, it does not imply `--about=beads`: a memory is
@@ -584,6 +587,12 @@ must not appear under its former parent, a parent cycle). Two of the four
 correspond to defects found only by an ad-hoc version of that check. Each was
 verified by mutation — walking the scoped set instead of the topology, dropping
 the cycle guard, or inferring parentage from dotted id text each breaks them.
+The same three-level shape (open root, filtered middle, open leaf) is what
+makes any "this filter runs *after* the walk" test discriminating — the
+`--no-deferred` e2e test uses it. A two-level fixture with the filtered bead
+as the *root* is inert: the walk seeds the named root unconditionally, so
+both orderings keep the child, and a cold-eyes review found exactly that
+fixture passing with the filter moved to the wrong side.
 
 Also verify manually against a real beads project (this repo itself is one):
 
