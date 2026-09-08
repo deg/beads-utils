@@ -51,7 +51,8 @@ session can create, claim, and close half a dozen beads while your
 attention was on the code, and afterwards you want to know what it
 actually did. `bd-log` shows the lifecycle events — created, started,
 closed — newest first, git-log style. `bd-log --open` narrows to beads
-still open: the to-do list the session left behind, and `bd-log --id
+still open: the to-do list the session left behind (`--no-deferred` drops
+the ones parked with `bd defer`), and `bd-log --id
 <id> --children` narrows the other way — one bead, or one epic and
 everything under it, from creation to close. `--oneline` collapses each
 event to a single row when you want the shape of the week rather than

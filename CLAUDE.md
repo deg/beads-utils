@@ -123,6 +123,18 @@ Current scripts:
   is *not* a synonym for `--status=open`: it passes no status flag at all, so
   it also covers `in_progress`/`blocked`/`deferred`. Mistaking the two for one
   filter is what produced the `--status=closed` defect above.
+  `--no-deferred` drops beads whose *current* status is `deferred`, and
+  composes with any scope (`--open --no-deferred` is what's live and not
+  parked; alone it is everything-but-parked). It is a local post-filter,
+  not a `bd list` flag: bd has no negated status filter, and translating it
+  to `--status=open,in_progress,blocked` would hard-code the rest of bd's
+  vocabulary, which is exactly what the `--status` pass-through refuses to
+  do. Naming `deferred` alone is not that guess — it is the one status `bd
+  defer` itself sets. It runs *after* the `--children` walk, because with
+  the default scope the fetched list doubles as the topology, and dropping
+  a deferred epic before the walk would sever the chain to its live
+  children. Like `--open`, it does not imply `--about=beads`: a memory is
+  never deferred, so it refines "in force" rather than picking an entity.
   These are soft defaults an explicit
   `--about` overrides, in which case an inert bead filter is named on stderr
   rather than silently ignored.
@@ -587,6 +599,7 @@ Also verify manually against a real beads project (this repo itself is one):
 ./bd-log --about=beads                         # Beads only (the pre-grid view)
 ./bd-log --only=create                         # Beads created + memories added
 ./bd-log --open                                # Events for beads still open
+./bd-log --open --no-deferred                  # ...minus the currently deferred ones
 ./bd-log --only=start --status=in_progress     # What's actively being worked
 ./bd-log --id beads-utils-s4s                  # One bead's whole history
 ./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree

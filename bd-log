@@ -139,6 +139,10 @@ UNCOMMITTED = "(uncommitted)"
 # which is why the sort key substitutes a sentinel that outranks every real
 # timestamp.
 NO_TIMESTAMP_SORTS_AS = "\uffff"
+# The one status name this script knows. bd owns the status vocabulary and
+# --status passes it through uninterpreted, but 'deferred' is what 'bd defer'
+# itself sets, so naming it is not a guess about the vocabulary.
+DEFERRED_STATUS = "deferred"
 PENDING_HEADER = "uncommitted -- no date until committed"
 LEGEND_INDENT = "  "
 
@@ -156,6 +160,19 @@ def scope_args(status: str | None, open_only: bool) -> list[str]:
     if open_only:
         return []
     return ["--all"]
+
+
+def drop_deferred(issues: list[dict]) -> list[dict]:
+    """`issues` without those whose *current* status is deferred.
+
+    A local filter, not a 'bd list' flag: bd has no negated status filter, and
+    spelling --open --no-deferred as --status=open,in_progress,blocked would
+    hard-code the rest of bd's vocabulary -- which bd-log otherwise refuses to
+    do, since bd has custom statuses. Applied to the scoped set *after* the
+    --children walk, so a deferred intermediate bead still carries the chain
+    to its descendants (see select_subtrees).
+    """
+    return [i for i in issues if i.get("status") != DEFERRED_STATUS]
 
 
 def run_bd_list(
@@ -670,14 +687,18 @@ def main() -> int:
             "  --status=LIST     which beads to include, by *current* status\n"
             "                    (passed through to 'bd list --status'; comma-\n"
             "                    separated). --open is shorthand for \"not closed\".\n"
+            "  --no-deferred     drop beads whose current status is deferred.\n"
+            "                    Composes with any scope; --open --no-deferred is\n"
+            "                    what is live *and* not parked.\n"
             "  --id=LIST         which beads to include, by id (comma-separated\n"
             "                    full ids, as 'bd list --id' expects). --children\n"
             "                    widens each id to its whole subtree.\n"
             "--id and --status imply --about=beads -- a memory is never one\n"
             "of the ids you listed, and bd (not bd-log) owns the status\n"
             "vocabulary, so there is no telling whether a status list means\n"
-            "live or done. --open does not: it means 'still in force', which\n"
-            "covers memories too. Pass --about explicitly to override either.\n"
+            "live or done. --open and --no-deferred do not: they mean 'still in\n"
+            "force', which covers memories too (a memory is never deferred).\n"
+            "Pass --about explicitly to override either.\n"
             "\n"
             "Examples:\n"
             "  bd-log                         Everything, beads and memories\n"
@@ -688,6 +709,7 @@ def main() -> int:
             "  bd-log --about=beads           Beads only (the pre-grid behavior)\n"
             "  bd-log --only=create           Beads created and memories added\n"
             "  bd-log --open                  Events for beads that are still open\n"
+            "  bd-log --open --no-deferred    ...minus the ones currently deferred\n"
             "  bd-log --status=in_progress    Only currently in-progress beads\n"
             "  bd-log --only=start --open     What's actively being worked\n"
             "  bd-log --only=close            Closures only\n"
@@ -740,6 +762,11 @@ def main() -> int:
     scope.add_argument(
         "--open", action="store_true",
         help="Shorthand: include only beads that are still open (not closed).",
+    )
+    parser.add_argument(
+        "--no-deferred", action="store_true",
+        help="Exclude beads whose current status is deferred. Composes with "
+             "--status/--open and the default scope.",
     )
     parser.add_argument(
         "--id", default=None, metavar="LIST",
@@ -815,6 +842,9 @@ def main() -> int:
     # (--open is not merely shorthand for --status=open. It passes no status
     # flag at all, so it also covers in_progress/blocked/deferred. The two are
     # different filters, which is what lets them differ here.)
+    #
+    # --no-deferred sits with --open: it refines "in force" for beads, and a
+    # memory is never deferred, so there is nothing for it to drop on that row.
     beads_only = [
         flag
         for flag, given in (
@@ -825,9 +855,13 @@ def main() -> int:
     ]
     if args.about is not None:
         entities = parse_about(args.about)
-        # --open joins the list only to be reported: it is just as inert as the
-        # others when there is no beads row for it to filter.
-        inert = beads_only + (["--open"] if args.open else [])
+        # --open/--no-deferred join the list only to be reported: they are just
+        # as inert as the others when there is no beads row for them to filter.
+        inert = beads_only + [
+            flag
+            for flag, given in (("--open", args.open), ("--no-deferred", args.no_deferred))
+            if given
+        ]
         if inert and "beads" not in entities:
             warn(f"{'/'.join(inert)} has no effect without --about=beads")
     else:
@@ -852,6 +886,12 @@ def main() -> int:
                 project_path, ["--all"], None,
             )
             issues, members = select_subtrees(issues, topology, ids)
+
+        # After the walk, never before it: with the default scope the fetched
+        # list doubles as the topology, and dropping a deferred parent from it
+        # would sever the chain to its (undeferred) children.
+        if args.no_deferred:
+            issues = drop_deferred(issues)
 
     events = synthesize_events(issues, kinds)
 
@@ -890,6 +930,7 @@ def main() -> int:
                 flag
                 for flag, given in (
                     ("--status", args.status), ("--open", args.open),
+                    ("--no-deferred", args.no_deferred),
                     ("--only", args.only), ("--since", args.since),
                 )
                 if given

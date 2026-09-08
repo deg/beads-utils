@@ -238,6 +238,37 @@ def test_scope_args_maps_each_scope_to_bd_list_flags(status, open_only, expected
     assert bd_log.scope_args(status, open_only) == expected
 
 
+# --- drop_deferred --------------------------------------------------------
+
+
+def test_drop_deferred_removes_only_the_deferred_status():
+    rows = [
+        issue("p-open", status="open"),
+        issue("p-parked", status="deferred"),
+        issue("p-busy", status="in_progress"),
+        issue("p-blocked", status="blocked"),
+        issue("p-done", status="closed"),
+    ]
+    kept = bd_log.drop_deferred(rows)
+    assert [i["id"] for i in kept] == ["p-open", "p-busy", "p-blocked", "p-done"]
+
+
+def test_drop_deferred_keeps_a_row_with_no_status_field():
+    """Only a *known* deferred status is dropped; an absent one is not a guess."""
+    rows = [issue("p-1"), issue("p-2", status=None)]
+    assert bd_log.drop_deferred(rows) == rows
+
+
+def test_drop_deferred_leaves_a_custom_status_alone():
+    """bd has custom statuses; the filter names exactly one and passes the rest."""
+    rows = [issue("p-1", status="pinned"), issue("p-2", status="hooked")]
+    assert bd_log.drop_deferred(rows) == rows
+
+
+def test_drop_deferred_of_nothing_is_nothing():
+    assert bd_log.drop_deferred([]) == []
+
+
 # --- parse_only / parse_ids ----------------------------------------------
 
 

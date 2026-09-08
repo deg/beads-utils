@@ -170,6 +170,7 @@ _beads_dispatch() {
       '--about=[comma-separated entities to log (beads, memories)]:entities:__beads_entities' \
       '(--status --open)--status=[include only beads with these current statuses]:statuses:__beads_statuses' \
       '(--status --open)--open[shorthand: only beads still open (not closed)]' \
+      '--no-deferred[exclude beads whose current status is deferred]' \
       '--id=[include only these beads (comma-separated full bead ids)]:ids:__beads_ids' \
       '--children[with --id, also include every bead under each named id]' \
       '--since=[show only events on/after DATE]:date' \

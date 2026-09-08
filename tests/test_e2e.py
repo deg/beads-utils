@@ -132,6 +132,59 @@ def test_bd_log_names_only_the_filters_actually_passed(run_script, fake_bd):
     assert "--since" not in result.stderr
 
 
+def test_bd_log_no_deferred_drops_currently_deferred_beads(run_script, fake_bd):
+    fake_bd.issues([
+        issue("p-live", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-parked", status="deferred", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--open", "--no-deferred")
+    assert result.returncode == 0, result.stderr
+    assert "p-live" in result.stdout
+    assert "p-parked" not in result.stdout
+    # Still bd's own default scope: the exclusion is local, not a --status list.
+    argv, = fake_bd.calls
+    assert "--all" not in argv
+    assert not any(a.startswith("--status") for a in argv)
+
+
+def test_bd_log_no_deferred_composes_with_the_default_scope(run_script, fake_bd):
+    """Without --open it means "everything, closed included, except deferred"."""
+    fake_bd.issues([
+        issue("p-done", status="closed", closed_at="2026-04-01T10:00:00Z"),
+        issue("p-parked", status="deferred", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--no-deferred")
+    assert result.returncode == 0, result.stderr
+    assert "p-done" in result.stdout
+    assert "p-parked" not in result.stdout
+    argv, = fake_bd.calls
+    assert "--all" in argv
+
+
+def test_bd_log_no_deferred_does_not_sever_a_subtree_through_a_deferred_parent(
+    run_script, fake_bd,
+):
+    """The filter runs after the --children walk, so a parked epic's live
+    children still show; only the epic itself is dropped."""
+    fake_bd.issues([
+        issue("p-epic", status="deferred", created_at="2026-04-01T10:00:00Z"),
+        issue("p-child", parent="p-epic", status="open",
+              created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--id", "p-epic", "--children", "--no-deferred")
+    assert result.returncode == 0, result.stderr
+    assert "p-child" in result.stdout
+    assert "p-epic" not in result.stdout
+    assert "warning:" not in result.stderr
+
+
+def test_bd_log_no_deferred_is_named_when_it_empties_a_requested_id(run_script, fake_bd):
+    fake_bd.issues([issue("p-parked", status="deferred", created_at="2026-04-01T10:00:00Z")])
+    result = run_script("bd-log", "--id", "p-parked", "--no-deferred")
+    assert result.returncode == 0, result.stderr
+    assert "no events for: p-parked (not found, or excluded by --no-deferred)" in result.stderr
+
+
 def test_bd_log_id_warning_fires_before_the_limit_trims(run_script, fake_bd):
     """Deliberate: -n cutting a bead's events off must not read as "missing".
 
@@ -266,6 +319,28 @@ def test_bd_log_about_memories_drops_the_bead_half(run_script, fake_bd,
     result = run_script("bd-log", "--about=memories", cwd=dolt_db)
     assert "a-memory" in result.stdout
     assert "p-1" not in result.stdout
+
+
+def test_bd_log_no_deferred_leaves_the_memory_row_alone(run_script, fake_bd,
+                                                        fake_dolt, dolt_db):
+    """Like --open, it narrows beads without implying --about=beads."""
+    fake_bd.issues([issue("p-parked", status="deferred",
+                          created_at="2026-04-01T10:00:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--no-deferred", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert "a-memory" in result.stdout
+    assert "p-parked" not in result.stdout
+    assert "warning:" not in result.stderr
+
+
+def test_bd_log_no_deferred_is_reported_inert_without_a_beads_row(run_script, fake_bd,
+                                                                  fake_dolt, dolt_db):
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--about=memories", "--no-deferred", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert "--no-deferred has no effect without --about=beads" in result.stderr
+    assert "a-memory" in result.stdout
 
 
 def test_bd_log_only_and_about_select_one_cell_of_the_grid(run_script, fake_bd,
