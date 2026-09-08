@@ -269,6 +269,54 @@ def test_drop_deferred_of_nothing_is_nothing():
     assert bd_log.drop_deferred([]) == []
 
 
+# --- count_distinct / count_lines ----------------------------------------
+
+
+def _bead_events(iid, *kinds):
+    row = issue(iid)
+    return [(f"2026-04-0{i + 1}T10:00:00Z", k, row) for i, k in enumerate(kinds)]
+
+
+def _memory_events(key, *kinds):
+    payload = {"key": key, "value": "v"}
+    return [(f"2026-04-0{i + 1}T10:00:00Z", k, payload) for i, k in enumerate(kinds)]
+
+
+def test_count_distinct_counts_a_bead_once_across_its_lifecycle():
+    events = _bead_events("p-1", "create", "start", "close") + _bead_events("p-2", "create")
+    assert bd_log.count_distinct(events, "beads") == 2
+
+
+def test_count_distinct_tells_beads_from_memories_by_event_kind():
+    events = _bead_events("p-1", "create") + _memory_events("k", "remember", "revise")
+    assert bd_log.count_distinct(events, "beads") == 1
+    assert bd_log.count_distinct(events, "memories") == 1
+
+
+def test_count_distinct_of_nothing_is_zero():
+    assert bd_log.count_distinct([], "beads") == 0
+    assert bd_log.count_distinct([], "memories") == 0
+
+
+def test_count_lines_emits_one_line_per_flag_in_declared_order():
+    events = _bead_events("p-1", "create", "close") + _memory_events("k", "remember")
+    assert bd_log.count_lines(events, True, True, True) == [
+        "3 events", "1 bead", "1 memory",
+    ]
+    assert bd_log.count_lines(events, False, True, False) == ["1 bead"]
+    assert bd_log.count_lines(events, False, False, False) == []
+
+
+def test_count_lines_pluralize_properly():
+    assert bd_log.count_lines([], True, True, True) == [
+        "0 events", "0 beads", "0 memories",
+    ]
+    one = _bead_events("p-1", "create")
+    assert bd_log.count_lines(one, True, True, True) == [
+        "1 event", "1 bead", "0 memories",
+    ]
+
+
 # --- parse_only / parse_ids ----------------------------------------------
 
 

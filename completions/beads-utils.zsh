@@ -178,6 +178,9 @@ _beads_dispatch() {
       '--no-pager[write directly to stdout; skip the pager]' \
       '--color=[colorize events by kind]:when:(auto always never)' \
       '--legend=[print the trailing symbol key]:when:(auto always never)' \
+      '--count-events[after the log, print how many events were shown]' \
+      '--count-beads[after the log, print how many distinct beads appeared]' \
+      '--count-memories[after the log, print how many distinct memories appeared]' \
       '1:project:_files -/'
     ;;
   bd-export-csv)

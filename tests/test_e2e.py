@@ -216,6 +216,51 @@ def test_bd_log_no_deferred_is_named_when_it_empties_a_requested_id(run_script, 
     assert "no events for: p-parked (not found, or excluded by --no-deferred)" in result.stderr
 
 
+def test_bd_log_count_flags_trail_the_log_and_precede_the_legend(run_script, fake_bd):
+    fake_bd.issues([
+        issue("p-1", created_at="2026-04-01T10:00:00Z", started_at="2026-04-02T10:00:00Z"),
+        issue("p-2", created_at="2026-04-03T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--oneline", "--count-events", "--count-beads",
+                        "--legend=always")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[:3] == [
+        "+ 2026-04-03 10:00  p-2  P2 task  Title p-2",
+        "▶ 2026-04-02 10:00  p-1  P2 task  Title p-1",
+        "+ 2026-04-01 10:00  p-1  P2 task  Title p-1",
+    ]
+    # A bead with two entries is one bead; the counts come before the key.
+    assert lines[3:7] == ["", "3 events", "2 beads", ""]
+    assert lines[7].startswith("key")
+
+
+def test_bd_log_counts_what_the_limit_left(run_script, fake_bd):
+    fake_bd.issues([
+        issue("p-1", created_at="2026-04-01T10:00:00Z"),
+        issue("p-2", created_at="2026-04-02T10:00:00Z"),
+        issue("p-3", created_at="2026-04-03T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "-n", "2", "--count-events", "--count-beads")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-2:] == ["2 events", "2 beads"]
+
+
+def test_bd_log_counts_are_zero_when_nothing_matches(run_script, fake_bd):
+    fake_bd.issues([])
+    result = run_script("bd-log", "--count-events", "--count-beads", "--count-memories")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "no matching events", "0 events", "0 beads", "0 memories",
+    ]
+
+
+def test_bd_log_count_trailer_is_absent_without_a_count_flag(run_script, fake_bd):
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T10:00:00Z")])
+    result = run_script("bd-log", "--oneline")
+    assert result.stdout.splitlines() == ["+ 2026-04-01 10:00  p-1  P2 task  Title p-1"]
+
+
 def test_bd_log_id_warning_fires_before_the_limit_trims(run_script, fake_bd):
     """Deliberate: -n cutting a bead's events off must not read as "missing".
 
@@ -372,6 +417,26 @@ def test_bd_log_no_deferred_is_reported_inert_without_a_beads_row(run_script, fa
     assert result.returncode == 0, result.stderr
     assert "--no-deferred has no effect without --about=beads" in result.stderr
     assert "a-memory" in result.stdout
+
+
+def test_bd_log_counts_memories_apart_from_beads_and_include_pending_ones(
+    run_script, fake_bd, fake_dolt, dolt_db,
+):
+    """An uncommitted memory change is a shown entry, so it is counted, even
+    though -n does not spend its budget on it: -n 1 here leaves one dated
+    event plus the pending one, i.e. two events."""
+    fake_bd.issues([issue("p-1", created_at="2026-04-01T13:05:00Z")])
+    memory_rows(
+        fake_dolt,
+        memory_row("committed", commit="c1"),
+        memory_row("committed", diff_type="modified", commit="c2",
+                   date="2026-04-06 13:05:00.000000"),
+        memory_row("pending", commit="WORKING", date=None),
+    )
+    result = run_script("bd-log", "-n", "1", "--count-events", "--count-beads",
+                        "--count-memories", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-3:] == ["2 events", "0 beads", "2 memories"]
 
 
 def test_bd_log_only_and_about_select_one_cell_of_the_grid(run_script, fake_bd,

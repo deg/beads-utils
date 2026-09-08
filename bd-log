@@ -595,6 +595,50 @@ def render_legend(color: bool = False) -> list[str]:
     return lines
 
 
+def plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def count_distinct(events: list[tuple[str, str, dict]], entity: str) -> int:
+    """How many different beads (or memories) the events belong to.
+
+    A bead with created, started and closed entries counts once. Beads are
+    told from memories by event kind, not by payload shape, the same way the
+    --id warning check does it. A bead with no id at all lands in one shared
+    bucket ('' after issue_id) -- rare enough that counting such rows as one
+    is closer to the truth than counting them as many.
+    """
+    want_memory = entity == "memories"
+    return len({
+        payload.get("key", "") if want_memory else issue_id(payload)
+        for _, kind, payload in events
+        if is_memory(kind) == want_memory
+    })
+
+
+def count_lines(
+    events: list[tuple[str, str, dict]],
+    count_events: bool, count_beads: bool, count_memories: bool,
+) -> list[str]:
+    """The trailer for --count-events/--count-beads/--count-memories.
+
+    One line per flag, in the order the flags are declared, so a caller who
+    asks for two gets them in a known order. Taken from the events actually
+    shown -- after every filter and after -n trims -- so the numbers describe
+    what is on the screen, uncommitted memory changes included (they are
+    printed entries, even though -n does not count them). An event is an
+    entry, not a physical line: a block-form entry is two or three lines.
+    """
+    lines = []
+    if count_events:
+        lines.append(plural(len(events), "event", "events"))
+    if count_beads:
+        lines.append(plural(count_distinct(events, "beads"), "bead", "beads"))
+    if count_memories:
+        lines.append(plural(count_distinct(events, "memories"), "memory", "memories"))
+    return lines
+
+
 def parse_only(value: str) -> set[str]:
     """The verb axis: 'create,change,end', plus the pre-grid names for two of them."""
     parts = [p.strip() for p in value.split(",") if p.strip()]
@@ -713,6 +757,13 @@ def main() -> int:
             "force', which covers memories too (a memory is never deferred).\n"
             "Pass --about explicitly to override either.\n"
             "\n"
+            "--count-events, --count-beads and --count-memories each add a\n"
+            "line after the log: how many events were shown, and how many\n"
+            "distinct beads or memories they belong to. They count what is on\n"
+            "the screen -- after every filter and after -n -- so a bead with\n"
+            "created, started and closed entries is one bead, and an\n"
+            "uncommitted memory change is one event even though -n skips it.\n"
+            "\n"
             "Examples:\n"
             "  bd-log                         Everything, beads and memories\n"
             "  bd-log -n 10                   Last 10 events\n"
@@ -731,6 +782,7 @@ def main() -> int:
             "  bd-log --id bd-1,bd-5          Several beads\n"
             "  bd-log --id bd-1 --children    That bead and everything under it\n"
             "  bd-log --since 2026-04-01      Events on/after date\n"
+            "  bd-log --open --count-beads    ...and how many beads that is\n"
             "  bd-log /path/to/project        Check a different project\n"
             "\n"
             "Output is paged through $PAGER (or 'less -FRX') when stdout is a\n"
@@ -806,6 +858,20 @@ def main() -> int:
         metavar="WHEN",
         help="Print the trailing symbol key (auto|always|never; default auto = "
              "only when stdout is a terminal, so pipes stay clean).",
+    )
+    parser.add_argument(
+        "--count-events", action="store_true",
+        help="After the log, print how many events were shown.",
+    )
+    parser.add_argument(
+        "--count-beads", action="store_true",
+        help="After the log, print how many distinct beads the shown events "
+             "belong to.",
+    )
+    parser.add_argument(
+        "--count-memories", action="store_true",
+        help="After the log, print how many distinct memories the shown "
+             "events belong to.",
     )
     parser.add_argument(
         "--no-pager", action="store_true",
@@ -949,8 +1015,17 @@ def main() -> int:
         dated = dated[:args.limit]
     events = pending + dated
 
+    # Taken here, from the list as it will be shown, and nowhere earlier: an
+    # earlier count would describe what the filters saw, not what the reader
+    # does. Zero is an answer too, so the empty case still prints them.
+    counts = count_lines(
+        events, args.count_events, args.count_beads, args.count_memories,
+    )
+
     if not events:
         print("no matching events")
+        for line in counts:
+            print(line)
         return 0
 
     # Both resolved here, not inside the `with`: paged_output yields the
@@ -983,6 +1058,13 @@ def main() -> int:
             if i and (not args.oneline or i == len(pending)):
                 print(file=out)
             for line in block:
+                print(line, file=out)
+        # Counts sit between the log and the key: they are about *this* run,
+        # the legend is about every run. Uncolored, like the pending header --
+        # color here means a verb, and a total is not one.
+        if counts:
+            print(file=out)
+            for line in counts:
                 print(line, file=out)
         if legend:
             print(file=out)

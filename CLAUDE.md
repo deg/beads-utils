@@ -225,6 +225,18 @@ Current scripts:
   ~18 characters at which hues stopped separating in Solarized Light, but it
   is a 2–3× cut in the one dimension that has regressed before, so a palette
   change should be re-checked at one-line width too.
+  `--count-events`, `--count-beads` and `--count-memories` each add one
+  plain line after the log (`12 events` / `7 beads` / `3 memories`), before
+  the legend, uncolored like the pending-group header because color means
+  a verb. They count what is on the screen: the event list *after* every
+  filter and after `-n` trims, so a bead with created/started/closed
+  entries is one bead, and an uncommitted memory change is one event even
+  though `-n` skips it. An event is an entry, not a physical line. Zero is
+  an answer, so the `no matching events` case still prints them; under
+  `--about=memories`, `--count-beads` says `0 beads` rather than warning.
+  A trailer, never a replacement for the log -- `grep -c` semantics were
+  considered and rejected, since the flags are for reading a log and
+  knowing its size at the same time.
 
   **Memory events.** `bd remember` records **no timestamps**: a memory is a
   `kv.memory.<key>` → value row in Dolt's `config` table, key and value and
@@ -619,6 +631,8 @@ Also verify manually against a real beads project (this repo itself is one):
 ./bd-log --oneline -n 20                       # ...and columns sized to those 20
 ./bd-log --legend=always | cat                 # Keep the symbol key through a pipe
 ./bd-log --legend=never                        # Suppress it at a terminal
+./bd-log --open --count-beads                  # ...and how many beads that is
+./bd-log --count-events --count-memories       # One line per count, after the log
 ./claude-session-find 'bd-log'                 # Sessions in this project matching
 ./claude-session-find -g 'paged_output'        # All projects
 ./claude-session-find -a 'dolt push'           # Include assistant/tool content
