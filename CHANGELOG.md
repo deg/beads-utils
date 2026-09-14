@@ -3,6 +3,7 @@
 * [feature] Add `claude-session-rename`, which sets a session's title from the shell like `/rename` does, without starting the session (a running session is refused)
 * [feature] Count what `bd-log` showed with `--count-events`, `--count-beads` and `--count-memories`, each adding a line after the log
 * [feature] Drop currently-deferred beads from `bd-log` with `--no-deferred` (`--open --no-deferred` is what's live and not parked)
+* [feature] Drop beads waiting on an unsatisfied dependency from `bd-log` with `--no-blocked` — a separate axis from `--no-deferred`, so `--open --no-deferred --no-blocked` is what can actually be picked up
 * [feature] Log memories alongside beads in `bd-log` — when one was remembered, revised, or forgotten:
   * `--about=beads,memories` picks what to log; `--only=create,change,end` picks the verb, for either
   * `--only=start` and `--only=close` keep working, as the change and end verbs

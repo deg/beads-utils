@@ -184,9 +184,9 @@ _beads_bd_log() {
     -n|--limit|--since) return ;;
   esac
   if [[ $cur == -* ]]; then
-    __beads_flags "-n --limit --only --about --status --open --no-deferred --id \
-      --children --since --oneline --legend --count-events --count-beads \
-      --count-memories --no-pager --color --version -h --help"
+    __beads_flags "-n --limit --only --about --status --open --no-deferred \
+      --no-blocked --id --children --since --oneline --legend --count-events \
+      --count-beads --count-memories --no-pager --color --version -h --help"
   else
     __beads_dirs
   fi

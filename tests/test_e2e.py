@@ -216,6 +216,96 @@ def test_bd_log_no_deferred_is_named_when_it_empties_a_requested_id(run_script, 
     assert "no events for: p-parked (not found, or excluded by --no-deferred)" in result.stderr
 
 
+def test_bd_log_no_blocked_drops_the_ids_bd_blocked_reports(run_script, fake_bd):
+    """The rows bd holds back are dropped though their own status says 'open'.
+
+    p-held is exactly the reported case: status 'open', but waiting on a
+    dependency. Nothing in the 'bd list' payload distinguishes it from p-free,
+    which is why the answer has to come from 'bd blocked'.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-held")])
+    fake_bd.issues([
+        issue("p-free", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-held", status="open", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--open", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "p-free" in result.stdout
+    assert "p-held" not in result.stdout
+
+
+def test_bd_log_asks_bd_for_the_blocked_set_only_when_the_flag_is_passed(
+    run_script, fake_bd,
+):
+    """One extra subprocess, and only for the run that wants it."""
+    fake_bd.json_rule("blocked", payload=[])
+    fake_bd.issues([issue("p-free", status="open", created_at="2026-04-01T10:00:00Z")])
+
+    run_script("bd-log", "--open")
+    assert not any("blocked" in argv for argv in fake_bd.calls)
+
+    run_script("bd-log", "--open", "--no-blocked")
+    assert ["blocked", "--json"] in fake_bd.calls
+
+
+def test_bd_log_no_blocked_composes_with_no_deferred(run_script, fake_bd):
+    """Two axes, not one: a bead can be blocked, deferred, both or neither.
+
+    p-both is listed by 'bd blocked' *and* carries status deferred, so the
+    two filters overlap without conflicting; each still sheds its own bead.
+
+    Note for anyone adding a --status counterpart to this test: fake_bd
+    matches a rule token as a substring of *any* argv entry, so the "blocked"
+    rule below would also swallow a 'bd list --status=blocked' call. Keep the
+    two apart, or match on something narrower than the bare word.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-held"), issue("p-both")])
+    fake_bd.issues([
+        issue("p-free", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-held", status="open", created_at="2026-04-02T10:00:00Z"),
+        issue("p-parked", status="deferred", created_at="2026-04-03T10:00:00Z"),
+        issue("p-both", status="deferred", created_at="2026-04-04T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--open", "--no-deferred", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "p-free" in result.stdout
+    for gone in ("p-held", "p-parked", "p-both"):
+        assert gone not in result.stdout
+
+
+def test_bd_log_no_blocked_does_not_sever_a_subtree_through_a_blocked_parent(
+    run_script, fake_bd,
+):
+    """The filter must run *after* the --children walk, never before it.
+
+    Same three-level shape as the --no-deferred version: the blocked bead is
+    in the *middle*, because the walk seeds the named root unconditionally and
+    a two-level fixture would pass under either ordering.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-mid")])
+    fake_bd.issues([
+        issue("p-root", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-mid", parent="p-root", status="open",
+              created_at="2026-04-02T10:00:00Z"),
+        issue("p-leaf", parent="p-mid", status="open",
+              created_at="2026-04-03T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--id", "p-root", "--children", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "p-root" in result.stdout
+    assert "p-leaf" in result.stdout
+    assert "p-mid" not in result.stdout
+    assert "warning:" not in result.stderr
+
+
+def test_bd_log_no_blocked_is_named_when_it_empties_a_requested_id(run_script, fake_bd):
+    fake_bd.json_rule("blocked", payload=[issue("p-held")])
+    fake_bd.issues([issue("p-held", status="open", created_at="2026-04-01T10:00:00Z")])
+    result = run_script("bd-log", "--id", "p-held", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "no events for: p-held (not found, or excluded by --no-blocked)" in result.stderr
+
+
 def test_bd_log_count_flags_trail_the_log_and_precede_the_legend(run_script, fake_bd):
     fake_bd.issues([
         issue("p-1", created_at="2026-04-01T10:00:00Z", started_at="2026-04-02T10:00:00Z"),
@@ -417,6 +507,31 @@ def test_bd_log_no_deferred_is_reported_inert_without_a_beads_row(run_script, fa
     assert result.returncode == 0, result.stderr
     assert "--no-deferred has no effect without --about=beads" in result.stderr
     assert "a-memory" in result.stdout
+
+
+def test_bd_log_no_blocked_leaves_the_memory_row_alone(run_script, fake_bd,
+                                                       fake_dolt, dolt_db):
+    """A memory is never blocked, so the flag refines beads without picking them."""
+    fake_bd.json_rule("blocked", payload=[issue("p-held")])
+    fake_bd.issues([issue("p-held", status="open",
+                          created_at="2026-04-01T10:00:00Z")])
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--no-blocked", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert "a-memory" in result.stdout
+    assert "p-held" not in result.stdout
+    assert "warning:" not in result.stderr
+
+
+def test_bd_log_no_blocked_is_reported_inert_without_a_beads_row(run_script, fake_bd,
+                                                                 fake_dolt, dolt_db):
+    memory_rows(fake_dolt, memory_row("a-memory"))
+    result = run_script("bd-log", "--about=memories", "--no-blocked", cwd=dolt_db)
+    assert result.returncode == 0, result.stderr
+    assert "--no-blocked has no effect without --about=beads" in result.stderr
+    assert "a-memory" in result.stdout
+    # Inert means not consulted: no 'bd blocked' call was made at all.
+    assert not any("blocked" in argv for argv in fake_bd.calls)
 
 
 def test_bd_log_counts_memories_apart_from_beads_and_include_pending_ones(

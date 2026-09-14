@@ -10,6 +10,7 @@ load-bearing rather than decorative.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 
 import pytest
@@ -267,6 +268,78 @@ def test_drop_deferred_leaves_a_custom_status_alone():
 
 def test_drop_deferred_of_nothing_is_nothing():
     assert bd_log.drop_deferred([]) == []
+
+
+# --- drop_blocked ---------------------------------------------------------
+
+
+def test_drop_blocked_removes_exactly_the_ids_bd_reported():
+    """The filter matches on id, never on the row's own status field.
+
+    This is the whole reason --no-blocked delegates: a bead held by an open
+    dependency keeps status 'open' until someone runs 'bd recompute-blocked',
+    so p-held below is indistinguishable from p-free by status alone.
+    """
+    rows = [
+        issue("p-free", status="open"),
+        issue("p-held", status="open"),
+        issue("p-parked-and-held", status="deferred"),
+    ]
+    kept = bd_log.drop_blocked(rows, {"p-held", "p-parked-and-held"})
+    assert [i["id"] for i in kept] == ["p-free"]
+
+
+def test_drop_blocked_with_an_empty_set_keeps_everything():
+    rows = [issue("p-1", status="open"), issue("p-2", status="blocked")]
+    assert bd_log.drop_blocked(rows, set()) == rows
+
+
+def test_drop_blocked_ignores_a_stored_blocked_status_bd_did_not_report():
+    """The stored status is not the predicate; bd's answer is.
+
+    bd's own 'blocked' status can be stale in the other direction too -- set
+    once and left behind after the blocker closed. Only ids in the set go.
+    """
+    rows = [issue("p-stale", status="blocked")]
+    assert bd_log.drop_blocked(rows, set()) == rows
+
+
+def test_drop_blocked_of_nothing_is_nothing():
+    assert bd_log.drop_blocked([], {"p-1"}) == []
+
+
+# --- blocked_ids ----------------------------------------------------------
+
+
+def test_blocked_ids_collects_ids_and_drops_rows_without_one(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return _completed(json.dumps([{"id": "p-1"}, {"id": "p-2"}, {"title": "no id"}]))
+
+    monkeypatch.setattr(bd_log.subprocess, "run", fake_run)
+    assert bd_log.blocked_ids(tmp_path) == {"p-1", "p-2"}
+    assert captured["cmd"] == ["bd", "blocked", "--json"]
+    assert captured["cwd"] == tmp_path
+
+
+def test_blocked_ids_of_empty_output_is_an_empty_set(monkeypatch, tmp_path):
+    """'no blocked issues' is a valid state, not a failure."""
+    monkeypatch.setattr(bd_log.subprocess, "run", lambda cmd, **kw: _completed(""))
+    assert bd_log.blocked_ids(tmp_path) == set()
+
+
+def test_blocked_ids_errors_on_unparseable_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd_log.subprocess, "run", lambda cmd, **kw: _completed("{nope"))
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.blocked_ids(tmp_path)
+    assert "could not parse bd blocked JSON output" in str(excinfo.value.code)
+
+
+def _completed(stdout):
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
 # --- count_distinct / count_lines ----------------------------------------

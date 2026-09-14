@@ -175,6 +175,49 @@ def drop_deferred(issues: list[dict]) -> list[dict]:
     return [i for i in issues if i.get("status") != DEFERRED_STATUS]
 
 
+def blocked_ids(project_path: Path) -> set[str]:
+    """The ids 'bd blocked' reports as held by an unsatisfied dependency.
+
+    Delegated rather than computed, for the same reason --status is a
+    pass-through: bd owns the dependency semantics. The JSON from 'bd list'
+    does carry each issue's own edges, but deciding which 'type' values block
+    is bd's call -- 'parent-child' does, 'related' does not -- and the stored
+    status is no help either, since a blocked bead's status stays 'open' (bd
+    sets 'blocked' only on demand, via 'bd recompute-blocked').
+
+    Two properties of the returned set matter to the caller: closed beads are
+    never in it, so filtering on it cannot drop a closed bead's events; and it
+    is orthogonal to 'deferred', so --no-blocked and --no-deferred compose
+    rather than overlap (a bead can be both, and is then listed here).
+    """
+    try:
+        result = subprocess.run(
+            ["bd", "blocked", "--json"],
+            cwd=project_path, capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        error("'bd' not found on PATH")
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+        error(f"bd blocked failed (exit {exc.returncode})")
+    try:
+        listed = json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        error(f"could not parse bd blocked JSON output: {exc}")
+    return {iid for iid in (issue_id(i) for i in listed) if iid}
+
+
+def drop_blocked(issues: list[dict], blocked: set[str]) -> list[dict]:
+    """`issues` without those bd reports as blocked.
+
+    Applied to the scoped set *after* the --children walk, like drop_deferred
+    and for the same reason: a blocked intermediate bead still has to carry
+    the chain to its descendants.
+    """
+    return [i for i in issues if issue_id(i) not in blocked]
+
+
 def run_bd_list(
     project_path: Path, scope: list[str], ids: list[str] | None,
 ) -> list[dict]:
@@ -747,14 +790,21 @@ def main() -> int:
             "  --no-deferred     drop beads whose current status is deferred.\n"
             "                    Composes with any scope; --open --no-deferred is\n"
             "                    what is live *and* not parked.\n"
+            "  --no-blocked      drop beads 'bd blocked' reports as held by an\n"
+            "                    unsatisfied dependency. A different axis from\n"
+            "                    --no-deferred: a bead is blocked by what it\n"
+            "                    depends on, deferred by its own status, and can\n"
+            "                    be both. Add it to --open --no-deferred for what\n"
+            "                    is actually pickupable.\n"
             "  --id=LIST         which beads to include, by id (comma-separated\n"
             "                    full ids, as 'bd list --id' expects). --children\n"
             "                    widens each id to its whole subtree.\n"
             "--id and --status imply --about=beads -- a memory is never one\n"
             "of the ids you listed, and bd (not bd-log) owns the status\n"
             "vocabulary, so there is no telling whether a status list means\n"
-            "live or done. --open and --no-deferred do not: they mean 'still in\n"
-            "force', which covers memories too (a memory is never deferred).\n"
+            "live or done. --open, --no-deferred and --no-blocked do not: they\n"
+            "mean 'still in force', which covers memories too (a memory is\n"
+            "never deferred, and never blocked).\n"
             "Pass --about explicitly to override either.\n"
             "\n"
             "--count-events, --count-beads and --count-memories each add a\n"
@@ -774,6 +824,7 @@ def main() -> int:
             "  bd-log --only=create           Beads created and memories added\n"
             "  bd-log --open                  Events for beads that are still open\n"
             "  bd-log --open --no-deferred    ...minus the ones currently deferred\n"
+            "  bd-log --open --no-blocked     ...minus the ones waiting on a blocker\n"
             "  bd-log --status=in_progress    Only currently in-progress beads\n"
             "  bd-log --only=start --open     What's actively being worked\n"
             "  bd-log --only=close            Closures only\n"
@@ -832,6 +883,12 @@ def main() -> int:
         "--no-deferred", action="store_true",
         help="Exclude beads whose current status is deferred. Composes with "
              "--status/--open and the default scope.",
+    )
+    parser.add_argument(
+        "--no-blocked", action="store_true",
+        help="Exclude beads 'bd blocked' reports as waiting on an unsatisfied "
+             "dependency. A separate axis from --no-deferred; composes with it "
+             "and with any scope.",
     )
     parser.add_argument(
         "--id", default=None, metavar="LIST",
@@ -924,6 +981,11 @@ def main() -> int:
     #
     # --no-deferred sits with --open: it refines "in force" for beads, and a
     # memory is never deferred, so there is nothing for it to drop on that row.
+    # --no-blocked sits there too, by the same argument -- a memory is never
+    # blocked. It is a different axis from --no-deferred, not a stronger one:
+    # blockedness comes from what a bead depends on, deferredness from its own
+    # status, and a bead can be both (a deferred bead still shows up in
+    # 'bd blocked' if something it needs is open).
     beads_only = given_flags(
         ("--id", args.id is not None), ("--children", args.children),
         ("--status", args.status),
@@ -934,6 +996,7 @@ def main() -> int:
         # as inert as the others when there is no beads row for them to filter.
         inert = beads_only + given_flags(
             ("--open", args.open), ("--no-deferred", args.no_deferred),
+            ("--no-blocked", args.no_blocked),
         )
         if inert and "beads" not in entities:
             warn(f"{'/'.join(inert)} has no effect without --about=beads")
@@ -962,9 +1025,13 @@ def main() -> int:
 
         # After the walk, never before it: with the default scope the fetched
         # list doubles as the topology, and dropping a deferred parent from it
-        # would sever the chain to its (undeferred) children.
+        # would sever the chain to its (undeferred) children. --no-blocked is
+        # in the same position for the same reason, and 'bd blocked' is only
+        # run when it was asked for.
         if args.no_deferred:
             issues = drop_deferred(issues)
+        if args.no_blocked:
+            issues = drop_blocked(issues, blocked_ids(project_path))
 
     events = synthesize_events(issues, kinds)
 
@@ -1002,6 +1069,7 @@ def main() -> int:
             active = given_flags(
                 ("--status", args.status), ("--open", args.open),
                 ("--no-deferred", args.no_deferred),
+                ("--no-blocked", args.no_blocked),
                 ("--only", args.only), ("--since", args.since),
             )
             cause = "not found"

@@ -171,6 +171,7 @@ _beads_dispatch() {
       '(--status --open)--status=[include only beads with these current statuses]:statuses:__beads_statuses' \
       '(--status --open)--open[shorthand: only beads still open (not closed)]' \
       '--no-deferred[exclude beads whose current status is deferred]' \
+      '--no-blocked[exclude beads waiting on an unsatisfied dependency]' \
       '--id=[include only these beads (comma-separated full bead ids)]:ids:__beads_ids' \
       '--children[with --id, also include every bead under each named id]' \
       '--since=[show only events on/after DATE]:date' \

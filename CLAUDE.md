@@ -138,6 +138,43 @@ Current scripts:
   a deferred epic before the walk would sever the chain to its live
   children. Like `--open`, it does not imply `--about=beads`: a memory is
   never deferred, so it refines "in force" rather than picking an entity.
+  `--no-blocked` drops beads that `bd blocked` reports as waiting on an
+  unsatisfied dependency. It is a *different axis* from `--no-deferred`,
+  not a stronger version of it: a bead is blocked by what it depends on and
+  deferred by its own status, and it can be both — a deferred bead still
+  appears in `bd blocked` when something it needs is open, so the two
+  filters overlap without either subsuming the other. The set is fetched
+  from `bd blocked --json`, lazily, only when the flag is passed (~0.3s).
+  It is delegated rather than computed for the same reason `--status` is a
+  pass-through: bd owns the dependency semantics. Computing it locally is
+  not merely more work, it is a guess — the `dependencies` array in `bd
+  list --json` would require bd-log to decide which edge `type` values
+  block (`parent-child` does, `related` does not, `discovered-from`
+  presumably does not), and the *stored* status is no help either, because
+  a blocked bead's status stays `open` until someone runs `bd
+  recompute-blocked` (every one of `mbz-et8e.56`–`.59` is `status: open`
+  while `bd blocked` lists it, and this repo has zero stored `blocked`
+  statuses across 58 beads). Two properties of the returned set matter:
+  closed beads are never in it, so the filter cannot drop a closed bead's
+  events; and it is not capped the way `bd list` is at 50 (a 61-bead test
+  returned all 61). Like `--no-deferred` it runs *after* the `--children`
+  walk, and like `--open` it does not imply `--about=beads` — a memory is
+  never blocked.
+  The obvious alternative, `bd list --ready`, was tried and rejected. It
+  looks ideal (bd's own definition, no guess at all) but means open **and**
+  unblocked **and** not deferred, so an `in_progress` bead is not ready:
+  setting one bead to `in_progress` and changing nothing else took the
+  ready set from one bead to zero. `bd-log --open --no-ready` would
+  therefore hide the bead being actively worked on, which is the one most
+  likely to have recent events. It also cannot compose with the scope axis
+  — `bd list --ready --all` returns the ready set, silently overriding
+  `--all`.
+  Known gap (`beads-utils-x9x`): a child of a *deferred parent* is excluded
+  from `bd list --ready` but is **not** in `bd blocked`, so `--no-blocked`
+  leaves it. That is not the case this flag was built for — the reported
+  one was a gate bead (`mbz-et8e.60`, `[gate] Resume marketing-site work
+  (close to activate)`, deferred) with an explicit `blocks` edge from each
+  child, which `bd blocked` reports.
   These are soft defaults an explicit
   `--about` overrides, in which case an inert bead filter is named on stderr
   rather than silently ignored.
@@ -621,6 +658,8 @@ Also verify manually against a real beads project (this repo itself is one):
 ./bd-log --only=create                         # Beads created + memories added
 ./bd-log --open                                # Events for beads still open
 ./bd-log --open --no-deferred                  # ...minus the currently deferred ones
+./bd-log --open --no-blocked                   # ...minus the ones waiting on a blocker
+./bd-log --open --no-deferred --no-blocked     # ...what can actually be picked up
 ./bd-log --only=start --status=in_progress     # What's actively being worked
 ./bd-log --id beads-utils-s4s                  # One bead's whole history
 ./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree
