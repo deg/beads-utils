@@ -27,6 +27,7 @@
 * [fix] Complete `claude-session-report`'s `--prompts`, `--replies` and `--slash-commands`, which neither completion file listed
 * [fix] Offer candidates for `bd-log --only` and `claude-session-list --sort`, which previously completed nothing
 * [fix] Lint `claudeutils.py`, which shebang-based discovery had been skipping
+* [refactor] Fold `bd-log`'s two `bd` JSON queries onto one run-and-parse helper
 * [refactor] Fold `claude-session-find`'s duplicated session helpers into `claudeutils`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
 
