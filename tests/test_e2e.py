@@ -273,6 +273,62 @@ def test_bd_log_no_blocked_composes_with_no_deferred(run_script, fake_bd):
         assert gone not in result.stdout
 
 
+def test_bd_log_no_blocked_composes_with_a_status_list(run_script, fake_bd):
+    """The composition the help text promises and nothing else exercises.
+
+    The status list has to avoid the word 'blocked': fake_bd matches a rule
+    token as a substring of *any* argv entry, so a --status=blocked here would
+    be answered by the 'blocked' rule below and the test would pass having
+    exercised the wrong call entirely. open,in_progress makes the same point
+    safely -- bd gets the list untouched, and the local filter narrows it.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-held")])
+    fake_bd.issues([
+        issue("p-free", status="open", created_at="2026-04-01T10:00:00Z"),
+        issue("p-held", status="in_progress", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--status=open,in_progress", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "p-free" in result.stdout
+    assert "p-held" not in result.stdout
+    list_argv, = [a for a in fake_bd.calls if a[:1] == ["list"]]
+    assert "--status=open,in_progress" in list_argv
+
+
+def test_bd_log_no_blocked_keeps_a_closed_beads_history(run_script, fake_bd):
+    """End to end: the default --all scope must not lose a closed bead.
+
+    Pairs with test_bd_log's drop_blocked guard. A fake is the only way to
+    reach this -- real bd never reports a closed bead as blocked -- which is
+    exactly why the behavior needs pinning rather than trusting.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-done"), issue("p-held")])
+    fake_bd.issues([
+        issue("p-done", status="closed", created_at="2026-04-01T10:00:00Z",
+              closed_at="2026-04-05T10:00:00Z"),
+        issue("p-held", status="open", created_at="2026-04-02T10:00:00Z"),
+    ])
+    result = run_script("bd-log", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert "p-done" in result.stdout
+    assert "p-held" not in result.stdout
+
+
+def test_bd_log_does_not_ask_bd_for_the_blocked_set_when_no_beads_survived(
+    run_script, fake_bd,
+):
+    """No rows left means no answer bd could give would change anything.
+
+    'bd blocked' costs a subprocess (~0.3s against a real repo), so the scope
+    filters running first is what makes skipping it safe and worthwhile.
+    """
+    fake_bd.json_rule("blocked", payload=[issue("p-held")])
+    fake_bd.issues([])
+    result = run_script("bd-log", "--status=closed", "--no-blocked")
+    assert result.returncode == 0, result.stderr
+    assert not any("blocked" in argv for argv in fake_bd.calls)
+
+
 def test_bd_log_no_blocked_does_not_sever_a_subtree_through_a_blocked_parent(
     run_script, fake_bd,
 ):

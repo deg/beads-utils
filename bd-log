@@ -185,10 +185,15 @@ def blocked_ids(project_path: Path) -> set[str]:
     status is no help either, since a blocked bead's status stays 'open' (bd
     sets 'blocked' only on demand, via 'bd recompute-blocked').
 
-    Two properties of the returned set matter to the caller: closed beads are
-    never in it, so filtering on it cannot drop a closed bead's events; and it
-    is orthogonal to 'deferred', so --no-blocked and --no-deferred compose
-    rather than overlap (a bead can be both, and is then listed here).
+    The set is orthogonal to 'deferred': the two overlap without either
+    subsuming the other, since a deferred bead is still listed here when
+    something it needs is open. So --no-blocked and --no-deferred each shed
+    their own beads.
+
+    Failure is fatal here, unlike memory_events(), which degrades to "no
+    memory row" when dolt is missing. The asymmetry is deliberate: a missing
+    memory row is visibly absent, whereas a --no-blocked that quietly did not
+    filter would look exactly like a run where nothing was blocked.
     """
     try:
         result = subprocess.run(
@@ -209,13 +214,31 @@ def blocked_ids(project_path: Path) -> set[str]:
 
 
 def drop_blocked(issues: list[dict], blocked: set[str]) -> list[dict]:
-    """`issues` without those bd reports as blocked.
+    """`issues` without the open ones bd reports as blocked.
 
     Applied to the scoped set *after* the --children walk, like drop_deferred
     and for the same reason: a blocked intermediate bead still has to carry
     the chain to its descendants.
+
+    A bead that has been closed is kept whatever `blocked` says. --no-blocked
+    means "hide what I cannot pick up", and a closed bead is not work waiting
+    on something -- it is work that is done, and under the default --all scope
+    its created/started/closed entries are the history this log exists to
+    show. Today bd cannot trip this: closed beads are excluded from
+    'bd blocked'. But that is a policy of another program, bd does allow
+    closing a blocked bead ('bd close --force'), and drop_deferred cannot go
+    wrong the same way -- its predicate is a field of the row in hand, while
+    this one comes from a separate query whose scope bd chooses. So the one
+    outcome that would be unrecoverable (a closed bead's whole history
+    silently absent from a historical log) is ruled out here rather than
+    assumed away. closed_at is the test rather than status == 'closed'
+    because bd-log already reads that field to synthesize the close event,
+    so it adds no status vocabulary this script does not already own.
     """
-    return [i for i in issues if issue_id(i) not in blocked]
+    return [
+        i for i in issues
+        if i.get("closed_at") or issue_id(i) not in blocked
+    ]
 
 
 def run_bd_list(
@@ -794,8 +817,8 @@ def main() -> int:
             "                    unsatisfied dependency. A different axis from\n"
             "                    --no-deferred: a bead is blocked by what it\n"
             "                    depends on, deferred by its own status, and can\n"
-            "                    be both. Add it to --open --no-deferred for what\n"
-            "                    is actually pickupable.\n"
+            "                    be both. --open --no-deferred --no-blocked is\n"
+            "                    the narrowest live view the three together give.\n"
             "  --id=LIST         which beads to include, by id (comma-separated\n"
             "                    full ids, as 'bd list --id' expects). --children\n"
             "                    widens each id to its whole subtree.\n"
@@ -825,6 +848,8 @@ def main() -> int:
             "  bd-log --open                  Events for beads that are still open\n"
             "  bd-log --open --no-deferred    ...minus the ones currently deferred\n"
             "  bd-log --open --no-blocked     ...minus the ones waiting on a blocker\n"
+            "  bd-log --open --no-deferred --no-blocked\n"
+            "                                 ...minus both\n"
             "  bd-log --status=in_progress    Only currently in-progress beads\n"
             "  bd-log --only=start --open     What's actively being worked\n"
             "  bd-log --only=close            Closures only\n"
@@ -1030,7 +1055,10 @@ def main() -> int:
         # run when it was asked for.
         if args.no_deferred:
             issues = drop_deferred(issues)
-        if args.no_blocked:
+        # `issues` is checked too, not just the flag: with nothing left to
+        # filter there is no answer bd could give that changes the result,
+        # and the subprocess is ~0.3s.
+        if args.no_blocked and issues:
             issues = drop_blocked(issues, blocked_ids(project_path))
 
     events = synthesize_events(issues, kinds)

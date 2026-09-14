@@ -174,7 +174,15 @@ Current scripts:
   leaves it. That is not the case this flag was built for — the reported
   one was a gate bead (`mbz-et8e.60`, `[gate] Resume marketing-site work
   (close to activate)`, deferred) with an explicit `blocks` edge from each
-  child, which `bd blocked` reports.
+  child, which `bd blocked` reports. Because of that gap, the three filters
+  together are the narrowest live view *these* flags give, and not "what can
+  actually be picked up" — the phrasing an earlier draft used in the epilog,
+  the changelog and this file, contradicting the paragraph you are reading.
+  One thing `--no-blocked` guarantees regardless: a **closed** bead is never
+  shed, whatever the blocked set says. See `drop_blocked` — the default
+  `--all` scope makes a closed bead's history the very thing the log is for,
+  and that is the one outcome too costly to leave resting on bd's current
+  policy of excluding closed beads from `bd blocked`.
   These are soft defaults an explicit
   `--about` overrides, in which case an inert bead filter is named on stderr
   rather than silently ignored.
@@ -659,7 +667,7 @@ Also verify manually against a real beads project (this repo itself is one):
 ./bd-log --open                                # Events for beads still open
 ./bd-log --open --no-deferred                  # ...minus the currently deferred ones
 ./bd-log --open --no-blocked                   # ...minus the ones waiting on a blocker
-./bd-log --open --no-deferred --no-blocked     # ...what can actually be picked up
+./bd-log --open --no-deferred --no-blocked     # ...minus both
 ./bd-log --only=start --status=in_progress     # What's actively being worked
 ./bd-log --id beads-utils-s4s                  # One bead's whole history
 ./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree

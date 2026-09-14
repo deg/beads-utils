@@ -10,7 +10,6 @@ load-bearing rather than decorative.
 from __future__ import annotations
 
 import json
-import subprocess
 import threading
 
 import pytest
@@ -274,7 +273,7 @@ def test_drop_deferred_of_nothing_is_nothing():
 
 
 def test_drop_blocked_removes_exactly_the_ids_bd_reported():
-    """The filter matches on id, never on the row's own status field.
+    """For an open bead the filter matches on id, never on its status field.
 
     This is the whole reason --no-blocked delegates: a bead held by an open
     dependency keeps status 'open' until someone runs 'bd recompute-blocked',
@@ -287,6 +286,37 @@ def test_drop_blocked_removes_exactly_the_ids_bd_reported():
     ]
     kept = bd_log.drop_blocked(rows, {"p-held", "p-parked-and-held"})
     assert [i["id"] for i in kept] == ["p-free"]
+
+
+def test_drop_blocked_never_sheds_a_closed_bead():
+    """A closed bead's history survives whatever the blocked set says.
+
+    The one guard on an assumption about another program. bd excludes closed
+    beads from 'bd blocked' today, so this cannot currently happen -- but bd
+    allows closing a blocked bead ('bd close --force'), the blocked set comes
+    from a separate query whose scope bd chooses, and the default --all scope
+    means a closed bead's created/started/closed entries are exactly the
+    history the log exists to show. Without the guard, one policy change at
+    bd's end would silently erase that history with no error.
+    """
+    rows = [
+        issue("p-done", status="closed", closed_at="2026-04-01T10:00:00Z"),
+        issue("p-held", status="open"),
+    ]
+    kept = bd_log.drop_blocked(rows, {"p-done", "p-held"})
+    assert [i["id"] for i in kept] == ["p-done"]
+
+
+def test_drop_blocked_reads_closed_at_rather_than_the_status_name():
+    """closed_at, not status == 'closed' -- no new status vocabulary.
+
+    bd-log already reads closed_at to synthesize the close event, so keying
+    the guard on it borrows nothing from bd's status list. A row carrying the
+    timestamp is kept even if its status says otherwise, which is the point.
+    """
+    rows = [issue("p-odd", status="open", closed_at="2026-04-01T10:00:00Z")]
+    assert bd_log.drop_blocked(rows, {"p-odd"}) == rows
+    assert bd_log.drop_blocked([issue("p-empty", closed_at="")], {"p-empty"}) == []
 
 
 def test_drop_blocked_with_an_empty_set_keeps_everything():
@@ -309,37 +339,64 @@ def test_drop_blocked_of_nothing_is_nothing():
 
 
 # --- blocked_ids ----------------------------------------------------------
+#
+# Exercised through the fake `bd` on PATH, like run_bd_list's tests below and
+# not by monkeypatching subprocess: these two functions have the same shape,
+# and the fixture is what makes the failure paths (non-zero exit, missing
+# binary) one-liners rather than hand-built CompletedProcess objects.
 
 
-def test_blocked_ids_collects_ids_and_drops_rows_without_one(monkeypatch, tmp_path):
-    captured = {}
+def test_blocked_ids_collects_the_ids_and_drops_rows_without_one(fake_bd, project):
+    """A row with no usable id cannot match anything, so it must not join the set.
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["cwd"] = kwargs.get("cwd")
-        return _completed(json.dumps([{"id": "p-1"}, {"id": "p-2"}, {"title": "no id"}]))
-
-    monkeypatch.setattr(bd_log.subprocess, "run", fake_run)
-    assert bd_log.blocked_ids(tmp_path) == {"p-1", "p-2"}
-    assert captured["cmd"] == ["bd", "blocked", "--json"]
-    assert captured["cwd"] == tmp_path
+    An empty id would otherwise meet the empty string issue_id() returns for a
+    row that has none, and drop_blocked would shed every such bead at once.
+    """
+    fake_bd.issues([{"id": "p-1"}, {"id": "p-2"}, {"title": "no id at all"}])
+    assert bd_log.blocked_ids(project) == {"p-1", "p-2"}
+    argv, = fake_bd.calls
+    assert argv == ["blocked", "--json"]
 
 
-def test_blocked_ids_of_empty_output_is_an_empty_set(monkeypatch, tmp_path):
-    """'no blocked issues' is a valid state, not a failure."""
-    monkeypatch.setattr(bd_log.subprocess, "run", lambda cmd, **kw: _completed(""))
-    assert bd_log.blocked_ids(tmp_path) == set()
+def test_blocked_ids_of_empty_output_is_an_empty_set(fake_bd, project):
+    """"No blocked issues" is a valid state, not a failure to report."""
+    fake_bd.default(stdout="   \n")
+    assert bd_log.blocked_ids(project) == set()
 
 
-def test_blocked_ids_errors_on_unparseable_output(monkeypatch, tmp_path):
-    monkeypatch.setattr(bd_log.subprocess, "run", lambda cmd, **kw: _completed("{nope"))
+def test_blocked_ids_reports_a_bd_failure_without_a_traceback(fake_bd, project):
+    """A failed lookup must stop the run, not silently skip the filter.
+
+    Silently not filtering is indistinguishable from a run where nothing was
+    blocked -- the one failure mode the user could not notice. bd exits
+    non-zero for schema skew, and an older bd has no 'blocked' subcommand at
+    all. Its own message is passed through so the cause is visible.
+    """
+    fake_bd.default(stderr="schema skew\n", exit_code=3)
     with pytest.raises(SystemExit) as excinfo:
-        bd_log.blocked_ids(tmp_path)
+        bd_log.blocked_ids(project)
+    assert "exit 3" in str(excinfo.value.code)
+
+
+def test_blocked_ids_passes_bd_own_stderr_through(fake_bd, project, capsys):
+    fake_bd.default(stderr="bd said why\n", exit_code=1)
+    with pytest.raises(SystemExit):
+        bd_log.blocked_ids(project)
+    assert "bd said why" in capsys.readouterr().err
+
+
+def test_blocked_ids_reports_unparseable_json(fake_bd, project):
+    fake_bd.default(stdout="not json at all")
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.blocked_ids(project)
     assert "could not parse bd blocked JSON output" in str(excinfo.value.code)
 
 
-def _completed(stdout):
-    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+def test_blocked_ids_reports_a_missing_bd_binary(project, monkeypatch):
+    monkeypatch.setenv("PATH", str(project))  # no `bd` anywhere on it
+    with pytest.raises(SystemExit) as excinfo:
+        bd_log.blocked_ids(project)
+    assert "not found on PATH" in str(excinfo.value.code)
 
 
 # --- count_distinct / count_lines ----------------------------------------
