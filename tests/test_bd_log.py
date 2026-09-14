@@ -273,7 +273,7 @@ def test_drop_deferred_of_nothing_is_nothing():
 
 
 def test_drop_blocked_removes_exactly_the_ids_bd_reported():
-    """For an open bead the filter matches on id, never on its status field.
+    """The filter matches on id, never on the row's own status field.
 
     This is the whole reason --no-blocked delegates: a bead held by an open
     dependency keeps status 'open' until someone runs 'bd recompute-blocked',
@@ -286,37 +286,6 @@ def test_drop_blocked_removes_exactly_the_ids_bd_reported():
     ]
     kept = bd_log.drop_blocked(rows, {"p-held", "p-parked-and-held"})
     assert [i["id"] for i in kept] == ["p-free"]
-
-
-def test_drop_blocked_never_sheds_a_closed_bead():
-    """A closed bead's history survives whatever the blocked set says.
-
-    The one guard on an assumption about another program. bd excludes closed
-    beads from 'bd blocked' today, so this cannot currently happen -- but bd
-    allows closing a blocked bead ('bd close --force'), the blocked set comes
-    from a separate query whose scope bd chooses, and the default --all scope
-    means a closed bead's created/started/closed entries are exactly the
-    history the log exists to show. Without the guard, one policy change at
-    bd's end would silently erase that history with no error.
-    """
-    rows = [
-        issue("p-done", status="closed", closed_at="2026-04-01T10:00:00Z"),
-        issue("p-held", status="open"),
-    ]
-    kept = bd_log.drop_blocked(rows, {"p-done", "p-held"})
-    assert [i["id"] for i in kept] == ["p-done"]
-
-
-def test_drop_blocked_reads_closed_at_rather_than_the_status_name():
-    """closed_at, not status == 'closed' -- no new status vocabulary.
-
-    bd-log already reads closed_at to synthesize the close event, so keying
-    the guard on it borrows nothing from bd's status list. A row carrying the
-    timestamp is kept even if its status says otherwise, which is the point.
-    """
-    rows = [issue("p-odd", status="open", closed_at="2026-04-01T10:00:00Z")]
-    assert bd_log.drop_blocked(rows, {"p-odd"}) == rows
-    assert bd_log.drop_blocked([issue("p-empty", closed_at="")], {"p-empty"}) == []
 
 
 def test_drop_blocked_with_an_empty_set_keeps_everything():

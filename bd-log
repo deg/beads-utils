@@ -214,31 +214,13 @@ def blocked_ids(project_path: Path) -> set[str]:
 
 
 def drop_blocked(issues: list[dict], blocked: set[str]) -> list[dict]:
-    """`issues` without the open ones bd reports as blocked.
+    """`issues` without those bd reports as blocked.
 
     Applied to the scoped set *after* the --children walk, like drop_deferred
     and for the same reason: a blocked intermediate bead still has to carry
     the chain to its descendants.
-
-    A bead that has been closed is kept whatever `blocked` says. --no-blocked
-    means "hide what I cannot pick up", and a closed bead is not work waiting
-    on something -- it is work that is done, and under the default --all scope
-    its created/started/closed entries are the history this log exists to
-    show. Today bd cannot trip this: closed beads are excluded from
-    'bd blocked'. But that is a policy of another program, bd does allow
-    closing a blocked bead ('bd close --force'), and drop_deferred cannot go
-    wrong the same way -- its predicate is a field of the row in hand, while
-    this one comes from a separate query whose scope bd chooses. So the one
-    outcome that would be unrecoverable (a closed bead's whole history
-    silently absent from a historical log) is ruled out here rather than
-    assumed away. closed_at is the test rather than status == 'closed'
-    because bd-log already reads that field to synthesize the close event,
-    so it adds no status vocabulary this script does not already own.
     """
-    return [
-        i for i in issues
-        if i.get("closed_at") or issue_id(i) not in blocked
-    ]
+    return [i for i in issues if issue_id(i) not in blocked]
 
 
 def run_bd_list(

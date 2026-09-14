@@ -178,11 +178,6 @@ Current scripts:
   together are the narrowest live view *these* flags give, and not "what can
   actually be picked up" — the phrasing an earlier draft used in the epilog,
   the changelog and this file, contradicting the paragraph you are reading.
-  One thing `--no-blocked` guarantees regardless: a **closed** bead is never
-  shed, whatever the blocked set says. See `drop_blocked` — the default
-  `--all` scope makes a closed bead's history the very thing the log is for,
-  and that is the one outcome too costly to leave resting on bd's current
-  policy of excluding closed beads from `bd blocked`.
   These are soft defaults an explicit
   `--about` overrides, in which case an inert bead filter is named on stderr
   rather than silently ignored.

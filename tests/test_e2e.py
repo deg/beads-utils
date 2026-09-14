@@ -295,25 +295,6 @@ def test_bd_log_no_blocked_composes_with_a_status_list(run_script, fake_bd):
     assert "--status=open,in_progress" in list_argv
 
 
-def test_bd_log_no_blocked_keeps_a_closed_beads_history(run_script, fake_bd):
-    """End to end: the default --all scope must not lose a closed bead.
-
-    Pairs with test_bd_log's drop_blocked guard. A fake is the only way to
-    reach this -- real bd never reports a closed bead as blocked -- which is
-    exactly why the behavior needs pinning rather than trusting.
-    """
-    fake_bd.json_rule("blocked", payload=[issue("p-done"), issue("p-held")])
-    fake_bd.issues([
-        issue("p-done", status="closed", created_at="2026-04-01T10:00:00Z",
-              closed_at="2026-04-05T10:00:00Z"),
-        issue("p-held", status="open", created_at="2026-04-02T10:00:00Z"),
-    ])
-    result = run_script("bd-log", "--no-blocked")
-    assert result.returncode == 0, result.stderr
-    assert "p-done" in result.stdout
-    assert "p-held" not in result.stdout
-
-
 def test_bd_log_does_not_ask_bd_for_the_blocked_set_when_no_beads_survived(
     run_script, fake_bd,
 ):
