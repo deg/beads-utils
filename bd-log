@@ -175,6 +175,37 @@ def drop_deferred(issues: list[dict]) -> list[dict]:
     return [i for i in issues if i.get("status") != DEFERRED_STATUS]
 
 
+def run_bd_json(project_path: Path, cmd: list[str]):
+    """Run a 'bd <subcommand> ... --json' and return the parsed reply.
+
+    Shared by the two bd queries below so their failure handling cannot
+    drift apart -- it already did once: blocked_ids shipped without the
+    non-zero-exit and missing-binary tests run_bd_list had, which a review
+    caught only by noticing the asymmetry. The subcommand (cmd[1]) names
+    itself in both error messages.
+
+    bd's own stderr is passed through before exiting, so the cause is
+    visible rather than replaced by this script's one-line summary. Empty
+    output is not an error: "no matching issues" is a valid answer from
+    every bd query here.
+    """
+    label = cmd[1]
+    try:
+        result = subprocess.run(
+            cmd, cwd=project_path, capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        error("'bd' not found on PATH")
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+        error(f"bd {label} failed (exit {exc.returncode})")
+    try:
+        return json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        error(f"could not parse bd {label} JSON output: {exc}")
+
+
 def blocked_ids(project_path: Path) -> set[str]:
     """The ids 'bd blocked' reports as held by an unsatisfied dependency.
 
@@ -195,21 +226,7 @@ def blocked_ids(project_path: Path) -> set[str]:
     memory row is visibly absent, whereas a --no-blocked that quietly did not
     filter would look exactly like a run where nothing was blocked.
     """
-    try:
-        result = subprocess.run(
-            ["bd", "blocked", "--json"],
-            cwd=project_path, capture_output=True, text=True, check=True,
-        )
-    except FileNotFoundError:
-        error("'bd' not found on PATH")
-    except subprocess.CalledProcessError as exc:
-        if exc.stderr:
-            sys.stderr.write(exc.stderr)
-        error(f"bd blocked failed (exit {exc.returncode})")
-    try:
-        listed = json.loads(result.stdout) if result.stdout.strip() else []
-    except json.JSONDecodeError as exc:
-        error(f"could not parse bd blocked JSON output: {exc}")
+    listed = run_bd_json(project_path, ["bd", "blocked", "--json"])
     return {iid for iid in (issue_id(i) for i in listed) if iid}
 
 
@@ -233,20 +250,7 @@ def run_bd_list(
     # --children is the one case that cannot delegate; see select_subtrees.
     if ids:
         cmd.append(f"--id={','.join(ids)}")
-    try:
-        result = subprocess.run(
-            cmd, cwd=project_path, capture_output=True, text=True, check=True,
-        )
-    except FileNotFoundError:
-        error("'bd' not found on PATH")
-    except subprocess.CalledProcessError as exc:
-        if exc.stderr:
-            sys.stderr.write(exc.stderr)
-        error(f"bd list failed (exit {exc.returncode})")
-    try:
-        return json.loads(result.stdout) if result.stdout.strip() else []
-    except json.JSONDecodeError as exc:
-        error(f"could not parse bd list JSON output: {exc}")
+    return run_bd_json(project_path, cmd)
 
 
 def select_subtrees(
