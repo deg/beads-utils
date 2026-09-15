@@ -22,7 +22,7 @@
 * [fix] Flag uncommitted Dolt tables in `bd-dolt-check`, which reported a repo as in sync while whole tables sat in the working set — in no commit, and therefore in no push:
   * An uncommitted table is its own `UNCOMMITTED` status and exits 1, so a gate that passed on such a repo now fails
   * The working set is reported before the remote is consulted, so a repo that has never pushed hears it too
-  * Offers a `dolt sql` fallback that commits the listed tables, for when `bd dolt commit` reports success without committing
+  * Names the remedy that works for the repo's Dolt mode — `bd dolt stop` in server mode, where `bd dolt commit` reports success without committing
 * [fix] Show `?` for a bead whose id is missing or empty in `bd-log`, rather than a gap in the id column
 * [fix] Reject an empty `bd-log --status=`, which silently logged every bead and every memory instead of narrowing
 * [fix] Show `(no title)` in `bd-log` for a bead whose title is only whitespace, rather than a blank colored line

@@ -121,8 +121,30 @@ Current scripts:
   values), and the running server and the CLI agreed the table was dirty, so
   this is bd's bug and not a stale read on our side. `beads-utils-fyn` holds the
   reproduction and tracks the upstream report.
-  So the section also prints a `dolt sql` one-liner that commits exactly the
-  tables it just listed. It is rooted at the database dir's **parent**, the
+  **The remedy is therefore mode-dependent**, and both halves were run at bd
+  1.1.0 in pristine repos of each mode rather than inferred from the one live
+  case:
+  - *embedded*: `bd dolt commit` works. With `dolt.auto-commit off`, a
+    `bd remember` + `bd create` left `config`, `events` and `issues` dirty and
+    one `bd dolt commit` cleared all three — `config` included.
+  - *server*: it does not. `bd dolt commit` printed `Committed.` and cleared
+    nothing; `bd vc commit` reported `Created commit cndugp42`, which was the
+    hash of the pre-existing `bd: create srv-0k9`. What *does* work is
+    **`bd dolt stop`**, which commits on the way down (`auto-flush: commit
+    working set before server stop`) and leaves the working set clean; bd
+    restarts the server transparently on the next command. So server mode's
+    printed remedy leads with `bd dolt stop`, not `bd dolt commit`.
+  Two further things that experiment established, worth not re-deriving: in
+  server mode `config` is dirty from `bd init` onwards — `issue_prefix` itself
+  is never committed — so this is not a memory-specific bug, memories are just
+  where it costs you; and `dolt.auto-commit off` is not honored there either
+  (`bd create` committed anyway). The cycle also repeats: after a stop, the
+  next `bd remember` leaves `config` dirty again, so in server mode the flush
+  belongs at the end of every session.
+  The section also prints a `dolt sql` one-liner that commits exactly the
+  tables it just listed, for the one case `bd dolt stop` cannot cover — a
+  server that isn't running has nothing to flush (`Error: dolt server is not
+  running`). It is rooted at the database dir's **parent**, the
   one spelling that works in both layouts: in server mode that is the
   sql-server's data dir, where the CLI finds `.dolt/sql-server.info` and
   proxies to the running server instead of writing the files out from under

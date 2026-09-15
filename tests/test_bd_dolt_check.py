@@ -322,16 +322,16 @@ def test_print_working_set_reports_dolt_status_words_verbatim(capsys):
     bd_dolt_check.print_working_set([
         {"table_name": "wisps", "staged": 1, "status": "new table"},
         {"table_name": "issues", "staged": "0", "status": "conflict"},
-    ], None, "")
+    ], None, "", "embedded")
     out = capsys.readouterr().out
     assert "new table  wisps" in out
     assert "conflict   issues" in out
 
 
 def test_print_working_set_pluralizes(capsys):
-    bd_dolt_check.print_working_set([modified("a")], None, "")
+    bd_dolt_check.print_working_set([modified("a")], None, "", "embedded")
     assert "1 table with uncommitted changes" in capsys.readouterr().out
-    bd_dolt_check.print_working_set([modified("a"), modified("b")], None, "")
+    bd_dolt_check.print_working_set([modified("a"), modified("b")], None, "", "embedded")
     assert "2 tables with uncommitted changes" in capsys.readouterr().out
 
 
@@ -358,11 +358,24 @@ def test_dolt_commit_command_runs_from_the_database_dir_parent(tmp_path):
     assert cmd.startswith(f"cd {tmp_path / 'dolt'} && dolt sql")
 
 
-def test_print_working_set_offers_the_fallback_with_a_database(tmp_path, capsys):
-    bd_dolt_check.print_working_set([modified("config")], tmp_path / "dolt" / "mydb", "mydb")
+def test_print_working_set_offers_the_fallback_in_server_mode(tmp_path, capsys):
+    bd_dolt_check.print_working_set(
+        [modified("config")], tmp_path / "dolt" / "mydb", "mydb", "server")
     out = capsys.readouterr().out
-    assert "bd made no commit despite" in out
+    assert "Run 'bd dolt stop'" in out
+    assert "does NOT clear this in server mode" in out
     assert "call dolt_add('config')" in out
+
+
+def test_print_working_set_names_bd_dolt_commit_in_embedded_mode(tmp_path, capsys):
+    """It works there, verified at bd 1.1.0 with auto-commit off -- so the
+    server-mode caveat would only be noise."""
+    bd_dolt_check.print_working_set(
+        [modified("config")], tmp_path / "embeddeddolt" / "mydb", "mydb", "embedded")
+    out = capsys.readouterr().out
+    assert "Run 'bd dolt commit', then 'bd dolt push'." in out
+    assert "bd dolt stop" not in out
+    assert "dolt_add" not in out
 
 
 def test_main_rejects_a_directory_that_is_not_a_beads_project(tmp_path, monkeypatch):

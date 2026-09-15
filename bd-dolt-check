@@ -92,7 +92,7 @@ def dolt_commit_command(dolt_db_dir: Path, db_name: str, rows: list[dict]) -> st
 
 
 def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None,
-                      db_name: str) -> None:
+                      db_name: str, dolt_mode: str = "") -> None:
     """Report the Dolt working set: what is changed but in no commit.
 
     Printed before anything touches the remote, because this is purely local
@@ -114,15 +114,24 @@ def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None,
     for row in rows:
         print(f"  {str(row.get('status', '?')):<{width}}  {row.get('table_name', '?')}")
     print("  These changes are in no commit, so no push can include them.")
-    print("  Run 'bd dolt commit', then 'bd dolt push'.")
-    # bd's commit can report success having committed nothing — watched on bd
-    # 1.1.0 in server mode, where `bd dolt commit` printed "Committed." and
-    # `bd vc commit` answered with the hash of the *existing* HEAD, while the
-    # table stayed modified. So the tool has to offer a way out of that loop.
-    if dolt_db_dir is not None:
-        print("  If this list is unchanged afterwards, bd made no commit despite")
-        print("  saying so (seen on bd 1.1.0, server mode). Commit with dolt itself:")
-        print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
+    # The remedy differs by mode, because `bd dolt commit` only works in one of
+    # them. Both halves were run at bd 1.1.0, in pristine repos of each mode:
+    # embedded, auto-commit off -> `bd dolt commit` clears config/events/issues
+    # together; server -> it prints "Committed." and clears nothing, and
+    # `bd vc commit` answers with the *existing* HEAD's hash. What does work in
+    # server mode is `bd dolt stop`, which commits as it shuts down
+    # ("auto-flush: commit working set before server stop").
+    if dolt_mode == "server":
+        print("  Run 'bd dolt stop', then 'bd dolt push'. Stopping flushes and")
+        print("  commits the working set; bd restarts the server when next needed.")
+        print("  'bd dolt commit' does NOT clear this in server mode — it reports")
+        print("  success and commits nothing (bd 1.1.0).")
+        if dolt_db_dir is not None:
+            print("  If the server is not running, there is nothing to flush; commit")
+            print("  with dolt itself:")
+            print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
+    else:
+        print("  Run 'bd dolt commit', then 'bd dolt push'.")
     print()
 
 
@@ -174,7 +183,7 @@ def main() -> int:
 
     dirty = dolt_status(dolt_db_dir) if dolt_db_dir is not None else None
     n_dirty = len(dirty) if dirty else 0
-    print_working_set(dirty, dolt_db_dir, db_name)
+    print_working_set(dirty, dolt_db_dir, db_name, dolt_mode)
 
     remote_ref = get_remote_dolt_ref(project_path)
     if remote_ref is None:
