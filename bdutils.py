@@ -309,6 +309,25 @@ def dolt_table_columns(dolt_db_dir: Path, table: str, rev: str | None = None) ->
     return [r["Field"] for r in rows if "Field" in r]
 
 
+def dolt_status(dolt_db_dir: Path) -> list[dict] | None:
+    """Rows of the `dolt_status` system table: every table with uncommitted
+    changes in the working set.
+
+    None means dolt could not be asked (CLI missing, or the query failed);
+    `[]` means it was asked and the working set is clean — a clean repo emits
+    `{}`, which dolt_sql_json turns into an empty row list.
+
+    Rows are returned raw. Dolt owns this vocabulary (`modified`, `new table`,
+    `deleted`, `renamed`, `conflict`, ...), so callers report whatever comes
+    back rather than matching against a list that would rot. `staged` is not
+    filtered on either: a staged table is still uncommitted.
+    """
+    return dolt_sql_json(
+        dolt_db_dir,
+        "select table_name, staged, status from dolt_status order by table_name;",
+    )
+
+
 def _open_pager() -> subprocess.Popen[str] | None:
     if not sys.stdout.isatty():
         return None

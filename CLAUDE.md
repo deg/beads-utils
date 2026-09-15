@@ -53,6 +53,64 @@ Current scripts:
   `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
   pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
   `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
+  It answers **committed *and* pushed**, on two independent axes. The commit
+  comparison above is one; the other is the Dolt **working set**, read from the
+  `dolt_status` system table. Without it a repo reads `IN SYNC` / exit 0 while
+  a whole table sits changed-but-uncommitted — in no commit, so no push can
+  carry it, and the commit comparison is blind to it by construction. That is
+  not hypothetical: it is `beads-utils-ksk`, found on `nutshell-mvp`, where
+  three weeks of `bd remember` memories lived only on one machine.
+  The section prints *before* anything touches the remote, because the working
+  set is purely local truth — a repo with no Dolt remote at all still needs to
+  hear it, and that path returns early. `clean` is printed out loud, as is
+  `not verifiable`; silence reading as "fine" is the failure this whole check
+  exists to end.
+  A dirty working set is its own status word, `UNCOMMITTED`, rather than being
+  folded into `OUT OF SYNC`: the two failures are independent and want
+  different remedies (commit vs. push), and they co-occur, in which case the
+  commit verdict keeps its own wording and picks up a `; N tables uncommitted`
+  clause. Exit 1 either way, including from the two "sync delta not
+  verifiable" returns — not knowing the commit delta says nothing about data
+  that is in no commit to begin with. That fold has to cover every one of
+  `main()`'s five returns; an "unverifiable *and* uncommitted" repo quietly
+  exiting 0 is precisely the bug.
+  Four things were checked rather than assumed, each of which would otherwise
+  invite defensive code:
+  - **`dolt_ignore` needs no filtering.** Every beads repo ignores
+    `local_metadata`, `repo_mtimes`, `wisps`, `wisp_%` and
+    `ignored_schema_migrations`. The `dolt_status` *system table* honors that
+    list for untracked-new tables (an ignored new table simply does not
+    appear) but not for a tracked table that later changes — which is exactly
+    what `dolt status` itself does, so matching it is the right behavior, not
+    a gap. No ignored table is dirty in any repo on this machine.
+  - **There is no "normal mid-session churn" to tolerate**, which is what the
+    bead left open. bd's `batch` auto-commit policy *is* documented to
+    accumulate changes in the working set by design — but `bd config get
+    dolt.auto-commit` returns `on` for every repo here, and even under batch,
+    uncommitted is still unpushed, which is the question this tool answers. So
+    no `--strict`, no tolerance knob, and no new flag (which also keeps
+    `completions/` out of it).
+  - **The cost of being right is small and known.** Across the 18 beads repos
+    on this machine, all 13 embedded ones are clean and 3 of the 5 server-mode
+    ones are dirty; two of those three have no Dolt remote and already exited
+    1. This repo stays at 0, so `make dolt-check` here is unchanged.
+  - **Rows are reported raw.** No whitelist of dolt's status vocabulary
+    (`modified`, `new table`, `deleted`, `renamed`, `conflict`, …) — same
+    delegation principle as `bd-log`'s `--status` pass-through — and no
+    filtering on `staged`, since a staged table is still uncommitted. Don't
+    start reading `staged` without normalizing it: it comes back as int `0`/`1`
+    from embedded repos and string `"0"`/`"1"` from server ones.
+  What it cannot say is *since when*. Uncommitted changes carry no date —
+  `dolt_status` has no time column, there is no `dolt_workspace_*` table, and
+  `dolt_diff_config` reports `to_commit='WORKING'` with a NULL date (see
+  `bd-log`'s memory-events notes, where the same wall was hit). The bead's
+  "uncommitted since 2026-07-12" was read off commit history, not the working
+  set.
+  One loose end, deliberately left: the remedy line prints `bd dolt commit`,
+  which is what its `--help` promises ("any uncommitted changes in the working
+  set"). The bead reports that an explicit `bd dolt commit` did *not* pick the
+  change up on `nutshell-mvp` under bd 1.0.0. Unverified since — checking means
+  actually committing in that repo.
 - `bd-dolt-diff` — Previews what a `bd dolt push` would actually send: an
   issue-level diff between the remote-tracking ref and the local branch
   (added/removed issues, field-level before/after for changed ones, plus

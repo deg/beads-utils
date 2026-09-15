@@ -14,7 +14,7 @@ needs `rich`).
 | Script | What it does |
 |---|---|
 | [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review |
-| [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually pushed to its git remote |
+| [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually committed and pushed to its git remote |
 | [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state |
 | [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended (color-coded, auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
@@ -81,8 +81,10 @@ The last pair guards against a quiet failure mode. Beads keeps its data
 in Dolt and pushes it to your git remote under `refs/dolt/data` — a ref
 GitHub's UI never shows, so the repo page looks identical whether or not
 your issues actually made it to the remote. `bd-dolt-check` answers
-"did they?", comparing local state against the remote and exiting
-non-zero on drift (which also makes it a CI gate). `bd-dolt-diff`
+"did they?" — on both counts that matter, since data still sitting in
+the Dolt working set is in no commit and therefore in no push. It
+reports what is uncommitted and compares the rest against the remote,
+exiting non-zero on either (which also makes it a CI gate). `bd-dolt-diff`
 answers the follow-up — what exactly would a `bd dolt push` send? —
 with an issue-level diff: added and removed beads, field-by-field
 changes, dependency and comment edits.

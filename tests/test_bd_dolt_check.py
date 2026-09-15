@@ -118,6 +118,22 @@ def run_main(monkeypatch, path, argv_extra=()):
     return bd_dolt_check.main()
 
 
+def working_set(fake_dolt, *rows):
+    """Program the `dolt_status` query, ahead of any other rule.
+
+    Rules match on substring and first-match-wins, so this has to be
+    registered before the `dolt log` ones. Without it a test's broad
+    .default() answers the status query with non-JSON, which reads as "could
+    not look" rather than "clean" -- the two states this check distinguishes.
+    """
+    payload = {"rows": list(rows)} if rows else {}
+    return fake_dolt.rule("dolt_status", stdout=json.dumps(payload))
+
+
+def modified(table):
+    return {"table_name": table, "staged": "0", "status": "modified"}
+
+
 def install_fake_git(tmp_path, monkeypatch, ls_remote_output):
     bindir = tmp_path / "gitbin"
     bindir.mkdir(exist_ok=True)
@@ -158,14 +174,20 @@ def test_main_reports_unverifiable_without_the_dolt_cli(dolt_project, monkeypatc
 def test_main_reports_in_sync_when_the_heads_match(dolt_project, monkeypatch,
                                                    tmp_path, fake_dolt, capsys):
     install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt)
     fake_dolt.default(stdout="samehash a commit\n")
     assert run_main(monkeypatch, dolt_project) == 0
-    assert "IN SYNC" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "IN SYNC" in out
+    assert "Working set:  clean" in out
+    # Pipeline order: working set -> local commits -> remote.
+    assert out.index("Working set:") < out.index("Remote:  refs/dolt/data =")
 
 
 def test_main_exits_one_with_unpushed_commits(dolt_project, monkeypatch,
                                               tmp_path, fake_dolt, capsys):
     install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt)
     # Range rules first: rules match on substring, so a bare "remotes/origin/main"
     # rule would otherwise also swallow the "remotes/origin/main..main" query.
     fake_dolt.rule("remotes/origin/main..main", stdout="c1 one\nc2 two\n")
@@ -181,6 +203,7 @@ def test_main_exits_one_with_unpushed_commits(dolt_project, monkeypatch,
 def test_main_reports_behind_without_failing(dolt_project, monkeypatch,
                                              tmp_path, fake_dolt, capsys):
     install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt)
     fake_dolt.rule("remotes/origin/main..main", stdout="")
     fake_dolt.rule("main..remotes/origin/main", stdout="c1 one\n")
     fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
@@ -191,12 +214,109 @@ def test_main_reports_behind_without_failing(dolt_project, monkeypatch,
 
 def test_main_reports_divergence(dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
     install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt)
     fake_dolt.rule("remotes/origin/main..main", stdout="c1 one\n")
     fake_dolt.rule("main..remotes/origin/main", stdout="c2 two\n")
     fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
     fake_dolt.rule("main", stdout="localhash new\n")
     assert run_main(monkeypatch, dolt_project) == 1
     assert "DIVERGED" in capsys.readouterr().out
+
+
+# --- main(): the Dolt working set -----------------------------------------
+#
+# "Pushed" is not the same as "committed and pushed". A table sitting in the
+# working set is in no commit, so no push can carry it -- and the commit
+# comparison above is blind to it. These are the states that distinguishes.
+
+
+def test_main_exits_one_when_a_table_is_uncommitted_but_commits_are_in_sync(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The bead's case: IN SYNC by the old check, yet data lives only here."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"))
+    fake_dolt.default(stdout="samehash a commit\n")
+    assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "Status:  UNCOMMITTED — commits in sync, 1 table not committed" in out
+    assert "modified  config" in out
+    assert "IN SYNC" not in out
+
+
+def test_main_names_uncommitted_tables_alongside_unpushed_commits(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """Two independent failures: the commit verdict keeps its own wording."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"), modified("issues"))
+    fake_dolt.rule("remotes/origin/main..main", stdout="c1 one\n")
+    fake_dolt.rule("main..remotes/origin/main", stdout="")
+    fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
+    fake_dolt.rule("main", stdout="localhash new\n")
+    assert run_main(monkeypatch, dolt_project) == 1
+    assert ("Status:  OUT OF SYNC — 1 local commit(s) not pushed; "
+            "2 tables uncommitted") in capsys.readouterr().out
+
+
+def test_main_reports_the_working_set_without_a_dolt_remote(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The working set is local truth, so it is reported before the remote is
+    consulted -- a repo that has never pushed still needs to hear it."""
+    install_fake_git(tmp_path, monkeypatch, "")
+    working_set(fake_dolt, modified("config"))
+    assert run_main(monkeypatch, dolt_project) == 1
+    assert "1 table with uncommitted changes" in capsys.readouterr().out
+
+
+def test_main_exits_one_when_the_delta_is_unverifiable_and_the_working_set_is_dirty(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """Not knowing the commit delta says nothing about data in no commit."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"))
+    fake_dolt.rule("main", exit_code=1)  # local HEAD unreadable
+    assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "Status:  UNCOMMITTED — 1 table uncommitted; sync delta not verifiable" in out
+
+
+def test_main_stays_at_zero_when_the_delta_is_unverifiable_and_nothing_is_dirty(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt)
+    fake_dolt.rule("main", exit_code=1)
+    assert run_main(monkeypatch, dolt_project) == 0
+    assert "remote has Dolt data — sync delta not verifiable" in capsys.readouterr().out
+
+
+def test_main_says_so_when_the_working_set_cannot_be_read(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """"Could not look" is stated, not skipped -- silence reading as clean is
+    the failure this check exists to end."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    fake_dolt.rule("dolt_status", exit_code=1)
+    fake_dolt.default(stdout="samehash a commit\n")
+    assert run_main(monkeypatch, dolt_project) == 0
+    assert "Working set:  not verifiable" in capsys.readouterr().out
+
+
+# --- print_working_set ----------------------------------------------------
+
+
+def test_print_working_set_reports_dolt_status_words_verbatim(capsys):
+    """Dolt owns this vocabulary; nothing is matched against a list that rots."""
+    bd_dolt_check.print_working_set([
+        {"table_name": "wisps", "staged": 1, "status": "new table"},
+        {"table_name": "issues", "staged": "0", "status": "conflict"},
+    ])
+    out = capsys.readouterr().out
+    assert "new table  wisps" in out
+    assert "conflict   issues" in out
+
+
+def test_print_working_set_pluralizes(capsys):
+    bd_dolt_check.print_working_set([modified("a")])
+    assert "1 table with uncommitted changes" in capsys.readouterr().out
+    bd_dolt_check.print_working_set([modified("a"), modified("b")])
+    assert "2 tables with uncommitted changes" in capsys.readouterr().out
 
 
 def test_main_rejects_a_directory_that_is_not_a_beads_project(tmp_path, monkeypatch):

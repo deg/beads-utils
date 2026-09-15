@@ -19,6 +19,9 @@
   * Fail when either completion file drifts from a script's flags
   * Run the suite in CI on every push and pull request
 * [feature] Add a `Makefile` covering test, lint, coverage, and Dolt-sync commands — `make help` lists them all
+* [fix] Flag uncommitted Dolt tables in `bd-dolt-check`, which reported a repo as in sync while whole tables sat in the working set — in no commit, and therefore in no push:
+  * An uncommitted table is its own `UNCOMMITTED` status and exits 1, so a gate that passed on such a repo now fails
+  * The working set is reported before the remote is consulted, so a repo that has never pushed hears it too
 * [fix] Show `?` for a bead whose id is missing or empty in `bd-log`, rather than a gap in the id column
 * [fix] Reject an empty `bd-log --status=`, which silently logged every bead and every memory instead of narrowing
 * [fix] Show `(no title)` in `bd-log` for a bead whose title is only whitespace, rather than a blank colored line

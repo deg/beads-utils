@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Verify that a beads project's Dolt data has been pushed to the remote.
+"""Verify that a beads project's Dolt data has been committed and pushed.
 
 Dolt stores its data under refs/dolt/data in the Git remote — invisible in
 GitHub's web UI but durable alongside your normal branches. This script
 compares local Dolt state (embedded or server mode) against what's on the
 remote and reports whether they're in sync.
+
+Two axes, both of which have to hold: nothing left in the Dolt working set
+(uncommitted data is in no commit, so no push can carry it), and no local
+commits the remote hasn't got.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from bdutils import (
     dolt_count_range,
     dolt_fetch,
     dolt_rev,
+    dolt_status,
     get_git_remote_url,
     get_head_branch,
     have_dolt,
@@ -66,9 +71,55 @@ def get_recent_dolt_log(dolt_db_dir: Path, n: int = 5) -> list[str]:
     return [strip_ansi(line) for line in result.stdout.splitlines() if line.strip()]
 
 
+def tables_phrase(n: int) -> str:
+    """'1 table' / '2 tables' — one pluralization for every line below."""
+    return f"{n} table{'s' if n != 1 else ''}"
+
+
+def print_working_set(rows: list[dict] | None) -> None:
+    """Report the Dolt working set: what is changed but in no commit.
+
+    Printed before anything touches the remote, because this is purely local
+    truth — a repo with no Dolt remote at all still needs to hear it. `rows`
+    is dolt_status()'s result: None = could not look, [] = looked and clean.
+    Both are stated out loud rather than skipped; silence reading as "fine" is
+    the failure this check exists to end.
+    """
+    if rows is None:
+        print("Working set:  not verifiable (needs the dolt CLI and a local Dolt database)")
+        print()
+        return
+    if not rows:
+        print("Working set:  clean")
+        print()
+        return
+    print(f"Working set:  {tables_phrase(len(rows))} with uncommitted changes")
+    width = max(len(str(r.get("status", "?"))) for r in rows)
+    for row in rows:
+        print(f"  {str(row.get('status', '?')):<{width}}  {row.get('table_name', '?')}")
+    print("  These changes are in no commit, so no push can include them.")
+    print("  Run 'bd dolt commit', then 'bd dolt push'.")
+    print()
+
+
+def print_unverifiable(n_dirty: int, detail: str) -> int:
+    """Status line for "the remote has data, but the commit delta is unknown".
+
+    Exits 1 when the working set is dirty: failing to compute the commit delta
+    says nothing about data that is in no commit to begin with.
+    """
+    if n_dirty:
+        print(f"Status:  UNCOMMITTED — {tables_phrase(n_dirty)} uncommitted; "
+              "sync delta not verifiable")
+    else:
+        print("Status:  remote has Dolt data — sync delta not verifiable")
+    print(f"         ({detail})")
+    return 1 if n_dirty else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify a beads project's Dolt data has been pushed to its remote.",
+        description="Verify a beads project's Dolt data has been committed and pushed to its remote.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -96,6 +147,10 @@ def main() -> int:
 
     dolt_db_dir = locate_dolt_db(beads_dir, db_name)
     dolt_remotes = read_dolt_remotes(dolt_db_dir) if dolt_db_dir else {}
+
+    dirty = dolt_status(dolt_db_dir) if dolt_db_dir is not None else None
+    n_dirty = len(dirty) if dirty else 0
+    print_working_set(dirty)
 
     remote_ref = get_remote_dolt_ref(project_path)
     if remote_ref is None:
@@ -146,9 +201,10 @@ def main() -> int:
 
     print()
     if dolt_db_dir is None or not have_dolt():
-        print("Status:  remote has Dolt data — sync delta not verifiable")
-        print("         (run from the project dir with the dolt CLI installed for a full check)")
-        return 0
+        return print_unverifiable(
+            n_dirty,
+            "run from the project dir with the dolt CLI installed for a full check",
+        )
 
     branch = get_head_branch(dolt_db_dir)
     remote_name = "origin" if "origin" in dolt_remotes else next(iter(dolt_remotes), "origin")
@@ -163,32 +219,40 @@ def main() -> int:
     tracking_head = dolt_rev(dolt_db_dir, tracking_ref)
 
     if local_head is None:
-        print("Status:  remote has Dolt data — sync delta not verifiable")
-        print(f"         (could not read local Dolt HEAD for branch '{branch}')")
-        return 0
+        return print_unverifiable(
+            n_dirty, f"could not read local Dolt HEAD for branch '{branch}'")
     if tracking_head is None:
-        print("Status:  remote has Dolt data — sync delta not verifiable")
-        print(f"         (no local remote-tracking ref '{tracking_ref}'; run 'bd dolt push' once)")
-        return 0
+        return print_unverifiable(
+            n_dirty,
+            f"no local remote-tracking ref '{tracking_ref}'; run 'bd dolt push' once",
+        )
 
     if local_head == tracking_head:
+        if n_dirty:
+            print(f"Status:  UNCOMMITTED — commits in sync, "
+                  f"{tables_phrase(n_dirty)} not committed")
+            return 1
         print(f"Status:  IN SYNC (local {branch} matches {tracking_ref})")
         return 0
 
     ahead = dolt_count_range(dolt_db_dir, f"{tracking_ref}..{branch}") or 0
     behind = dolt_count_range(dolt_db_dir, f"{branch}..{tracking_ref}") or 0
 
+    # The two failures are independent, so a dirty working set rides along as a
+    # clause rather than replacing the commit verdict. The remedy for it was
+    # already printed with the working-set section above.
+    also = f"; {tables_phrase(n_dirty)} uncommitted" if n_dirty else ""
     if ahead and behind:
-        print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled")
+        print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled{also}")
         action = "Run 'bd dolt pull' then 'bd dolt push' to reconcile."
     elif ahead:
-        print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed")
+        print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed{also}")
         action = "Run 'bd dolt push' to sync."
     elif behind:
-        print(f"Status:  BEHIND — {behind} remote commit(s) not pulled")
+        print(f"Status:  BEHIND — {behind} remote commit(s) not pulled{also}")
         action = "Run 'bd dolt pull' to update local."
     else:
-        print("Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable)")
+        print(f"Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable){also}")
         action = "Run 'bd dolt pull' / 'bd dolt push' to reconcile."
     print(f"  local ({branch}):           {local_head}")
     print(f"  remote ({tracking_ref}): {tracking_head}")

@@ -502,6 +502,36 @@ def test_dolt_table_columns_returns_empty_when_describe_fails(fake_dolt, tmp_pat
     assert bdutils.dolt_table_columns(tmp_path, "issues") == []
 
 
+def test_dolt_status_reads_a_clean_working_set_as_empty(fake_dolt, tmp_path):
+    """A clean repo emits `{}`, which has to read as "looked, found nothing"
+    rather than "could not look" -- bd-dolt-check's exit code turns on it."""
+    fake_dolt.default(stdout="{}")
+    assert bdutils.dolt_status(tmp_path) == []
+
+
+def test_dolt_status_returns_the_rows_for_a_dirty_working_set(fake_dolt, tmp_path):
+    rows = [{"table_name": "config", "staged": "0", "status": "modified"}]
+    fake_dolt.default(stdout=json.dumps({"rows": rows}))
+    assert bdutils.dolt_status(tmp_path) == rows
+
+
+def test_dolt_status_queries_the_system_table(fake_dolt, tmp_path):
+    fake_dolt.default(stdout="{}")
+    bdutils.dolt_status(tmp_path)
+    (argv,) = fake_dolt.calls
+    assert any("from dolt_status" in a for a in argv)
+
+
+def test_dolt_status_returns_none_when_dolt_errors(fake_dolt, tmp_path):
+    fake_dolt.default(exit_code=1)
+    assert bdutils.dolt_status(tmp_path) is None
+
+
+def test_dolt_status_returns_none_without_the_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert bdutils.dolt_status(tmp_path) is None
+
+
 def test_dolt_fetch_reports_success_and_failure(fake_dolt, tmp_path):
     fake_dolt.default(exit_code=0)
     assert bdutils.dolt_fetch(tmp_path, "origin") is True
