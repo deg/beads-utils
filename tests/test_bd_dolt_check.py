@@ -298,6 +298,22 @@ def test_main_says_so_when_the_working_set_cannot_be_read(
     assert "Working set:  not verifiable" in capsys.readouterr().out
 
 
+def test_main_says_to_commit_before_pulling_onto_a_dirty_working_set(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The one remedy pairing that can conflict rather than merely be
+    incomplete -- and the action line is the last thing on screen."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"))
+    fake_dolt.rule("remotes/origin/main..main", stdout="")
+    fake_dolt.rule("main..remotes/origin/main", stdout="c1 one\n")
+    fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
+    fake_dolt.rule("main", stdout="localhash new\n")
+    assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "BEHIND — 1 remote commit(s) not pulled; 1 table uncommitted" in out
+    assert "Run 'bd dolt commit', then 'bd dolt pull' to update local." in out
+
+
 # --- print_working_set ----------------------------------------------------
 
 

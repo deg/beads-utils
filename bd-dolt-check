@@ -239,18 +239,22 @@ def main() -> int:
     behind = dolt_count_range(dolt_db_dir, f"{branch}..{tracking_ref}") or 0
 
     # The two failures are independent, so a dirty working set rides along as a
-    # clause rather than replacing the commit verdict. The remedy for it was
-    # already printed with the working-set section above.
+    # clause rather than replacing the commit verdict. Its remedy was printed
+    # with the working-set section above and is not repeated here — except
+    # where the action is a *pull*: pulling onto a dirty working set is the one
+    # combination that can conflict rather than merely be incomplete, and this
+    # line is the last thing on screen.
     also = f"; {tables_phrase(n_dirty)} uncommitted" if n_dirty else ""
+    commit_first = "Run 'bd dolt commit', then " if n_dirty else "Run "
     if ahead and behind:
         print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled{also}")
-        action = "Run 'bd dolt pull' then 'bd dolt push' to reconcile."
+        action = f"{commit_first}'bd dolt pull' then 'bd dolt push' to reconcile."
     elif ahead:
         print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed{also}")
         action = "Run 'bd dolt push' to sync."
     elif behind:
         print(f"Status:  BEHIND — {behind} remote commit(s) not pulled{also}")
-        action = "Run 'bd dolt pull' to update local."
+        action = f"{commit_first}'bd dolt pull' to update local."
     else:
         print(f"Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable){also}")
         action = "Run 'bd dolt pull' / 'bd dolt push' to reconcile."
