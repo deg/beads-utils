@@ -106,11 +106,26 @@ Current scripts:
   `bd-log`'s memory-events notes, where the same wall was hit). The bead's
   "uncommitted since 2026-07-12" was read off commit history, not the working
   set.
-  One loose end, deliberately left: the remedy line prints `bd dolt commit`,
-  which is what its `--help` promises ("any uncommitted changes in the working
-  set"). The bead reports that an explicit `bd dolt commit` did *not* pick the
-  change up on `nutshell-mvp` under bd 1.0.0. Unverified since — checking means
-  actually committing in that repo.
+  The remedy is two-step **because bd's own commit can silently do nothing**,
+  which was watched happening rather than inferred. On `nutshell-mvp` (server
+  mode, bd 1.1.0), `bd dolt commit` printed `Committed.` and `bd vc commit`
+  answered with a commit hash — which was the *existing* HEAD's — while
+  `config` stayed `modified` through both, and no new commit appeared in that
+  database or in the stale sibling `beads` database sharing its data dir. The
+  changes were real (`dolt diff --stat`: 4 rows, 4 cells; four `kv.memory.*`
+  values), and the running server and the CLI agreed the table was dirty, so
+  this is bd's bug and not a stale read on our side. `beads-utils-fyn` holds the
+  reproduction and tracks the upstream report.
+  So the section also prints a `dolt sql` one-liner that commits exactly the
+  tables it just listed. It is rooted at the database dir's **parent**, the
+  one spelling that works in both layouts: in server mode that is the
+  sql-server's data dir, where the CLI finds `.dolt/sql-server.info` and
+  proxies to the running server instead of writing the files out from under
+  it; in embedded mode it is just a directory holding one database. Both were
+  run. `call dolt_add(...)` takes the whole table list in one call (checked;
+  it commits every one), with the caveat that a table matching `dolt_ignore`
+  is skipped by `dolt_add` even when `dolt_status` lists it as modified — the
+  tracked-and-ignored case above, which nothing on this machine is in.
 - `bd-dolt-diff` — Previews what a `bd dolt push` would actually send: an
   issue-level diff between the remote-tracking ref and the local branch
   (added/removed issues, field-level before/after for changed ones, plus

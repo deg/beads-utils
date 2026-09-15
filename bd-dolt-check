@@ -76,7 +76,23 @@ def tables_phrase(n: int) -> str:
     return f"{n} table{'s' if n != 1 else ''}"
 
 
-def print_working_set(rows: list[dict] | None) -> None:
+def dolt_commit_command(dolt_db_dir: Path, db_name: str, rows: list[dict]) -> str:
+    """A `dolt sql` one-liner that commits exactly the dirty tables.
+
+    Rooted at the database dir's *parent*, which is the one spelling that
+    works in both layouts: in server mode that is the sql-server's data dir,
+    where the CLI finds `.dolt/sql-server.info` and proxies to the running
+    server instead of writing the files underneath it; in embedded mode it is
+    simply a directory holding one database. Both were run and checked.
+    """
+    tables = ", ".join(repr(str(r.get("table_name", ""))) for r in rows)
+    return (f'cd {dolt_db_dir.parent} && dolt sql -q "use {db_name}; '
+            f"call dolt_add({tables}); "
+            f"call dolt_commit('-m', 'commit pending changes')\"")
+
+
+def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None = None,
+                      db_name: str = "") -> None:
     """Report the Dolt working set: what is changed but in no commit.
 
     Printed before anything touches the remote, because this is purely local
@@ -99,6 +115,14 @@ def print_working_set(rows: list[dict] | None) -> None:
         print(f"  {str(row.get('status', '?')):<{width}}  {row.get('table_name', '?')}")
     print("  These changes are in no commit, so no push can include them.")
     print("  Run 'bd dolt commit', then 'bd dolt push'.")
+    # bd's commit can report success having committed nothing — watched on bd
+    # 1.1.0 in server mode, where `bd dolt commit` printed "Committed." and
+    # `bd vc commit` answered with the hash of the *existing* HEAD, while the
+    # table stayed modified. So the tool has to offer a way out of that loop.
+    if dolt_db_dir is not None:
+        print("  If this list is unchanged afterwards, bd made no commit despite")
+        print("  saying so (seen on bd 1.1.0, server mode). Commit with dolt itself:")
+        print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
     print()
 
 
@@ -150,7 +174,7 @@ def main() -> int:
 
     dirty = dolt_status(dolt_db_dir) if dolt_db_dir is not None else None
     n_dirty = len(dirty) if dirty else 0
-    print_working_set(dirty)
+    print_working_set(dirty, dolt_db_dir, db_name)
 
     remote_ref = get_remote_dolt_ref(project_path)
     if remote_ref is None:

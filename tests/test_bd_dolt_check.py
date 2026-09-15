@@ -335,6 +335,36 @@ def test_print_working_set_pluralizes(capsys):
     assert "2 tables with uncommitted changes" in capsys.readouterr().out
 
 
+# --- the dolt fallback ----------------------------------------------------
+#
+# `bd dolt commit` can report success having committed nothing (watched on bd
+# 1.1.0 in server mode: "Committed." with no new commit, and `bd vc commit`
+# answering with the existing HEAD's hash). Without a way out, the check would
+# name a remedy that leaves its own warning standing.
+
+
+def test_dolt_commit_command_names_every_dirty_table(tmp_path):
+    cmd = bd_dolt_check.dolt_commit_command(
+        tmp_path / "dolt" / "mydb", "mydb", [modified("config"), modified("issues")])
+    assert "call dolt_add('config', 'issues')" in cmd
+    assert "use mydb;" in cmd
+
+
+def test_dolt_commit_command_runs_from_the_database_dir_parent(tmp_path):
+    """In server mode that is the data dir holding .dolt/sql-server.info, where
+    the CLI proxies to the running server instead of writing under it."""
+    cmd = bd_dolt_check.dolt_commit_command(
+        tmp_path / "dolt" / "mydb", "mydb", [modified("config")])
+    assert cmd.startswith(f"cd {tmp_path / 'dolt'} && dolt sql")
+
+
+def test_print_working_set_offers_the_fallback_with_a_database(tmp_path, capsys):
+    bd_dolt_check.print_working_set([modified("config")], tmp_path / "dolt" / "mydb", "mydb")
+    out = capsys.readouterr().out
+    assert "bd made no commit despite" in out
+    assert "call dolt_add('config')" in out
+
+
 def test_main_rejects_a_directory_that_is_not_a_beads_project(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         run_main(monkeypatch, tmp_path)
