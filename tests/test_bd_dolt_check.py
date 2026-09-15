@@ -322,16 +322,16 @@ def test_print_working_set_reports_dolt_status_words_verbatim(capsys):
     bd_dolt_check.print_working_set([
         {"table_name": "wisps", "staged": 1, "status": "new table"},
         {"table_name": "issues", "staged": "0", "status": "conflict"},
-    ])
+    ], None, "")
     out = capsys.readouterr().out
     assert "new table  wisps" in out
     assert "conflict   issues" in out
 
 
 def test_print_working_set_pluralizes(capsys):
-    bd_dolt_check.print_working_set([modified("a")])
+    bd_dolt_check.print_working_set([modified("a")], None, "")
     assert "1 table with uncommitted changes" in capsys.readouterr().out
-    bd_dolt_check.print_working_set([modified("a"), modified("b")])
+    bd_dolt_check.print_working_set([modified("a"), modified("b")], None, "")
     assert "2 tables with uncommitted changes" in capsys.readouterr().out
 
 

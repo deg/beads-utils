@@ -111,7 +111,12 @@ Current scripts:
   mode, bd 1.1.0), `bd dolt commit` printed `Committed.` and `bd vc commit`
   answered with a commit hash — which was the *existing* HEAD's — while
   `config` stayed `modified` through both, and no new commit appeared in that
-  database or in the stale sibling `beads` database sharing its data dir. The
+  database or in the stale sibling `beads` database sharing its data dir (a
+  Dolt data dir can serve several databases; `metadata.json` designates one,
+  `locate_dolt_db()` returns that one, and the working set asked about is that
+  one's — following bd's designation, the same delegation the rest of this
+  entry rests on, rather than surveying whatever else happens to sit there).
+  The
   changes were real (`dolt diff --stat`: 4 rows, 4 cells; four `kv.memory.*`
   values), and the running server and the CLI agreed the table was dirty, so
   this is bd's bug and not a stale read on our side. `beads-utils-fyn` holds the
