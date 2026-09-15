@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -86,13 +87,17 @@ def dolt_commit_command(dolt_db_dir: Path, db_name: str, rows: list[dict]) -> st
     simply a directory holding one database. Both were run and checked.
     """
     tables = ", ".join(repr(str(r.get("table_name", ""))) for r in rows)
-    return (f'cd {dolt_db_dir.parent} && dolt sql -q "use {db_name}; '
+    # The path comes from the filesystem and the name from metadata.json, so
+    # neither is ours to assume is shell-safe — this line is printed to be
+    # pasted verbatim, and an unquoted directory with a space in it would cd
+    # somewhere else entirely.
+    return (f'cd {shlex.quote(str(dolt_db_dir.parent))} && dolt sql -q "use `{db_name}`; '
             f"call dolt_add({tables}); "
             f"call dolt_commit('-m', 'commit pending changes')\"")
 
 
 def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None,
-                      db_name: str, dolt_mode: str = "") -> None:
+                      db_name: str, dolt_mode: str) -> None:
     """Report the Dolt working set: what is changed but in no commit.
 
     Printed before anything touches the remote, because this is purely local
@@ -126,13 +131,30 @@ def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None,
         print("  commits the working set; bd restarts the server when next needed.")
         print("  'bd dolt commit' does NOT clear this in server mode — it reports")
         print("  success and commits nothing (bd 1.1.0).")
-        if dolt_db_dir is not None:
-            print("  If the server is not running, there is nothing to flush; commit")
-            print("  with dolt itself:")
-            print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
+        print("  If the server is not running, there is nothing to flush; commit")
+        print("  with dolt itself:")
+        print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
     else:
         print("  Run 'bd dolt commit', then 'bd dolt push'.")
     print()
+
+
+def commit_first(action: str, n_dirty: int) -> str:
+    """Prefix the closing action with "commit first" when the working set is dirty.
+
+    Every one of these lines promises a state the command cannot reach on its
+    own while tables sit uncommitted: a push does not carry them, and a pull
+    onto a dirty working set can conflict rather than merely be incomplete.
+    Since this is the last thing on screen, it is the line a reader acts on.
+
+    It points back at the working-set section instead of naming a command,
+    because *which* command commits depends on the Dolt mode — spelling
+    `bd dolt commit` here would contradict the server-mode remedy printed
+    above, which says that command reports success and does nothing.
+    """
+    if not n_dirty:
+        return action
+    return f"Commit the working set first (above), then {action[0].lower()}{action[1:]}"
 
 
 def print_unverifiable(n_dirty: int, detail: str) -> int:
@@ -265,6 +287,13 @@ def main() -> int:
             print(f"Status:  UNCOMMITTED — commits in sync, "
                   f"{tables_phrase(n_dirty)} not committed")
             return 1
+        if dirty is None:
+            # The commit axis checks out, but the working set could not be
+            # read. Saying a flat "IN SYNC" would be the same silence-reads-as-
+            # fine failure this whole check exists to end.
+            print(f"Status:  IN SYNC (commits) — working set not verifiable "
+                  f"(local {branch} matches {tracking_ref})")
+            return 0
         print(f"Status:  IN SYNC (local {branch} matches {tracking_ref})")
         return 0
 
@@ -273,24 +302,22 @@ def main() -> int:
 
     # The two failures are independent, so a dirty working set rides along as a
     # clause rather than replacing the commit verdict. Its remedy was printed
-    # with the working-set section above and is not repeated here — except
-    # where the action is a *pull*: pulling onto a dirty working set is the one
-    # combination that can conflict rather than merely be incomplete, and this
-    # line is the last thing on screen.
+    # with the working-set section above and is not repeated here — except on
+    # the pull actions, via commit_before_pull().
     also = f"; {tables_phrase(n_dirty)} uncommitted" if n_dirty else ""
-    commit_first = "Run 'bd dolt commit', then " if n_dirty else "Run "
     if ahead and behind:
         print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled{also}")
-        action = f"{commit_first}'bd dolt pull' then 'bd dolt push' to reconcile."
+        action = "Run 'bd dolt pull' then 'bd dolt push' to reconcile."
     elif ahead:
         print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed{also}")
         action = "Run 'bd dolt push' to sync."
     elif behind:
         print(f"Status:  BEHIND — {behind} remote commit(s) not pulled{also}")
-        action = f"{commit_first}'bd dolt pull' to update local."
+        action = "Run 'bd dolt pull' to update local."
     else:
         print(f"Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable){also}")
         action = "Run 'bd dolt pull' / 'bd dolt push' to reconcile."
+    action = commit_first(action, n_dirty)
     print(f"  local ({branch}):           {local_head}")
     print(f"  remote ({tracking_ref}): {tracking_head}")
     print()

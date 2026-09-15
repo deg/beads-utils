@@ -141,10 +141,30 @@ Current scripts:
   (`bd create` committed anyway). The cycle also repeats: after a stop, the
   next `bd remember` leaves `config` dirty again, so in server mode the flush
   belongs at the end of every session.
+  Two consequences of that, both of which a cold-eyes review caught after the
+  first cut shipped with them wrong:
+  - **Every closing action line has to be reachable.** Each one names a state
+    the command cannot get to on its own while tables sit uncommitted — a push
+    does not carry them, and a pull onto a dirty working set can conflict
+    rather than merely be incomplete — so `commit_first()` prefixes all four
+    with "Commit the working set first (above)". It points *back at the
+    section* rather than naming a command, because which command commits
+    depends on the mode; spelling `bd dolt commit` there contradicted the
+    server-mode remedy printed ten lines above it, which is the loop this bead
+    exists to break. The suite could not see that: `conftest.py`'s `project`
+    fixture hardcodes `dolt_mode: embedded`, so until `server_dolt_project`
+    landed, no `main()` test ran in server mode at all.
+  - **`IN SYNC` is never claimed on an axis that wasn't checked.** When the
+    `dolt_status` query itself fails the verdict reads `IN SYNC (commits) —
+    working set not verifiable`. Exit stays 0, since nothing is known to be
+    wrong; but a flat all-clear would be the same silence-reads-as-fine
+    failure the whole check exists to end.
   The section also prints a `dolt sql` one-liner that commits exactly the
   tables it just listed, for the one case `bd dolt stop` cannot cover — a
   server that isn't running has nothing to flush (`Error: dolt server is not
-  running`). It is rooted at the database dir's **parent**, the
+  running`). Its path is `shlex.quote`d and its database name backticked:
+  the line is printed to be pasted verbatim, and both come from outside
+  (the filesystem and `metadata.json`). It is rooted at the database dir's **parent**, the
   one spelling that works in both layouts: in server mode that is the
   sql-server's data dir, where the CLI finds `.dolt/sql-server.info` and
   proxies to the running server instead of writing the files out from under

@@ -112,6 +112,22 @@ def dolt_project(project):
     return project
 
 
+@pytest.fixture
+def server_dolt_project(dolt_project):
+    """dolt_project, but in server mode.
+
+    conftest's `project` fixture hardcodes dolt_mode=embedded, so every main()
+    test ran in the mode where `bd dolt commit` happens to work. That blind
+    spot let the BEHIND action line tell a server-mode user to run a command
+    the working-set section above had just declared a no-op.
+    """
+    meta = dolt_project / ".beads" / "metadata.json"
+    data = json.loads(meta.read_text())
+    data["dolt_mode"] = "server"
+    meta.write_text(json.dumps(data))
+    return dolt_project
+
+
 def run_main(monkeypatch, path, argv_extra=()):
     monkeypatch.setattr(bd_dolt_check.sys, "argv",
                         ["bd-dolt-check", str(path), *argv_extra])
@@ -168,7 +184,9 @@ def test_main_reports_unverifiable_without_the_dolt_cli(dolt_project, monkeypatc
     bindir = install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
     monkeypatch.setenv("PATH", str(bindir))  # git only; no dolt
     assert run_main(monkeypatch, dolt_project) == 0
-    assert "not verifiable" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Status:  remote has Dolt data — sync delta not verifiable" in out
+    assert "Working set:  not verifiable" in out
 
 
 def test_main_reports_in_sync_when_the_heads_match(dolt_project, monkeypatch,
@@ -253,8 +271,12 @@ def test_main_names_uncommitted_tables_alongside_unpushed_commits(
     fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
     fake_dolt.rule("main", stdout="localhash new\n")
     assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
     assert ("Status:  OUT OF SYNC — 1 local commit(s) not pushed; "
-            "2 tables uncommitted") in capsys.readouterr().out
+            "2 tables uncommitted") in out
+    # The action line has to be reachable too: a push alone cannot sync while
+    # tables sit in no commit, so promising it would send the reader in a loop.
+    assert "Commit the working set first (above), then run 'bd dolt push'" in out
 
 
 def test_main_reports_the_working_set_without_a_dolt_remote(
@@ -298,20 +320,57 @@ def test_main_says_so_when_the_working_set_cannot_be_read(
     assert "Working set:  not verifiable" in capsys.readouterr().out
 
 
-def test_main_says_to_commit_before_pulling_onto_a_dirty_working_set(
-        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
-    """The one remedy pairing that can conflict rather than merely be
-    incomplete -- and the action line is the last thing on screen."""
+def behind_and_dirty(fake_dolt, tmp_path, monkeypatch):
+    """Rules for "one unpulled commit, and the working set is dirty"."""
     install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
     working_set(fake_dolt, modified("config"))
     fake_dolt.rule("remotes/origin/main..main", stdout="")
     fake_dolt.rule("main..remotes/origin/main", stdout="c1 one\n")
     fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
     fake_dolt.rule("main", stdout="localhash new\n")
+
+
+def test_main_says_to_commit_before_pulling_onto_a_dirty_working_set(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The one remedy pairing that can conflict rather than merely be
+    incomplete -- and the action line is the last thing on screen."""
+    behind_and_dirty(fake_dolt, tmp_path, monkeypatch)
     assert run_main(monkeypatch, dolt_project) == 1
     out = capsys.readouterr().out
     assert "BEHIND — 1 remote commit(s) not pulled; 1 table uncommitted" in out
-    assert "Run 'bd dolt commit', then 'bd dolt pull' to update local." in out
+    assert "Commit the working set first (above), then run 'bd dolt pull'" in out
+
+
+def test_main_does_not_name_bd_dolt_commit_in_server_mode(
+        server_dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The closing action line must not contradict the remedy above it.
+
+    In server mode the working-set section says `bd dolt commit` reports
+    success and commits nothing -- so the last line on screen naming that same
+    command would send the user round the loop this whole check exists to
+    break. It did, until the action line stopped naming a command at all.
+    """
+    behind_and_dirty(fake_dolt, tmp_path, monkeypatch)
+    assert run_main(monkeypatch, server_dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "Run 'bd dolt stop'" in out            # the remedy that works there
+    action = out.rsplit("\n\n", 1)[-1]
+    assert "bd dolt commit" not in action
+    assert "Commit the working set first (above), then run 'bd dolt pull'" in action
+
+
+def test_main_carries_the_clause_when_the_delta_is_not_countable(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """Heads differ but neither range counts -- the fallback status line, which
+    is the one branch a dirty working set could have slipped past untested."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"))
+    fake_dolt.rule("remotes/origin/main..main", stdout="")
+    fake_dolt.rule("main..remotes/origin/main", stdout="")
+    fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
+    fake_dolt.rule("main", stdout="localhash new\n")
+    assert run_main(monkeypatch, dolt_project) == 1
+    assert "delta not countable); 1 table uncommitted" in capsys.readouterr().out
 
 
 # --- print_working_set ----------------------------------------------------
@@ -335,6 +394,67 @@ def test_print_working_set_pluralizes(capsys):
     assert "2 tables with uncommitted changes" in capsys.readouterr().out
 
 
+def test_main_reports_divergence_with_a_dirty_working_set(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The third commit_first() call site; the other two are covered above."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    working_set(fake_dolt, modified("config"))
+    fake_dolt.rule("remotes/origin/main..main", stdout="c1 one\n")
+    fake_dolt.rule("main..remotes/origin/main", stdout="c2 two\n")
+    fake_dolt.rule("remotes/origin/main", stdout="remotehash old\n")
+    fake_dolt.rule("main", stdout="localhash new\n")
+    assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "DIVERGED — 1 local commit(s) unpushed, 1 remote commit(s) unpulled; 1 table uncommitted" in out
+    assert "Commit the working set first (above), then run 'bd dolt pull'" in out
+
+
+def never_pushed(fake_dolt, tmp_path, monkeypatch):
+    """Rules for "the remote has data but we have no tracking ref for it".
+
+    Registration order matters: 'remotes/origin/main' has to shadow the bare
+    'main' rule, which would otherwise match it as a substring.
+    """
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    fake_dolt.rule("remotes/origin/main", exit_code=1)   # no tracking ref
+    fake_dolt.rule("main", stdout="localhash new\n")
+
+
+def test_main_stays_at_zero_without_a_tracking_ref_when_clean(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """The "never pushed once" case the CHANGELOG advertises, and the branch
+    the other unverifiable tests miss -- their rule fails the *local* HEAD
+    query first, so they return one branch earlier."""
+    working_set(fake_dolt)
+    never_pushed(fake_dolt, tmp_path, monkeypatch)
+    assert run_main(monkeypatch, dolt_project) == 0
+    assert "no local remote-tracking ref 'remotes/origin/main'" in capsys.readouterr().out
+
+
+def test_main_exits_one_without_a_tracking_ref_when_dirty(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """Same branch, the exit state that matters: never having pushed says
+    nothing about data that is in no commit to begin with."""
+    working_set(fake_dolt, modified("config"))
+    never_pushed(fake_dolt, tmp_path, monkeypatch)
+    assert run_main(monkeypatch, dolt_project) == 1
+    assert "UNCOMMITTED — 1 table uncommitted; sync delta not verifiable" in capsys.readouterr().out
+
+
+def test_main_qualifies_in_sync_when_the_working_set_was_not_read(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """Commits check out, the working set could not be read -- so the verdict
+    must not read as a flat all-clear. Exit 0 is still right (nothing is known
+    to be wrong), but claiming IN SYNC on an unchecked axis is the same
+    silence-reads-as-fine failure this check exists to end."""
+    install_fake_git(tmp_path, monkeypatch, "abc123\trefs/dolt/data\n")
+    fake_dolt.rule("dolt_status", exit_code=1)
+    fake_dolt.default(stdout="samehash a commit\n")
+    assert run_main(monkeypatch, dolt_project) == 0
+    out = capsys.readouterr().out
+    assert "Status:  IN SYNC (commits) — working set not verifiable" in out
+
+
 # --- the dolt fallback ----------------------------------------------------
 #
 # `bd dolt commit` can report success having committed nothing (watched on bd
@@ -347,7 +467,7 @@ def test_dolt_commit_command_names_every_dirty_table(tmp_path):
     cmd = bd_dolt_check.dolt_commit_command(
         tmp_path / "dolt" / "mydb", "mydb", [modified("config"), modified("issues")])
     assert "call dolt_add('config', 'issues')" in cmd
-    assert "use mydb;" in cmd
+    assert "use `mydb`;" in cmd   # backticked: the name comes from metadata.json
 
 
 def test_dolt_commit_command_runs_from_the_database_dir_parent(tmp_path):
@@ -356,6 +476,14 @@ def test_dolt_commit_command_runs_from_the_database_dir_parent(tmp_path):
     cmd = bd_dolt_check.dolt_commit_command(
         tmp_path / "dolt" / "mydb", "mydb", [modified("config")])
     assert cmd.startswith(f"cd {tmp_path / 'dolt'} && dolt sql")
+
+
+def test_dolt_commit_command_quotes_a_path_with_spaces(tmp_path):
+    """The line is printed to be pasted verbatim, so an unquoted directory
+    with a space in it would cd somewhere else and silently do nothing."""
+    spaced = tmp_path / "My Project" / "dolt" / "mydb"
+    cmd = bd_dolt_check.dolt_commit_command(spaced, "mydb", [modified("config")])
+    assert f"cd '{tmp_path}/My Project/dolt'" in cmd
 
 
 def test_print_working_set_offers_the_fallback_in_server_mode(tmp_path, capsys):
