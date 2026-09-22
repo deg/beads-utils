@@ -341,19 +341,22 @@ def test_main_says_to_commit_before_pulling_onto_a_dirty_working_set(
     assert "Commit the working set first (above), then run 'bd dolt pull'" in out
 
 
-def test_main_does_not_name_bd_dolt_commit_in_server_mode(
+def test_main_points_the_action_line_back_at_the_section_in_server_mode(
         server_dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
-    """The closing action line must not contradict the remedy above it.
+    """The closing action line defers to the working-set section, which is
+    where the mode-specific caveat lives.
 
-    In server mode the working-set section says `bd dolt commit` reports
-    success and commits nothing -- so the last line on screen naming that same
-    command would send the user round the loop this whole check exists to
-    break. It did, until the action line stopped naming a command at all.
+    Under bd 1.1.0 that section said `bd dolt commit` committed nothing in
+    server mode, so an action line naming that command sent the user round
+    the loop this check exists to break. bd 1.3.0 fixed the command, but the
+    section still carries the older-binary caveat, so the action line keeps
+    pointing at it rather than naming a command of its own.
     """
     behind_and_dirty(fake_dolt, tmp_path, monkeypatch)
     assert run_main(monkeypatch, server_dolt_project) == 1
     out = capsys.readouterr().out
-    assert "Run 'bd dolt stop'" in out            # the remedy that works there
+    assert "Run 'bd dolt commit', then 'bd dolt push'." in out
+    assert "bd older than 1.3.0" in out
     action = out.rsplit("\n\n", 1)[-1]
     assert "bd dolt commit" not in action
     assert "Commit the working set first (above), then run 'bd dolt pull'" in action
@@ -457,10 +460,10 @@ def test_main_qualifies_in_sync_when_the_working_set_was_not_read(
 
 # --- the dolt fallback ----------------------------------------------------
 #
-# `bd dolt commit` can report success having committed nothing (watched on bd
-# 1.1.0 in server mode: "Committed." with no new commit, and `bd vc commit`
-# answering with the existing HEAD's hash). Without a way out, the check would
-# name a remedy that leaves its own warning standing.
+# On bd older than 1.3.0, server mode's `bd dolt commit` reported success
+# having committed nothing ("Committed." with no new commit; upstream #4078).
+# 1.3.0 fixed it -- re-verified in a throwaway server repo -- but the fallback
+# stays printed in server mode, as the one remedy independent of bd's version.
 
 
 def test_dolt_commit_command_names_every_dirty_table(tmp_path):
@@ -486,18 +489,24 @@ def test_dolt_commit_command_quotes_a_path_with_spaces(tmp_path):
     assert f"cd '{tmp_path}/My Project/dolt'" in cmd
 
 
-def test_print_working_set_offers_the_fallback_in_server_mode(tmp_path, capsys):
+def test_print_working_set_leads_with_bd_dolt_commit_in_server_mode(tmp_path, capsys):
+    """bd 1.3.0's `bd dolt commit` works in server mode, so it leads; the
+    older-binary caveat and the dolt-native fallback follow it rather than
+    replacing it. The 1.1.0 text told users the command committed nothing,
+    which became false with the upgrade."""
     bd_dolt_check.print_working_set(
         [modified("config")], tmp_path / "dolt" / "mydb", "mydb", "server")
     out = capsys.readouterr().out
-    assert "Run 'bd dolt stop'" in out
-    assert "does NOT clear this in server mode" in out
+    assert "Run 'bd dolt commit', then 'bd dolt push'." in out
+    assert "bd older than 1.3.0" in out
+    assert "bd dolt stop" in out                  # the older-binary remedy
     assert "call dolt_add('config')" in out
+    assert "does NOT clear" not in out
 
 
 def test_print_working_set_names_bd_dolt_commit_in_embedded_mode(tmp_path, capsys):
-    """It works there, verified at bd 1.1.0 with auto-commit off -- so the
-    server-mode caveat would only be noise."""
+    """Embedded mode never had the bug, so the older-binary caveat and the
+    dolt fallback would only be noise there."""
     bd_dolt_check.print_working_set(
         [modified("config")], tmp_path / "embeddeddolt" / "mydb", "mydb", "embedded")
     out = capsys.readouterr().out

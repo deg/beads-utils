@@ -119,23 +119,20 @@ def print_working_set(rows: list[dict] | None, dolt_db_dir: Path | None,
     for row in rows:
         print(f"  {str(row.get('status', '?')):<{width}}  {row.get('table_name', '?')}")
     print("  These changes are in no commit, so no push can include them.")
-    # The remedy differs by mode, because `bd dolt commit` only works in one of
-    # them. Both halves were run at bd 1.1.0, in pristine repos of each mode:
-    # embedded, auto-commit off -> `bd dolt commit` clears config/events/issues
-    # together; server -> it prints "Committed." and clears nothing, and
-    # `bd vc commit` answers with the *existing* HEAD's hash. What does work in
-    # server mode is `bd dolt stop`, which commits as it shuts down
-    # ("auto-flush: commit working set before server stop").
+    # One remedy for both modes since bd 1.3.0. Before it, server mode's
+    # `bd dolt commit` printed "Committed." and cleared nothing (bd 1.1.0,
+    # watched on nutshell-mvp; upstream #4078), and only `bd dolt stop`'s
+    # shutdown flush actually committed. Re-verified at 1.3.0 in a throwaway
+    # server repo with auto-commit off: one `bd dolt commit` cleared `config`
+    # and `issues` together, and a second one answered "Nothing to commit".
+    # Server mode keeps a caveat for older binaries, with the dolt-native
+    # fallback that commits regardless of what bd does.
+    print("  Run 'bd dolt commit', then 'bd dolt push'.")
     if dolt_mode == "server":
-        print("  Run 'bd dolt stop', then 'bd dolt push'. Stopping flushes and")
-        print("  commits the working set; bd restarts the server when next needed.")
-        print("  'bd dolt commit' does NOT clear this in server mode — it reports")
-        print("  success and commits nothing (bd 1.1.0).")
-        print("  If the server is not running, there is nothing to flush; commit")
-        print("  with dolt itself:")
-        print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)}")
-    else:
-        print("  Run 'bd dolt commit', then 'bd dolt push'.")
+        print("  (bd older than 1.3.0 committed nothing here while reporting success;")
+        print("  on those, 'bd dolt stop' flushes and commits on the way down, or")
+        print("  commit with dolt itself:")
+        print(f"    {dolt_commit_command(dolt_db_dir, db_name, rows)})")
     print()
 
 
@@ -147,10 +144,10 @@ def commit_first(action: str, n_dirty: int) -> str:
     onto a dirty working set can conflict rather than merely be incomplete.
     Since this is the last thing on screen, it is the line a reader acts on.
 
-    It points back at the working-set section instead of naming a command,
-    because *which* command commits depends on the Dolt mode — spelling
-    `bd dolt commit` here would contradict the server-mode remedy printed
-    above, which says that command reports success and does nothing.
+    It points back at the working-set section instead of naming a command:
+    that section carries the mode-specific caveat (on bd older than 1.3.0,
+    server mode's `bd dolt commit` reported success and committed nothing),
+    and a bare `bd dolt commit` here once contradicted it.
     """
     if not n_dirty:
         return action

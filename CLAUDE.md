@@ -107,41 +107,34 @@ Current scripts:
   `bd-log`'s memory-events notes, where the same wall was hit). The bead's
   "uncommitted since 2026-07-12" was read off commit history, not the working
   set.
-  The remedy is two-step **because bd's own commit can silently do nothing**,
-  which was watched happening rather than inferred. On `nutshell-mvp` (server
-  mode, bd 1.1.0), `bd dolt commit` printed `Committed.` and `bd vc commit`
-  answered with a commit hash — which was the *existing* HEAD's — while
-  `config` stayed `modified` through both, and no new commit appeared in that
-  database or in the stale sibling `beads` database sharing its data dir (a
-  Dolt data dir can serve several databases; `metadata.json` designates one,
-  `locate_dolt_db()` returns that one, and the working set asked about is that
-  one's — following bd's designation, the same delegation the rest of this
-  entry rests on, rather than surveying whatever else happens to sit there).
-  The
-  changes were real (`dolt diff --stat`: 4 rows, 4 cells; four `kv.memory.*`
-  values), and the running server and the CLI agreed the table was dirty, so
-  this is bd's bug and not a stale read on our side. `beads-utils-fyn` holds the
-  reproduction and tracks the upstream report.
-  **The remedy is therefore mode-dependent**, and both halves were run at bd
-  1.1.0 in pristine repos of each mode rather than inferred from the one live
-  case:
-  - *embedded*: `bd dolt commit` works. With `dolt.auto-commit off`, a
-    `bd remember` + `bd create` left `config`, `events` and `issues` dirty and
-    one `bd dolt commit` cleared all three — `config` included.
-  - *server*: it does not. `bd dolt commit` printed `Committed.` and cleared
-    nothing; `bd vc commit` reported `Created commit cndugp42`, which was the
-    hash of the pre-existing `bd: create srv-0k9`. What *does* work is
-    **`bd dolt stop`**, which commits on the way down (`auto-flush: commit
-    working set before server stop`) and leaves the working set clean; bd
-    restarts the server transparently on the next command. So server mode's
-    printed remedy leads with `bd dolt stop`, not `bd dolt commit`.
-  Two further things that experiment established, worth not re-deriving: in
-  server mode `config` is dirty from `bd init` onwards — `issue_prefix` itself
-  is never committed — so this is not a memory-specific bug, memories are just
-  where it costs you; and `dolt.auto-commit off` is not honored there either
-  (`bd create` committed anyway). The cycle also repeats: after a stop, the
-  next `bd remember` leaves `config` dirty again, so in server mode the flush
-  belongs at the end of every session.
+  The remedy is `bd dolt commit`, then push, in both modes — but the
+  section keeps a caveat in server mode, because **bd's own commit used to
+  silently do nothing there**, which was watched happening rather than
+  inferred. On `nutshell-mvp` (server mode, bd 1.1.0), `bd dolt commit`
+  printed `Committed.` and `bd vc commit` answered with a commit hash — the
+  *existing* HEAD's — while `config` stayed `modified` through both. The
+  changes were real (`dolt diff --stat`: 4 rows, four `kv.memory.*` values),
+  and the running server and the CLI agreed the table was dirty, so it was
+  bd's bug (upstream #4078; `beads-utils-fyn`, closed). A Dolt data dir can
+  serve several databases; `metadata.json` designates one, `locate_dolt_db()`
+  returns that one, and the working set asked about is that one's — following
+  bd's designation rather than surveying whatever else sits there.
+  At 1.1.0 the remedy was therefore mode-dependent, and both halves were run
+  in pristine repos of each mode: *embedded*, `bd dolt commit` cleared
+  `config`, `events` and `issues` together with `dolt.auto-commit off`;
+  *server*, it cleared nothing, and only **`bd dolt stop`** committed, on the
+  way down (`auto-flush: commit working set before server stop`). Server mode
+  then also left `config` dirty from `bd init` onwards and ignored
+  `dolt.auto-commit off`.
+  **bd 1.3.0 fixed all of that**, and it was re-verified on 2026-09-23 rather
+  than taken from the changelog: in a throwaway server-mode repo with
+  `dolt.auto-commit off`, `bd create` + `bd remember` left `config` and
+  `issues` modified (so `off` is honored now), one `bd dolt commit` cleared
+  both and put the `kv.memory.*` rows in HEAD, and a second `bd dolt commit`
+  answered `Nothing to commit`. So both modes now print the same first line.
+  Server mode adds a parenthetical for older binaries — `bd dolt stop`, or the
+  dolt-native one-liner below — since the tool cannot know which bd the reader
+  runs, and no server-mode repo remains on this machine to catch a regression.
   Two consequences of that, both of which a cold-eyes review caught after the
   first cut shipped with them wrong:
   - **Every closing action line has to be reachable.** Each one names a state
@@ -149,10 +142,11 @@ Current scripts:
     does not carry them, and a pull onto a dirty working set can conflict
     rather than merely be incomplete — so `commit_first()` prefixes all four
     with "Commit the working set first (above)". It points *back at the
-    section* rather than naming a command, because which command commits
-    depends on the mode; spelling `bd dolt commit` there contradicted the
-    server-mode remedy printed ten lines above it, which is the loop this bead
-    exists to break. The suite could not see that: `conftest.py`'s `project`
+    section* rather than naming a command, because at 1.1.0 which command
+    committed depended on the mode; spelling `bd dolt commit` there
+    contradicted the server-mode remedy printed ten lines above it, which is
+    the loop this bead exists to break. The section still carries the
+    older-binary caveat, so the pointer stays. The suite could not see that: `conftest.py`'s `project`
     fixture hardcodes `dolt_mode: embedded`, so until `server_dolt_project`
     landed, no `main()` test ran in server mode at all.
   - **`IN SYNC` is never claimed on an axis that wasn't checked.** When the
@@ -160,10 +154,10 @@ Current scripts:
     working set not verifiable`. Exit stays 0, since nothing is known to be
     wrong; but a flat all-clear would be the same silence-reads-as-fine
     failure the whole check exists to end.
-  The section also prints a `dolt sql` one-liner that commits exactly the
-  tables it just listed, for the one case `bd dolt stop` cannot cover — a
-  server that isn't running has nothing to flush (`Error: dolt server is not
-  running`). Its path is `shlex.quote`d and its database name backticked:
+  The section also prints, in server mode, a `dolt sql` one-liner that
+  commits exactly the tables it just listed — the one remedy independent of
+  bd's version, and the only one when a server isn't running (`bd dolt stop`
+  has nothing to flush: `Error: dolt server is not running`). Its path is `shlex.quote`d and its database name backticked:
   the line is printed to be pasted verbatim, and both come from outside
   (the filesystem and `metadata.json`). It is rooted at the database dir's **parent**, the
   one spelling that works in both layouts: in server mode that is the
