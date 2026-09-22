@@ -3,7 +3,7 @@
 [![lint](https://github.com/deg/beads-utils/actions/workflows/lint.yml/badge.svg)](https://github.com/deg/beads-utils/actions/workflows/lint.yml)
 
 A small collection of Python CLI scripts that augment
-[`bd`](https://github.com/steveyegge/beads) (the beads issue
+[`bd`](https://github.com/gastownhall/beads) (the beads issue
 tracker) and its Dolt-backed storage. No package, no build step —
 each script lives at the repo root alongside a shared `bdutils.py`
 helper and runs with `python3` (or `uv` for the one script that

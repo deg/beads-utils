@@ -34,6 +34,7 @@
 * [refactor] Fold `bd-log`'s two `bd` JSON queries onto one run-and-parse helper
 * [refactor] Fold `claude-session-find`'s duplicated session helpers into `claudeutils`
 * [cleanup] Write down the changelog bullet style in `CLAUDE.md`
+* [cleanup] Link to the beads repo's current home, `gastownhall/beads`, instead of relying on the redirect from its old path
 
 ## v0.3.0 (27Jul26)
 

@@ -1,7 +1,7 @@
 # Contributing to beads-utils
 
 Thanks for your interest! This is a small collection of Python CLI scripts that
-augment the [`bd`](https://github.com/steveyegge/beads) issue tracker.
+augment the [`bd`](https://github.com/gastownhall/beads) issue tracker.
 
 The current setup is deliberately minimal — no package, no build step, no
 installer — but that's a starting point, not a principle. Contributions are
