@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 

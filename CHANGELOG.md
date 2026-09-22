@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v0.4.0 (22Sep26)
+
 * [feature] Add `claude-session-rename`, which sets a session's title from the shell like `/rename` does, without starting the session (a running session is refused)
 * [feature] Count what `bd-log` showed with `--count-events`, `--count-beads` and `--count-memories`, each adding a line after the log
 * [feature] Drop currently-deferred beads from `bd-log` with `--no-deferred` (`--open --no-deferred` is what's live and not parked)
