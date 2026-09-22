@@ -51,12 +51,6 @@ UV_RUN := uv run --no-project
 # pytest.ini's `testpaths` already points at tests/.
 PYTEST_ARGS ?=
 
-# Every executable script, found by shebang, so a new script is picked up with
-# no edit here. `-d skip` makes grep ignore subdirectories rather than exiting
-# 2 on them (which would silently abort the recipe); see the note in CLAUDE.md.
-#
-# HASH exists because make strips `#` and everything after it *before* parsing
-# a function call — an inline '^#!' would truncate the $(shell ...) mid-call.
 # Where `make install` puts its symlinks. Override per invocation:
 #     make install PREFIX=~/bin
 PREFIX ?= $(HOME)/.local/bin
@@ -72,6 +66,19 @@ PREFIX ?= $(HOME)/.local/bin
 # reassigned from the makefile without it.
 override PREFIX := $(patsubst ~,$(HOME),$(patsubst ~/%,$(HOME)/%,$(PREFIX)))
 
+# A trailing slash would otherwise make the PATH check below compare
+# "/Users/deg/bin/" against a PATH entry of "/Users/deg/bin" and never match,
+# reporting a directory as absent from a PATH it is on. (`PREFIX=/` collapses
+# to empty here and is caught by check-prefix, which is the right answer for
+# an input that was never meaningful.)
+override PREFIX := $(patsubst %/,%,$(PREFIX))
+
+# Every executable script, found by shebang, so a new script is picked up with
+# no edit here. `-d skip` makes grep ignore subdirectories rather than exiting
+# 2 on them (which would silently abort the recipe); see the note in CLAUDE.md.
+#
+# HASH exists because make strips `#` and everything after it *before* parsing
+# a function call — an inline '^#!' would truncate the $(shell ...) mid-call.
 HASH := \#
 SCRIPTS := $(shell grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
 
@@ -174,7 +181,10 @@ export-csv: ## Export this repo's beads to a CSV in the current directory
 # into `make smoke`, which runs `--version` on everything it finds.
 #
 # Not idempotent — the images capture live bead data and timestamps, so every
-# run produces a diff. Regenerate deliberately, not out of habit.
+# run produces a diff even when nothing about the tools changed. That is not
+# just noise: each regeneration adds another ~1 MB of PNG to git history,
+# permanently. Regenerate deliberately, and commit only the images whose
+# content actually changed.
 screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 	@./tools/make-screenshots.py
 
@@ -194,16 +204,25 @@ screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 ## This does NOT put PREFIX on your PATH, and it does not install shell
 ## completion. Both remain your shell's business; see `make completions`.
 
-install: ## Symlink every script into PREFIX (default ~/.local/bin)
-	@mkdir -p "$(PREFIX)"
+# `~user`, `~+` and `~-` are deliberately refused rather than expanded: make
+# has no way to look up another user's home, and guessing would recreate the
+# literal-`~`-directory bug this guard exists to prevent.
+check-prefix:
+	@case "$(PREFIX)" in \
+	    "") echo "error: PREFIX is empty"; exit 1;; \
+	    "~"*) echo "error: cannot expand '$(PREFIX)' — pass an absolute path"; exit 1;; \
+	esac
+
+install: check-prefix ## Symlink every script into PREFIX (default ~/.local/bin)
 	@for s in $(SCRIPTS); do \
 	    target="$(PREFIX)/$$s"; \
 	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
 	        echo "refusing to replace non-symlink: $$target"; exit 1; \
 	    fi; \
 	done
+	@mkdir -p "$(PREFIX)"
 	@for s in $(SCRIPTS); do \
-	    ln -sfn "$(CURDIR)/$$s" "$(PREFIX)/$$s"; \
+	    ln -sfn "$(CURDIR)/$$s" "$(PREFIX)/$$s" || exit 1; \
 	done
 	@echo "Linked $(words $(SCRIPTS)) scripts into $(PREFIX)"
 	@case ":$$PATH:" in \
@@ -211,17 +230,32 @@ install: ## Symlink every script into PREFIX (default ~/.local/bin)
 	    *) echo "note: $(PREFIX) is not on your PATH";; \
 	esac
 
-uninstall: ## Remove the symlinks that 'make install' created
-	@removed=0; \
-	for s in $(SCRIPTS); do \
-	    target="$(PREFIX)/$$s"; \
-	    if [ -L "$$target" ] && [ "$$(readlink "$$target")" = "$(CURDIR)/$$s" ]; then \
-	        rm -f "$$target"; removed=$$((removed + 1)); \
+# Scans PREFIX for links back into this clone rather than iterating SCRIPTS,
+# which is only the scripts that exist *now*: a script renamed or dropped
+# since you installed would otherwise be left behind as a dangling link while
+# the count claimed a complete uninstall. Nested targets are skipped so a
+# hand-made link to something else inside the clone is not collateral.
+uninstall: check-prefix ## Remove the symlinks that 'make install' created
+	@removed=0; failed=0; \
+	for target in "$(PREFIX)"/*; do \
+	    [ -L "$$target" ] || continue; \
+	    case "$$(readlink "$$target")" in \
+	        "$(CURDIR)/"*/*) continue;; \
+	        "$(CURDIR)/"*) ;; \
+	        *) continue;; \
+	    esac; \
+	    if rm -f "$$target"; then \
+	        removed=$$((removed + 1)); \
+	    else \
+	        failed=$$((failed + 1)); \
 	    fi; \
 	done; \
-	echo "Removed $$removed symlink(s) from $(PREFIX)"
+	echo "Removed $$removed symlink(s) from $(PREFIX)"; \
+	if [ "$$failed" -ne 0 ]; then \
+	    echo "error: $$failed symlink(s) could not be removed"; exit 1; \
+	fi
 
-.PHONY: install uninstall
+.PHONY: install uninstall check-prefix
 
 
 ################################################################

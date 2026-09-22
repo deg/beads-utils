@@ -7,8 +7,14 @@
 
 Not a screen capture. Each command is run with ``--color=always`` into a
 pipe, and the ANSI it emits is rendered deterministically: rich turns it
-into an SVG, which resvg rasterizes. Nothing depends on anyone's terminal,
-so the images are reproducible on any machine.
+into an SVG, which resvg rasterizes. Nothing depends on anyone's terminal
+settings, and every viewer sees the same finished raster.
+
+Layout is machine-independent (rich lays out from font_aspect_ratio, not from
+font metrics), but the pixels are not: the font stack below prefers Menlo,
+which ships only on macOS, so a Linux run rasterizes with DejaVu Sans Mono.
+Same columns, different glyph shapes — regenerate on one machine or expect a
+cosmetic diff.
 
 ``resvg-py`` rather than ``cairosvg``: both rasterize correctly, but
 cairosvg needs a system libcairo while resvg-py is a pure Rust binary
@@ -19,12 +25,14 @@ Run it through ``make screenshots`` rather than directly.
 """
 from __future__ import annotations
 
+import io
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 import resvg_py
+from rich.cells import cell_len
 from rich.console import Console
 from rich.terminal_theme import TerminalTheme
 from rich.text import Text
@@ -70,7 +78,8 @@ SHOTS = [
     ),
     (
         "bd-log-live",
-        "bd-log --oneline --open --no-deferred --no-blocked -n 8",
+        "bd-log --oneline --open --about=beads --no-deferred --no-blocked"
+        " --legend=never -n 8",
         "./bd-log --oneline --open --about=beads --no-deferred --no-blocked"
         " --color=always --legend=never -n 8 --no-pager",
     ),
@@ -103,15 +112,51 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def capture(command: str) -> str:
-    """Run one command in the repo and return the ANSI it printed."""
+    """Run one command in the repo and return the ANSI it printed.
+
+    stderr is kept rather than discarded so a failure names its own cause.
+    The day a bead in SHOTS is renamed, bd-view writes its complaint there and
+    prints nothing to stdout, and "no output from ..." alone would leave you
+    guessing. A blanket check=True would be wrong: bd-dolt-check exits 1 by
+    design when the repo is unpushed, which is the state its shot depicts.
+    """
     done = subprocess.run(
-        command, shell=True, cwd=REPO, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        command, shell=True, cwd=REPO, text=True, errors="replace",
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     out = done.stdout.rstrip("\n")
     if not out:
-        sys.exit(f"error: no output from: {command}")
+        why = (done.stderr or "").strip() or f"exit {done.returncode}, no stderr"
+        sys.exit(f"error: no output from: {command}\n  {why}")
     return out
+
+
+# Arguments that exist only because we capture through a pipe, and that a real
+# terminal supplies anyway: color is automatic on a tty, so is paging, so is
+# the legend, and the project path defaults to the current directory. These may
+# be absent from the prompt line. Anything else changes the output, so hiding
+# it would make the prompt a lie about what produced the image.
+SCAFFOLDING = frozenset({"--color=always", "--no-pager", "--legend=always", "."})
+
+
+def check_typed(typed: str, command: str) -> None:
+    """Fail unless the prompt line is the command minus capture scaffolding.
+
+    Compares whole tokens, not substrings: `-n` is a substring of `--no-pager`,
+    so a looser check silently passes. Guards a drift that already happened —
+    bd-log-live's prompt omitted --about=beads, so anyone typing it would have
+    got memory events the image does not show.
+    """
+    expected = [
+        word for word in command.replace("./", "", 1).split()
+        if word not in SCAFFOLDING
+    ]
+    if typed.split() != expected:
+        sys.exit(
+            f"error: prompt line does not match the command\n"
+            f"  shown: {typed}\n"
+            f"  runs:  {' '.join(expected)}"
+        )
 
 
 def prompt_line(typed: str) -> str:
@@ -119,27 +164,51 @@ def prompt_line(typed: str) -> str:
     return f"\x1b[32m$\x1b[0m \x1b[1m{typed}\x1b[0m\n"
 
 
+def _require_change(after: str, before: str, what: str) -> str:
+    """Return *after*, or exit if the substitution matched nothing."""
+    if after == before:
+        sys.exit(f"error: no {what} found in rich's SVG — its template changed")
+    return after
+
+
 def render(ansi: str, title: str, dest: Path) -> None:
     """Render captured ANSI to a PNG at *dest*."""
-    # rich wraps to the console width, which would break entries mid-title,
-    # so size the console to the widest line with its escapes stripped.
-    width = max(len(ANSI_RE.sub("", line)) for line in ansi.split("\n")) + 2
+    # rich wraps to the console width, which would break entries mid-title, so
+    # size the console to the widest line with its escapes stripped. cell_len,
+    # not len: they agree on everything captured today, but the first
+    # double-width glyph or tab would make len under-count and rich would wrap
+    # exactly what this line exists to prevent.
+    width = max(cell_len(ANSI_RE.sub("", line)) for line in ansi.split("\n")) + 2
+    # Console needs somewhere to write; we only ever want the recording, so
+    # give it an in-memory sink rather than leaking a /dev/null handle.
     console = Console(
-        record=True, width=width, force_terminal=True,
-        file=open("/dev/null", "w", encoding="utf-8"),
+        record=True, width=width, force_terminal=True, file=io.StringIO(),
     )
     console.print(Text.from_ansi(ansi))
     svg = console.export_svg(title=title, theme=_theme(), font_aspect_ratio=0.6)
 
-    # rich embeds no font data — it points @font-face at a CDN that GitHub's
-    # CSP blocks, leaving the viewer's own monospace to shift the columns and
-    # tofu the legend glyphs. Drop the remote fetch and name fonts that carry
-    # the glyphs locally; resvg then resolves them at rasterize time, so the
-    # PNG is pixel-exact for every viewer.
-    svg = re.sub(r"@font-face \{.*?\}", "", svg, flags=re.S)
-    svg = svg.replace(
-        "font-family: Fira Code, monospace",
-        "font-family: Menlo, 'DejaVu Sans Mono', monospace",
+    # rich points @font-face at a CDN. resvg does not fetch remote fonts, so
+    # left alone it would fall back to whatever it finds and tofu the legend
+    # glyphs. Drop the remote fetch and name fonts that carry them locally.
+    #
+    # (The CSP argument belongs to the PNG-over-SVG decision, not here: a
+    # viewer receives a finished raster and fetches no fonts at all.)
+    #
+    # Both rewrites are string surgery on a template this script does not own,
+    # and `re.sub`/`str.replace` return the input unchanged when they match
+    # nothing — so a rich release that restyles the template would silently
+    # degrade every PNG. Fail loudly instead; `rich` is unpinned by design,
+    # matching bd-view.
+    svg = _require_change(
+        re.sub(r"@font-face \{.*?\}", "", svg, flags=re.S), svg, "@font-face block",
+    )
+    svg = _require_change(
+        svg.replace(
+            "font-family: Fira Code, monospace",
+            "font-family: Menlo, 'DejaVu Sans Mono', monospace",
+        ),
+        svg,
+        "font-family declaration",
     )
 
     dest.write_bytes(bytes(resvg_py.svg_to_bytes(svg_string=svg, zoom=2.0)))
@@ -149,6 +218,7 @@ def render(ansi: str, title: str, dest: Path) -> None:
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for stem, typed, command in SHOTS:
+        check_typed(typed, command)
         body = prompt_line(typed) + capture(command)
         render(body, stem, OUT / f"{stem}.png")
 
