@@ -709,6 +709,8 @@ make check                                    # ruff + a --version smoke test of
 make ci                                       # exactly what CI runs
 make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
+make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
+make screenshots                              # regenerate the README's terminal images
 make outdated                                 # newer releases of the pinned tools
 ```
 
