@@ -61,6 +61,17 @@ PYTEST_ARGS ?=
 #     make install PREFIX=~/bin
 PREFIX ?= $(HOME)/.local/bin
 
+# Expand a leading `~` ourselves. zsh does not tilde-expand an argument that
+# merely looks like an assignment, so `make install PREFIX=~/bin` hands make
+# a literal `~`, and make substitutes it into the recipe inside double quotes
+# where the shell will never expand it either — `mkdir -p "~/bin"` then
+# silently creates a directory *named* `~` in the current directory. (Which
+# .gitignore's `*~` backup pattern also hides, so it goes unnoticed.)
+#
+# `override` is required: a variable set on the command line cannot be
+# reassigned from the makefile without it.
+override PREFIX := $(patsubst ~,$(HOME),$(patsubst ~/%,$(HOME)/%,$(PREFIX)))
+
 HASH := \#
 SCRIPTS := $(shell grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
 
