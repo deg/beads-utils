@@ -1,5 +1,7 @@
 ## Unreleased
 
+* [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`
+
 ## v0.4.0 (22Sep26)
 
 * [feature] Add `claude-session-rename`, which sets a session's title from the shell like `/rename` does, without starting the session (a running session is refused)

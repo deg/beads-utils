@@ -46,6 +46,8 @@ show`'s — labels, external refs, the metadata dict, parent and children
 each shown as themselves — and anything `bd` grows later lands in a
 trailing `Other Fields` section rather than silently disappearing.
 
+![bd-view rendering a bead](docs/img/bd-view.png)
+
 Agentic coding changes what an issue tracker has to answer. A Claude
 session can create, claim, and close half a dozen beads while your
 attention was on the code, and afterwards you want to know what it
@@ -58,6 +60,10 @@ something else to finish), and `bd-log --id
 everything under it, from creation to close. `--oneline` collapses each
 event to a single row when you want the shape of the week rather than
 the detail of any one entry.
+
+![bd-log --oneline](docs/img/bd-log.png)
+
+![bd-log scoped to what is still live](docs/img/bd-log-live.png)
 
 Beads are only half of what a session leaves behind. The other half is
 what it *learned* — the memories `bd remember` accumulates, which shape
@@ -89,6 +95,8 @@ answers the follow-up — what exactly would a `bd dolt push` send? —
 with an issue-level diff: added and removed beads, field-by-field
 changes, dependency and comment edits.
 
+![bd-dolt-check reporting an unpushed repo](docs/img/bd-dolt-check.png)
+
 ### Looking at Claude sessions
 
 `claude --resume` offers a picker of recent sessions, but the picker is
@@ -98,6 +106,8 @@ each with its full UUID ready to paste, a timestamp range with the
 active span, prompt/reply counts, and the session title. `--oneline`
 gives a compact table; `claude-session-list -q | head -1` hands a
 script the newest UUID.
+
+![claude-session-list --oneline](docs/img/claude-session-list.png)
 
 That covers "which session was most recent"; `claude-session-find`
 covers "which session was it where we discussed the pager?" It greps
@@ -131,6 +141,7 @@ make test        # run the test suite
 make check       # ruff, plus a --version smoke test of every script
 make ci          # everything CI runs
 make dolt-check  # verify this repo's own beads data is pushed
+make screenshots # regenerate the terminal images above
 ```
 
 Dependencies resolve through `uv` into a throwaway environment, so nothing is

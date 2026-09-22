@@ -56,9 +56,10 @@ HASH := \#
 SCRIPTS := $(shell grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
 
 # Everything ruff should see: the extension-less scripts, the shared helper
-# modules, and the test suite. Named explicitly because shebang discovery
-# finds neither the helpers (no shebang) nor tests/ (a subdirectory).
-LINT_TARGETS := $(SCRIPTS) *.py tests/
+# modules, the test suite and the maintenance tools. Named explicitly
+# because shebang discovery finds neither the helpers (no shebang) nor
+# tests/ and tools/ (subdirectories).
+LINT_TARGETS := $(SCRIPTS) *.py tests/ tools/
 
 
 # Show this help message
@@ -147,6 +148,17 @@ export-csv: ## Export this repo's beads to a CSV in the current directory
 	@./bd-export-csv .
 
 .PHONY: dolt-check dolt-diff export-csv
+
+# The render script deliberately lives under tools/ rather than at the repo
+# root: SCRIPTS is shebang-discovered, so a root-level script would be swept
+# into `make smoke`, which runs `--version` on everything it finds.
+#
+# Not idempotent — the images capture live bead data and timestamps, so every
+# run produces a diff. Regenerate deliberately, not out of habit.
+screenshots: ## Regenerate the README's terminal screenshots into docs/img/
+	@./tools/make-screenshots.py
+
+.PHONY: screenshots
 
 
 ################################################################
