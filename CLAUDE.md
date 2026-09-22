@@ -767,6 +767,15 @@ Design of the suite, and the traps it exists to survive:
   `grep -lE -d skip '^#!' *`, which only looks at the repo root and skips
   subdirectories, so the tests would otherwise never be linted.
 
+`tests/test_makefile.py` is the one file that invokes `make` itself, marked
+`makefile` and skipped when make is absent. Its cheap tier reads `make -n`
+output rather than running anything, which is enough for the whole class of
+variable-expansion bug that produced `f066e16` — a `PREFIX=~/bin` that built a
+directory literally named `~`. Two rules for anything added there: never
+invoke `make test` or `make ci` (that recurses), and always pass an explicit
+`PREFIX` under `tmp_path`, or the suite installs into the developer's real
+`~/.local/bin`.
+
 The `select_subtrees` tests in `tests/test_bd_log.py::TestSelectSubtreesBranches`
 are load-bearing in a way the rest are not: they cover four `--children`
 behaviors this repo's own bead data cannot reach (a scope filter severing the

@@ -1,7 +1,7 @@
 ## Unreleased
 
+* [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
-
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`
 
 ## v0.4.0 (22Sep26)
