@@ -40,9 +40,10 @@ Pushing (`git push` / `bd dolt push`) is the user's call, not the agent's. Commi
 
 A small collection of Python utility scripts that augment the **beads** (`bd`) issue
 tracker and its Dolt-backed storage. Each script sits at the repo root alongside a
-shared `bdutils.py` helper module — no package, no build step, no installer. Scripts
-are expected to run from the repo directory (Python's default `sys.path[0]` resolves
-the sibling `bdutils` import).
+shared `bdutils.py` helper module — no package, no build step. Scripts run from the
+repo directory (Python's default `sys.path[0]` resolves the sibling `bdutils`
+import), or from anywhere via the symlinks `make install` puts in `PREFIX`, since
+`sys.path[0]` is the *resolved* directory and the sibling import survives the link.
 
 Current scripts:
 

@@ -9,6 +9,25 @@ each script lives at the repo root alongside a shared `bdutils.py`
 helper and runs with `python3` (or `uv` for the one script that
 needs `rich`).
 
+## Install
+
+Clone it, then link the scripts onto your `PATH`:
+
+```bash
+git clone https://github.com/deg/beads-utils && cd beads-utils
+make install                      # symlinks into ~/.local/bin
+make install PREFIX=~/bin         # ...or wherever you keep them
+```
+
+The symlinks point back at the clone, so the scripts still run from it — edit
+one and the change takes effect immediately, with no reinstall. Keep the clone
+around; `make uninstall` removes the links again.
+
+Two things `make install` deliberately doesn't do: it won't put `PREFIX` on
+your `PATH` (it says so if it isn't), and it won't set up tab completion —
+run `make completions` for that line. Or skip installing entirely and just put
+the clone itself on `PATH`; the scripts run in place either way.
+
 ## Scripts
 
 | Script | What it does |
@@ -142,6 +161,7 @@ make check       # ruff, plus a --version smoke test of every script
 make ci          # everything CI runs
 make dolt-check  # verify this repo's own beads data is pushed
 make screenshots # regenerate the terminal images above
+make install     # symlink the scripts onto your PATH
 ```
 
 Dependencies resolve through `uv` into a throwaway environment, so nothing is

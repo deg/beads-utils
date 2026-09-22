@@ -3,8 +3,8 @@
 Thanks for your interest! This is a small collection of Python CLI scripts that
 augment the [`bd`](https://github.com/gastownhall/beads) issue tracker.
 
-The current setup is deliberately minimal — no package, no build step, no
-installer — but that's a starting point, not a principle. Contributions are
+The current setup is deliberately minimal — no package and no build step;
+`make install` only symlinks — but that's a starting point, not a principle. Contributions are
 welcome, including:
 
 - **New scripts** that fit the collection — something else useful built on top
@@ -19,17 +19,19 @@ The one standing preference is to stay reasonably dependency-light (see
 
 ## How the repo works
 
-There is **no package, no build step, and no installer**. Each script lives at
-the repo root next to a shared `bdutils.py` helper and runs directly:
+There is **no package and no build step**. Each script lives at the repo root
+next to a shared `bdutils.py` helper and runs directly:
 
 ```bash
 ./bd-log -n 5            # run any script from the repo directory
 ./bd-view --help         # every script supports --help and --version
 ```
 
-Scripts must be run from the repo directory — Python puts the script's own
-directory on `sys.path[0]`, which is how `from bdutils import ...` resolves the
-sibling helper without any install. All scripts use Python 3 standard library
+That works because Python puts the script's own directory on `sys.path[0]`,
+which is how `from bdutils import ...` resolves the sibling helper without any
+install. Python resolves a symlink before setting `sys.path[0]`, so the same
+import keeps working through the links `make install` creates — the script runs
+from this tree either way, and only its name lives elsewhere. All scripts use Python 3 standard library
 only, except `bd-view`, whose `#!/usr/bin/env -S uv run --script` shebang pulls
 `rich` from a per-script `uv` cache (so nothing is added to any global env).
 

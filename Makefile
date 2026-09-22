@@ -12,10 +12,15 @@
 #    make test PYTEST_ARGS='tests/test_bd_log.py -k SelectSubtreesBranches'
 #    make test PYTEST_ARGS='-k "warning and not children"'
 #
-# This repo has no package, no build step and no installer — the scripts run
-# in place. Every Python entry point below goes through `uv run --no-project`,
-# which resolves dependencies into a throwaway environment: nothing is
-# installed globally and no pyproject.toml is needed.
+# This repo has no package and no build step — the scripts run in place. Every
+# Python entry point below goes through `uv run --no-project`, which resolves
+# dependencies into a throwaway environment: nothing is installed globally and
+# no pyproject.toml is needed.
+#
+# `make install` does not change that. It symlinks the scripts into a bin
+# directory; each one still runs from this tree, because Python resolves a
+# symlink before setting sys.path[0], which is what lets the sibling `bdutils`
+# import keep working through the link.
 #
 # CI (.github/workflows/lint.yml) invokes these same targets, so a command
 # lives in exactly one place. Change it here and CI follows.
@@ -52,6 +57,10 @@ PYTEST_ARGS ?=
 #
 # HASH exists because make strips `#` and everything after it *before* parsing
 # a function call — an inline '^#!' would truncate the $(shell ...) mid-call.
+# Where `make install` puts its symlinks. Override per invocation:
+#     make install PREFIX=~/bin
+PREFIX ?= $(HOME)/.local/bin
+
 HASH := \#
 SCRIPTS := $(shell grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
 
@@ -159,6 +168,49 @@ screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 	@./tools/make-screenshots.py
 
 .PHONY: screenshots
+
+
+################################################################
+## Installation
+##
+## Symlinks, not copies: the script still runs from this tree, so an edit
+## takes effect with no reinstall. The cost is that moving or deleting this
+## clone leaves the links dangling — `make uninstall` first if you relocate.
+## The same property cuts both ways: writing to an installed name writes
+## through to this tree, so `cp something $(PREFIX)/bd-log` silently edits
+## your clone. (Observed, not theoretical.)
+##
+## This does NOT put PREFIX on your PATH, and it does not install shell
+## completion. Both remain your shell's business; see `make completions`.
+
+install: ## Symlink every script into PREFIX (default ~/.local/bin)
+	@mkdir -p "$(PREFIX)"
+	@for s in $(SCRIPTS); do \
+	    target="$(PREFIX)/$$s"; \
+	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
+	        echo "refusing to replace non-symlink: $$target"; exit 1; \
+	    fi; \
+	done
+	@for s in $(SCRIPTS); do \
+	    ln -sfn "$(CURDIR)/$$s" "$(PREFIX)/$$s"; \
+	done
+	@echo "Linked $(words $(SCRIPTS)) scripts into $(PREFIX)"
+	@case ":$$PATH:" in \
+	    *":$(PREFIX):"*) ;; \
+	    *) echo "note: $(PREFIX) is not on your PATH";; \
+	esac
+
+uninstall: ## Remove the symlinks that 'make install' created
+	@removed=0; \
+	for s in $(SCRIPTS); do \
+	    target="$(PREFIX)/$$s"; \
+	    if [ -L "$$target" ] && [ "$$(readlink "$$target")" = "$(CURDIR)/$$s" ]; then \
+	        rm -f "$$target"; removed=$$((removed + 1)); \
+	    fi; \
+	done; \
+	echo "Removed $$removed symlink(s) from $(PREFIX)"
+
+.PHONY: install uninstall
 
 
 ################################################################
