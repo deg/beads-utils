@@ -50,580 +50,45 @@ Current scripts:
 - `bd-export-csv` — Shells out to `bd export --all --no-memories`, parses the JSONL,
   and writes a flat CSV suitable for spreadsheet review. Supports `-s/--sort` with
   comma-separated keys and `-`-prefixed descending order.
-- `bd-dolt-check` — Verifies that a beads repo's Dolt data (stored under
-  `refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
-  pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
-  `.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
-  It answers **committed *and* pushed**, on two independent axes. The commit
-  comparison above is one; the other is the Dolt **working set**, read from the
-  `dolt_status` system table. Without it a repo reads `IN SYNC` / exit 0 while
-  a whole table sits changed-but-uncommitted — in no commit, so no push can
-  carry it, and the commit comparison is blind to it by construction. That is
-  not hypothetical: it is `beads-utils-ksk`, found on `nutshell-mvp`, where
-  three weeks of `bd remember` memories lived only on one machine.
-  The section prints *before* anything touches the remote, because the working
-  set is purely local truth — a repo with no Dolt remote at all still needs to
-  hear it, and that path returns early. `clean` is printed out loud, as is
-  `not verifiable`; silence reading as "fine" is the failure this whole check
-  exists to end.
-  A dirty working set is its own status word, `UNCOMMITTED`, rather than being
-  folded into `OUT OF SYNC`: the two failures are independent and want
-  different remedies (commit vs. push), and they co-occur, in which case the
-  commit verdict keeps its own wording and picks up a `; N tables uncommitted`
-  clause. Exit 1 either way, including from the two "sync delta not
-  verifiable" returns — not knowing the commit delta says nothing about data
-  that is in no commit to begin with. That fold has to cover every one of
-  `main()`'s five returns; an "unverifiable *and* uncommitted" repo quietly
-  exiting 0 is precisely the bug.
-  Four things were checked rather than assumed, each of which would otherwise
-  invite defensive code:
-  - **`dolt_ignore` needs no filtering.** Every beads repo ignores
-    `local_metadata`, `repo_mtimes`, `wisps`, `wisp_%` and
-    `ignored_schema_migrations`. The `dolt_status` *system table* honors that
-    list for untracked-new tables (an ignored new table simply does not
-    appear) but not for a tracked table that later changes — which is exactly
-    what `dolt status` itself does, so matching it is the right behavior, not
-    a gap. No ignored table is dirty in any repo on this machine.
-  - **There is no "normal mid-session churn" to tolerate**, which is what the
-    bead left open. bd's `batch` auto-commit policy *is* documented to
-    accumulate changes in the working set by design — but `bd config get
-    dolt.auto-commit` returns `on` for every repo here, and even under batch,
-    uncommitted is still unpushed, which is the question this tool answers. So
-    no `--strict`, no tolerance knob, and no new flag (which also keeps
-    `completions/` out of it).
-  - **The cost of being right is small and known.** Across the 18 beads repos
-    on this machine, all 13 embedded ones are clean and 3 of the 5 server-mode
-    ones are dirty; two of those three have no Dolt remote and already exited
-    1. This repo stays at 0, so `make dolt-check` here is unchanged.
-  - **Rows are reported raw.** No whitelist of dolt's status vocabulary
-    (`modified`, `new table`, `deleted`, `renamed`, `conflict`, …) — same
-    delegation principle as `bd-log`'s `--status` pass-through — and no
-    filtering on `staged`, since a staged table is still uncommitted. Don't
-    start reading `staged` without normalizing it: it comes back as int `0`/`1`
-    from embedded repos and string `"0"`/`"1"` from server ones.
-  What it cannot say is *since when*. Uncommitted changes carry no date —
-  `dolt_status` has no time column, there is no `dolt_workspace_*` table, and
-  `dolt_diff_config` reports `to_commit='WORKING'` with a NULL date (see
-  `bd-log`'s memory-events notes, where the same wall was hit). The bead's
-  "uncommitted since 2026-07-12" was read off commit history, not the working
-  set.
-  The remedy is `bd dolt commit`, then push, in both modes — but the
-  section keeps a caveat in server mode, because **bd's own commit used to
-  silently do nothing there**, which was watched happening rather than
-  inferred. On `nutshell-mvp` (server mode, bd 1.1.0), `bd dolt commit`
-  printed `Committed.` and `bd vc commit` answered with a commit hash — the
-  *existing* HEAD's — while `config` stayed `modified` through both. The
-  changes were real (`dolt diff --stat`: 4 rows, four `kv.memory.*` values),
-  and the running server and the CLI agreed the table was dirty, so it was
-  bd's bug (upstream #4078; `beads-utils-fyn`, closed). A Dolt data dir can
-  serve several databases; `metadata.json` designates one, `locate_dolt_db()`
-  returns that one, and the working set asked about is that one's — following
-  bd's designation rather than surveying whatever else sits there.
-  At 1.1.0 the remedy was therefore mode-dependent, and both halves were run
-  in pristine repos of each mode: *embedded*, `bd dolt commit` cleared
-  `config`, `events` and `issues` together with `dolt.auto-commit off`;
-  *server*, it cleared nothing, and only **`bd dolt stop`** committed, on the
-  way down (`auto-flush: commit working set before server stop`). Server mode
-  then also left `config` dirty from `bd init` onwards and ignored
-  `dolt.auto-commit off`.
-  **bd 1.3.0 fixed all of that**, and it was re-verified on 2026-09-23 rather
-  than taken from the changelog: in a throwaway server-mode repo with
-  `dolt.auto-commit off`, `bd create` + `bd remember` left `config` and
-  `issues` modified (so `off` is honored now), one `bd dolt commit` cleared
-  both and put the `kv.memory.*` rows in HEAD, and a second `bd dolt commit`
-  answered `Nothing to commit`. So both modes now print the same first line.
-  Server mode adds a parenthetical for older binaries — `bd dolt stop`, or the
-  dolt-native one-liner below — since the tool cannot know which bd the reader
-  runs, and no server-mode repo remains on this machine to catch a regression.
-  Two consequences of that, both of which a cold-eyes review caught after the
-  first cut shipped with them wrong:
-  - **Every closing action line has to be reachable.** Each one names a state
-    the command cannot get to on its own while tables sit uncommitted — a push
-    does not carry them, and a pull onto a dirty working set can conflict
-    rather than merely be incomplete — so `commit_first()` prefixes all four
-    with "Commit the working set first (above)". It points *back at the
-    section* rather than naming a command, because at 1.1.0 which command
-    committed depended on the mode; spelling `bd dolt commit` there
-    contradicted the server-mode remedy printed ten lines above it, which is
-    the loop this bead exists to break. The section still carries the
-    older-binary caveat, so the pointer stays. The suite could not see that: `conftest.py`'s `project`
-    fixture hardcodes `dolt_mode: embedded`, so until `server_dolt_project`
-    landed, no `main()` test ran in server mode at all.
-  - **`IN SYNC` is never claimed on an axis that wasn't checked.** When the
-    `dolt_status` query itself fails the verdict reads `IN SYNC (commits) —
-    working set not verifiable`. Exit stays 0, since nothing is known to be
-    wrong; but a flat all-clear would be the same silence-reads-as-fine
-    failure the whole check exists to end.
-  The section also prints, in server mode, a `dolt sql` one-liner that
-  commits exactly the tables it just listed — the one remedy independent of
-  bd's version, and the only one when a server isn't running (`bd dolt stop`
-  has nothing to flush: `Error: dolt server is not running`). Its path is `shlex.quote`d and its database name backticked:
-  the line is printed to be pasted verbatim, and both come from outside
-  (the filesystem and `metadata.json`). It is rooted at the database dir's **parent**, the
-  one spelling that works in both layouts: in server mode that is the
-  sql-server's data dir, where the CLI finds `.dolt/sql-server.info` and
-  proxies to the running server instead of writing the files out from under
-  it; in embedded mode it is just a directory holding one database. Both were
-  run. `call dolt_add(...)` takes the whole table list in one call (checked;
-  it commits every one), with the caveat that a table matching `dolt_ignore`
-  is skipped by `dolt_add` even when `dolt_status` lists it as modified — the
-  tracked-and-ignored case above, which nothing on this machine is in.
-- `bd-dolt-diff` — Previews what a `bd dolt push` would actually send: an
-  issue-level diff between the remote-tracking ref and the local branch
-  (added/removed issues, field-level before/after for changed ones, plus
-  dependency/label/comment changes). `--base`/`--head` diff any two Dolt
-  revisions. Dependency and comment rows are keyed on their semantic tuple,
-  not the surrogate `id` column (Dolt mints a fresh `uuid()` per insert, so
-  the same logical edge created on two clones would otherwise show as a
-  spurious add+remove). When a schema migration means the two revisions
-  don't share a column set, compares the intersection and names the skipped
-  columns (selecting a column absent from one side is a hard Dolt error).
-  Read-only; always exits 0 when the comparison ran — `bd-dolt-check`
-  remains the CI gate. Pages via `bdutils.paged_output()`; `--no-pager`
-  disables. Requires the `dolt` CLI.
-- `bd-log` — Shows recent lifecycle events in a git-log-style timeline,
-  newest first, for two kinds of thing at once. Events form a 2×3 grid —
-  `--only` picks the verb, `--about` picks the entity, both defaulting to
-  everything:
-
-  |          | create     | change   | end       |
-  |----------|------------|----------|-----------|
-  | beads    | created    | started  | closed    |
-  | memories | remembered | revised  | forgotten |
-
-  The bead row wraps `bd list ... --json` and synthesizes one event per
-  non-empty `created_at`/`started_at`/`closed_at` timestamp on each issue.
-  The memory row is reconstructed from Dolt commit history — see
-  "Memory events" below, which is a whole subsection because nothing about
-  it is guessable from bd's CLI.
-  `--only=VERBS` takes `create,change,end`; `start` and `close` remain
-  accepted as the change and end verbs, because they are what `--only` took
-  before memories joined the grid and they appear throughout this file, the
-  epilog, and both completion files. `--about=ENTITIES` takes
-  `beads,memories` (singulars accepted). Verbs and entities multiply:
-  `--about=memories --only=end` is exactly the forgotten memories.
-  The color axis is the *verb*, not the kind, which is what keeps the palette
-  at three hues (below); the entity rides on the glyph (`+ ▶ ✓` / `* ~ x`)
-  and is spelled out in the meta cell, which reads `memory` where a bead
-  reads `P3 task`.
-  Orthogonal to both axes, `--status=LIST` and `--id=LIST` scope
-  which *beads* to include. `--status` (comma-separated statuses, passed
-  straight through to `bd list --status`; bd owns the vocabulary and
-  validation — except *emptiness*, rejected here by name, because a
-  `--status=` from an unset shell variable would otherwise fall through to
-  `--all` **and** drop out of the filters implying `--about=beads`, quietly
-  returning every bead plus the whole memory log) selects by *current*
-  status; `--open` is shorthand for
-  "not closed" (mutually exclusive with `--status`); with neither flag the
-  default is `bd list --all` (everything, incl. closed). `--id`
-  (comma-separated **full** bead ids, delegated to `bd list --id`, so bd owns
-  the id vocabulary — short suffixes like `y13` match nothing, and
-  `bd-complete` emits full ids for exactly that reason) composes with either.
-  Every one of them narrows the beads row; which of them additionally implies
-  "…and *only* the beads row" turns on whether bd-log knows what the filter
-  means. `--id`/`--children` do imply it: they *enumerate* what to log, and a
-  memory is never one of the ids typed, so including them would bury the
-  answer — two bead events under nineteen memory rows, on a project with a few
-  years of `bd remember` behind it. `--status` implies it too, for the
-  opposite reason: it is an uninterpreted pass-through, bd owns that
-  vocabulary *and* has a `custom_statuses` table, so bd-log cannot tell a
-  live-ish list from a done-ish one and must not guess. It guessed once — an
-  earlier cut let `--status` inherit `--open`'s behavior, which made
-  `--status=closed` return the whole memory log, six-eighths identical to
-  `--status=open` at `-n 8`.
-  `--open` alone does **not** imply it, because it is the one predicate
-  bd-log defines itself: bd's default scope, i.e. not closed, i.e. still in
-  force — a meaning that carries across entities, since every memory that
-  hasn't been forgotten is in force too. Note this only works because `--open`
-  is *not* a synonym for `--status=open`: it passes no status flag at all, so
-  it also covers `in_progress`/`blocked`/`deferred`. Mistaking the two for one
-  filter is what produced the `--status=closed` defect above.
-  `--no-deferred` drops beads whose *current* status is `deferred`, and
-  composes with any scope (`--open --no-deferred` is what's live and not
-  parked; alone it is everything-but-parked). It is a local post-filter,
-  not a `bd list` flag: bd has no negated status filter, and translating it
-  to `--status=open,in_progress,blocked` would hard-code the rest of bd's
-  vocabulary, which is exactly what the `--status` pass-through refuses to
-  do. Naming `deferred` alone is not that guess — it is the one status `bd
-  defer` itself sets (verified across every beads repo on this machine:
-  all ten beads with a `defer_until` also carry `status: deferred`, and an
-  expired `defer_until` does not un-park one — the bead stays out of `bd
-  ready`). It runs *after* the `--children` walk, because with
-  the default scope the fetched list doubles as the topology, and dropping
-  a deferred epic before the walk would sever the chain to its live
-  children. Like `--open`, it does not imply `--about=beads`: a memory is
-  never deferred, so it refines "in force" rather than picking an entity.
-  `--no-blocked` drops beads that `bd blocked` reports as waiting on an
-  unsatisfied dependency. It is a *different axis* from `--no-deferred`,
-  not a stronger version of it: a bead is blocked by what it depends on and
-  deferred by its own status, and it can be both — a deferred bead still
-  appears in `bd blocked` when something it needs is open, so the two
-  filters overlap without either subsuming the other. The set is fetched
-  from `bd blocked --json`, lazily, only when the flag is passed (~0.3s).
-  It is delegated rather than computed for the same reason `--status` is a
-  pass-through: bd owns the dependency semantics. Computing it locally is
-  not merely more work, it is a guess — the `dependencies` array in `bd
-  list --json` would require bd-log to decide which edge `type` values
-  block (`parent-child` does, `related` does not, `discovered-from`
-  presumably does not), and the *stored* status is no help either, because
-  a blocked bead's status stays `open` until someone runs `bd
-  recompute-blocked` (every one of `mbz-et8e.56`–`.59` is `status: open`
-  while `bd blocked` lists it, and this repo has zero stored `blocked`
-  statuses across 58 beads). Two properties of the returned set matter:
-  closed beads are never in it, so the filter cannot drop a closed bead's
-  events; and it is not capped the way `bd list` is at 50 (a 61-bead test
-  returned all 61). Like `--no-deferred` it runs *after* the `--children`
-  walk, and like `--open` it does not imply `--about=beads` — a memory is
-  never blocked.
-  The obvious alternative, `bd list --ready`, was tried and rejected. It
-  looks ideal (bd's own definition, no guess at all) but means open **and**
-  unblocked **and** not deferred, so an `in_progress` bead is not ready:
-  setting one bead to `in_progress` and changing nothing else took the
-  ready set from one bead to zero. `bd-log --open --no-ready` would
-  therefore hide the bead being actively worked on, which is the one most
-  likely to have recent events. It also cannot compose with the scope axis
-  — `bd list --ready --all` returns the ready set, silently overriding
-  `--all`.
-  Known gap (`beads-utils-x9x`): a child of a *deferred parent* is excluded
-  from `bd list --ready` but is **not** in `bd blocked`, so `--no-blocked`
-  leaves it. That is not the case this flag was built for — the reported
-  one was a gate bead (`mbz-et8e.60`, `[gate] Resume marketing-site work
-  (close to activate)`, deferred) with an explicit `blocks` edge from each
-  child, which `bd blocked` reports. Because of that gap, the three filters
-  together are the narrowest live view *these* flags give, and not "what can
-  actually be picked up" — the phrasing an earlier draft used in the epilog,
-  the changelog and this file, contradicting the paragraph you are reading.
-  These are soft defaults an explicit
-  `--about` overrides, in which case an inert bead filter is named on stderr
-  rather than silently ignored.
-  `--children` widens each `--id` to its whole subtree, at any depth; it is
-  the one filter that can't delegate (bd's `--id` doesn't expand children and
-  `--parent` walks one level per call), so it matches locally: the transitive
-  closure over the `parent` field, walked over the whole `bd list --all` set
-  and only then intersected with the scoped one. Walking the scoped set instead
-  would let `--open`/`--status` hide an intermediate bead and silently sever
-  the chain to everything below it, so `--children` costs a second `bd list
-  --all` whenever a scope filter is in play (with the default scope, that
-  *is* the fetch already made). Nothing matches on id *text*: a dotted id
-  like `proj-a1b.4` looks like it encodes parentage, but `bd update --parent`
-  reparents without renumbering, so a moved bead keeps an id naming its
-  former parent. A requested id that ends up with
-  no events warns on stderr (neutrally: a bead can be absent because it
-  doesn't exist *or* because a filter excluded it) without changing the exit
-  code. The warning names only the filters actually passed — listing every
-  filter that *could* explain the absence sends the reader hunting for a
-  `--since` they never typed — so with no other flags it reads just
-  `(not found)`. The check runs before `-n` trims, so a truncated list never
-  false-alarms. Also `-n/--limit`
-  (default 0 = unlimited, like `git log`) and `--since DATE`
-  (timestamp filter applied to every event kind). Pages through
-  `bdutils.paged_output()` (`$PAGER` or `less -FRX` when stdout is a tty).
-  `--no-pager` disables. Events are colored by **verb** via
-  `--color=auto|always|never` (`bdutils.want_color`), traffic-light style:
-  red on `end`, where work *stops* (a bead closed, a memory forgotten);
-  green on `change`, where it goes (a play button is green); blue on
-  `create`, which is neither. The obvious
-  alternative maps the lifecycle *sequence* onto the light (create green →
-  change yellow → end red) and is rejected on legibility: in Solarized
-  Light — and low-contrast light themes generally — ANSI green and yellow
-  are both olive (`#859900` vs `#b58900`), so it would put two
-  near-indistinguishable colors on adjacent event kinds. Blue/green/red are
-  the three most separated hues on offer — which is also why the entity is
-  *not* a color axis. A fourth hue would have to come from the same plain
-  30–37 range, whose remaining candidates are exactly the yellow just
-  rejected and a cyan that sits next to blue; keying color on the verb
-  instead lets both rows of the grid share three well-separated hues, and
-  keeps "one color axis" true.
-  A **symbol key** prints below the log, laid out as the same 2×3 grid the
-  flags select and with each cell tinted like the rows it explains — so it is
-  a color key too, showing the hues rather than naming them (a legend reading
-  "green = change" tells you what the color is called, not what it looks like
-  in your theme). `--legend=auto|always|never`, mirroring `--color`'s
-  spelling; `auto` means a tty, so pipes and `grep` stay clean. It resolves
-  from `sys.stdout` before `paged_output()` is entered, for the same reason
-  color does. Its column widths come from `len()`, so the two wide glyphs can
-  narrow a column by a character in terminals that draw them double-width —
-  the `beads-utils-fh0` bug, inherited.
-  The **whole entry** is tinted, not just the leading glyph+timestamp. That
-  stamp is ~18 characters of an ~80-character entry, and at that size the
-  eye can't judge a hue at all — every candidate palette read alike until
-  the colored area grew. The verb stays the sole color axis (nothing
-  encodes priority, type, or entity), so a long run of one hue is still one
-  signal. Because
-  `paged_output()` yields the *pager's stdin pipe*, the color decision is
-  resolved from `sys.stdout` before that context manager is entered —
-  testing the yielded stream would report "not a tty" in precisely the case
-  (a user at a terminal) where color is wanted.
-  `--oneline` collapses each event to one row —
-  `glyph ts  id  P3 task  title` — dropping the actor (near-constant in a
-  single-owner project) and the close reason (a full paragraph in practice;
-  shedding it *is* the point of the flag). Purely a render mode: the filter
-  axes above are untouched. Deliberately **no header row**, unlike
-  `claude-session-list --oneline`: this is a git-log-style view whose columns
-  are self-describing where that script's (`8f3a2b1c`, `3h ago`, `12p/47r`)
-  are not, every row is tinted by verb so a header would sit uncolored atop a
-  colored table, and the output gets grepped. Titles are not truncated to
-  terminal width — git doesn't, and it keeps pipes honest. A memory's value
-  *is* truncated, to 100 chars like `bd-dolt-diff`, in both forms: it runs to
-  well over a thousand characters, and shedding that is the point. A memory
-  *key* is truncated only in `--oneline` (to 24), because that is the form
-  where the widest cell pads every other row — keys run to ~50 against a bead
-  id's ~17, and uncapped they padded this repo's own 15-character ids out to
-  32, which is `beads-utils-u20`'s failure mode arriving somewhere new. 24 was
-  picked off the rendered output rather than reasoned about: it is where keys
-  stay recognizable while the dead space on bead rows drops to a few
-  characters. The block form caps nothing, having no column to protect. The id and
-  priority/type columns auto-size over the rows actually rendered, i.e.
-  *after* `-n` trims, so a long id that got cut off doesn't pad what survived.
-  One caveat inherited from the color work above: a row is ~70 colored
-  characters against a block entry's ~160–240. That is still well clear of the
-  ~18 characters at which hues stopped separating in Solarized Light, but it
-  is a 2–3× cut in the one dimension that has regressed before, so a palette
-  change should be re-checked at one-line width too.
-  `--count-events`, `--count-beads` and `--count-memories` each add one
-  plain line after the log (`12 events` / `7 beads` / `3 memories`), before
-  the legend, uncolored like the pending-group header because color means
-  a verb. They count what is on the screen: the event list *after* every
-  filter and after `-n` trims, so a bead with created/started/closed
-  entries is one bead, and an uncommitted memory change is one event even
-  though `-n` skips it. An event is an entry, not a physical line. Zero is
-  an answer, so the `no matching events` case still prints them; under
-  `--about=memories`, `--count-beads` says `0 beads` rather than warning.
-  A trailer, never a replacement for the log -- `grep -c` semantics were
-  considered and rejected, since the flags are for reading a log and
-  knowing its size at the same time.
-
-  **Memory events.** `bd remember` records **no timestamps**: a memory is a
-  `kv.memory.<key>` → value row in Dolt's `config` table, key and value and
-  nothing else, and bd's own `events` audit table holds only issue lifecycle
-  rows. So "when did this memory appear or change" is answerable from exactly
-  one place — Dolt's commit history, via the `dolt_diff_config` system table,
-  whose `added`/`modified`/`removed` rows carry `to_commit_date` plus both
-  sides of the value. Consequences worth knowing before touching this code,
-  each verified rather than assumed:
-  - **`dolt` becomes a soft dependency**, where `bd-log` previously needed
-    only `bd`. A repo with no Dolt database (JSONL-only `no-db` mode), or a
-    machine without the CLI, simply has no memory row. `memory_events()`
-    returns `None` for "couldn't look" and `[]` for "looked, found nothing" —
-    and only `--about` naming memories turns the former into a warning, since
-    otherwise every run in such a repo would carry one.
-  - **Uncommitted changes have no date, and none can be derived.** A memory
-    written while Dolt auto-commit is off sits in the working set, where
-    `dolt_diff_config` reports `to_commit='WORKING'` and a NULL date. Not
-    hypothetical — 6 of 13 memory changes in `nutshell-mvp` are working-set,
-    and `config` is the *only* modified table there, so bd commits the issue
-    tables constantly and this one never. Nothing else dates them:
-    `dolt_status` has no time column, there is no `dolt_workspace_*` table,
-    and `from_commit_date` dates HEAD rather than the edit. They therefore
-    print as a labelled group (`uncommitted -- no date until committed`)
-    ahead of the dated log, each row stamped `(uncommitted)` where the
-    timestamp would go, and **`-n` does not count them against its budget** —
-    `-n` asks how far back through the *history* to go, and a pending change
-    isn't in it yet, exactly as `git log -n 4` ignores your working tree.
-    Without that, a `bd-log --open -n 4` on `nutshell-mvp` answered with four
-    pending memories and no beads at all.
-    Resist the temptation to merge them into the timeline as "newest". They
-    lead because the working set is a *descendant* of HEAD — a DAG fact, not
-    a wall-clock one. On `nutshell-mvp` HEAD is minutes old while the newest
-    *committed* memory change is three weeks back, so those edits sit
-    somewhere in a three-week window that nothing can narrow.
-    The empty timestamp needs a high sentinel in the sort key, because `''`
-    sorts lowest and a reversed sort would otherwise sink them to the bottom.
-  - **`--since` is applied in Python, never pushed into SQL.** A
-    `to_commit_date >= …` clause would drop every NULL-date row silently, i.e.
-    exactly the newest events. `filter_since` keeps undated events
-    unconditionally for the same reason.
-  - **Timestamps need normalizing.** Dolt returns UTC, space-separated, with
-    microseconds (`2026-08-02 19:55:33.460000`); bd returns
-    `2026-07-28T07:44:53Z`. The merged timeline sorts as plain strings and
-    `--since` compares a bare `YYYY-MM-DD` as a prefix, so both spellings
-    must be one spelling.
-  - **Merge commits can double-report** one logical change, so rows are taken
-    once per `(key, to_commit)`. This repo has no merges; a repo that pulls
-    does.
-  - **No actor.** Dolt's committer is `root`, and the real name appears only
-    inside the commit *message* text (`bd: remember (auto-commit) by …`),
-    which is too fragile to parse. `render` already omits an empty actor.
-  - `bdutils.read_metadata()` **exits the process** when `metadata.json` is
-    missing — right for the dolt scripts, wrong here, since `bd-log` still has
-    bead events to print. The file is checked before it is read.
-  Cost is not a reason to make this opt-in: the query runs in ~0.25s against a
-  3671-commit repo.
-  Not covered, and filed separately: `--only=change` shows memory revisions
-  but no bead *updates*, because `bd-log` doesn't read the `events` table —
-  where bd does record `updated` (and `reopened`, and an actor per row).
-- `claude-session-find` — Finds the UUID of an old Claude Code session by
-  grepping its transcript. Reads `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl`
-  (mangling = `/` and `.` → `-`, via `claudeutils` — this script kept private
-  copies of that and three sibling helpers until beads-utils-8ju; it now reads
-  `claudeutils.CLAUDE_PROJECTS` through the module rather than from-importing
-  it, so there is exactly one binding for tests and callers to redirect). Defaults to the current project and
-  human-typed user messages only; `-g/--global` spans all projects,
-  `-a/--all` also searches assistant text, thinking, and tool inputs/outputs.
-  Git-log-style output with timestamp, project label, full UUID, match count,
-  and up to 3 snippets per session; `--oneline` keeps each entry's own first
-  line and drops its snippets (padding the project label so the uuid and
-  hit-count columns align — the block form has no column to align to). Like
-  `bd-log --oneline` and for the same reason, it prints no column-header row:
-  timestamp, project, uuid and hit count are self-describing, where
-  `claude-session-list`'s `8f3a2b1c` / `3h ago` / `12p/47r` are not.
-  `-q/--quiet`
-  prints only UUIDs (pipe-friendly for `claude --resume`). The three form the
-  same block → oneline → quiet ladder `claude-session-list` has, and
-  `--oneline`/`-q` share its mutex group. Neither brief mode gathers snippets
-  it won't print. Pages via `bdutils.paged_output()`.
-- `bd-view` — Pretty-prints a single bead with rendered Markdown. Where `bd
-  show` dumps fields as plain text and `bd edit` shows raw markdown one
-  section at a time, this renders the full bead (header metadata,
-  description, design, notes, acceptance criteria, metadata, dependencies,
-  comments) with proper formatting via the `rich` library. Subclasses
-  `rich.markdown.Markdown` to disable raw HTML so placeholder text like
-  `<id>` survives. Single positional arg: `bd-view <issue-id>`.
-  Field coverage is meant to be a superset of `bd show`'s, and is
-  self-defending: `RENDERED_KEYS` lists every top-level JSON key some
-  renderer accounts for, and whatever is left (minus the redundant
-  `dependency_count`/`dependent_count`/`comment_count`) lands in a trailing
-  `Other Fields` section — so a column `bd` adds later shows up unprompted
-  instead of vanishing. This mirrors `bd show --long`'s own
-  `EXTENDED DETAILS` section. Dependencies are grouped by the
-  `dependency_type` that `bd dep list --json` returns (`Parent:`,
-  `Children:`, `Depends on:`, `Blocks:`, plus the rarer `tracks` /
-  `discovered-from` / `supersedes` / … kinds); unknown types render under
-  their raw name rather than being folded into depends-on/blocks. If a bead
-  has a `parent` but no parent-child edge comes back, the bare id is shown.
-  Pages via `bdutils.paged_output()`; `--no-pager` disables. Falls back to a
-  plain-text dump (with a `warning:`) if `rich` isn't installed — the
-  fallback renders the same field set.
-  Shebang is `#!/usr/bin/env -S uv run --script` with PEP 723 inline
-  metadata declaring `rich` + `markdown-it-py`, so deps come from `uv`'s
-  per-script cached venv — nothing is added to any global Python env.
-  Requires `uv` on `PATH`.
-- `claude-session-report` — Renders a Claude Code session JSONL as a
-  Markdown discussion transcript. Each emitted item is its own H2
-  section (`## User — ts`, `## /cmd-name — ts`, `## Claude — ts`,
-  `## Claude thinking — ts`, `## Claude tool: <name> — ts`, …); ATX
-  headings inside content are demoted by 2 levels (capped at h6) so
-  they nest cleanly under the turn header. Long boilerplate (thinking,
-  slash-command skill bodies) is wrapped in `<details>` so GitHub
-  viewers collapse them. Fence lengths in code blocks adapt to nested
-  backtick runs in the content. Pages via `bdutils.paged_output()`;
-  `--no-pager` disables.
-  Positional arg resolves in order: (1) path to a `.jsonl` file, (2)
-  UUID — `<uuid>.jsonl` lookup across every `~/.claude/projects/*/`
-  dir, (3) case-insensitive substring match against the session's
-  `custom-title` (set via `/rename`) or auto `ai-title`; ambiguous
-  matches list candidates and exit non-zero.
-  Each content category is an independent toggle. Default-on (the
-  "discussion"): `--prompts`, `--replies`, `--slash-commands`.
-  Default-off (opt-in): `--thinking`, `--tools`, `--slash-bodies`,
-  `--bash-shortcuts`, `--system-reminders`, `--task-notifications`,
-  `--sidechains`. `--all` enables every channel.
-  Skill bodies — the boilerplate Claude Code appends as a *child* user
-  entry of a slash-command turn (identified by `parentUuid`) — are
-  hidden by default because they repeat verbatim across every
-  invocation of the same skill; `--slash-bodies` brings them back.
-  Note: Claude Code does not currently persist extended-thinking
-  content to disk (only the signature), so `--thinking` is
-  forward-compatible but produces no output for current sessions.
-- `claude-session-rename` — Does what the `/rename` slash command does, from
-  the shell and without starting the session: `claude-session-rename
-  <session> <title>`. `/rename` persists a title by appending two records to
-  the session's transcript, `{"type":"custom-title","customTitle":…}` and
-  `{"type":"agent-name","agentName":…}` (both carry `sessionId`, neither a
-  timestamp), and every reader — the `claude --resume` picker,
-  `claudeutils.read_session_meta`, hence the three `claude-session-*` scripts
-  above — takes the *last* `custom-title`. Nothing else stores the title. So
-  the script appends exactly those two records and the job is done; both are
-  written so the transcript is indistinguishable from one `/rename` touched.
-  The session resolves through `claudeutils.resolve_session()` (path, UUID,
-  or title substring; ambiguity lists candidates and exits 1), same as
-  `claude-session-report`. It **refuses a running session**: a live process
-  re-emits its own title on later turns and would silently undo the rename,
-  and `/rename` is right there inside it. Live means a
-  `~/.claude/sessions/<pid>.json` names the session *and* the pid answers a
-  signal-0 probe (`claudeutils.live_session_pid`); a file whose pid is dead
-  is a crash leftover and is ignored, since a dead process clobbers nothing.
-  No `--force` (a simple refusal was the owner's call), no show mode, no
-  `--clear` — set only. The title is stripped and must be a non-empty single
-  line. Prints `<uuid>: <old title> -> <new title>`. Does not page and takes
-  no `--color`: one line of output.
+- `bd-dolt-check` — Verifies that a beads repo's Dolt data is committed *and*
+  pushed. The Dolt data lives under `refs/dolt/data` on the git remote,
+  invisible in GitHub's UI. It compares `.beads/push-state.json` against `git
+  ls-remote` and the local Dolt log, and reads the Dolt working set
+  (`dolt_status`) for tables changed but in no commit. Exits 1 on `OUT OF
+  SYNC` or `UNCOMMITTED` so CI can gate on it.
+- `bd-dolt-diff` — Previews what a `bd dolt push` would send: an issue-level
+  diff between the remote-tracking ref and the local branch. `--base`/`--head`
+  diff any two Dolt revisions. Read-only, exits 0 whenever the comparison ran.
+  Requires the `dolt` CLI.
+- `bd-log` — Git-log-style timeline of bead *and* memory lifecycle events,
+  newest first. `--only` picks the verb (create/change/end), `--about` the
+  entity (beads/memories); `--status`, `--open`, `--id`, `--children`,
+  `--no-deferred` and `--no-blocked` scope the beads. Memory events are
+  reconstructed from Dolt commit history, because `bd remember` records no
+  timestamps.
+- `bd-view` — Pretty-prints a single bead with rendered Markdown via `rich`,
+  resolved through a `uv run --script` shebang; falls back to plain text
+  without it. Takes an issue id.
+- `claude-session-find` — Finds an old Claude Code session's UUID by grepping
+  transcripts; current project by default, `-g` for all.
 - `claude-session-list` — Git-log-style listing of recent Claude Code
-  sessions. Default scope = current project (matched by mangled-cwd
-  lookup under `~/.claude/projects/`); `-g/--global` spans all projects
-  and adds a project-label line to each entry. Each entry shows the
-  full UUID (copy-paste-ready for `claude --resume`), an optional
-  project label, a timestamp range with relative age and active span
-  (`2026-05-27 09:11 → 14:32  (3h ago, 5h21m active)`), the
-  prompt/reply counts (`N prompts / M replies` in block view, `Np/Mr`
-  in `--oneline`), and the session title (`custom-title` from
-  `/rename`, else `ai-title`, else `(untitled)`).
-  Counts: "prompts" = `type=='user'` entries whose content has
-  non-wrapper prose; entries consisting only of `<command-name>`,
-  `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, etc.
-  (no human-typed text) don't count. This is what lets `/clear`-ghost
-  sessions register as `0p/0r`. "replies" = `type=='assistant'`
-  entries. Both exclude subagent sidechains.
-  Filters: by default, sessions with `0p/0r` (truly empty — `/clear`
-  ghosts, aborted sessions) are hidden; a stderr footer reports the
-  hidden count. `-a/--all` shows everything. `--min-prompts N`
-  (mutex with `-a`) is a stricter filter — only sessions with ≥ N
-  human prompts. `--oneline` collapses each session to one row and
-  prints an `ID / STARTED / AGE / COUNTS / PROJECT / TITLE` header
-  (STARTED is the session's first timestamp; AGE is time since last
-  activity — independent dimensions). The COUNTS and PROJECT columns
-  auto-size to the actual data so the TITLE column doesn't jitter
-  row-to-row. `-q/--quiet` prints UUIDs only (pipe-friendly,
-  suppresses the header and the filter-hint footer). `-n/--limit`
-  caps the count (0 = unlimited).
-  `-s/--sort=KEYS` accepts comma-separated keys with `-`-prefix
-  descending (matches `bd-export-csv --sort`); keys = `started`,
-  `last`, `duration`, `prompts`, `replies`, `turns`, `title`,
-  `project`, `id`. Default order is mtime-newest-first (same as
-  before). `-m/--match=PATTERN` is a case-insensitive substring
-  match on title OR full UUID, applied before the empty-session
-  filter. Pages via `bdutils.paged_output()`; `--no-pager` disables.
-- `bd-complete` — Emits shell-completion candidates as
-  `value<TAB>description` lines; the single front door behind the
-  zsh/bash completion in `completions/` (so candidate logic is never
-  duplicated across shells, and a future TTL cache has one wrap point).
-  `bd-complete ids` lists full bead ids (e.g. `beads-utils-v9o.4`) from
-  `bd list --status=all` — full rather than the short suffix so a
-  wrong-project id is visible at the prompt.
-  `bd-complete sessions` calls into `claudeutils.list_sessions()`
-  directly. Lookups fail silently (no output, exit 0) so a
-  broken/slow command never garbles the prompt.
+  sessions, with prompt/reply counts and titles; hides empty sessions.
+- `claude-session-report` — Renders a session transcript as Markdown, with
+  each content category (thinking, tools, skill bodies, …) a separate toggle.
+- `claude-session-rename` — Retitles a session from the shell exactly as
+  `/rename` would, by appending the same two records. Refuses a running
+  session.
+- `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
+  `sessions`); the single front door behind `completions/`.
 
-Shared helpers:
+Shared helpers, both stdlib-only:
 
 - `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
-  `format_ts()`, `format_priority()`, and `paged_output()` (context manager
-  that pipes through `$PAGER` or `less -FRX` when stdout is a tty; `-F` makes
-  short output indistinguishable from direct-to-stdout). Color lives here
-  too: the `COLORS`/`RESET` SGR constants, `add_color_arg()`,
-  `want_color(mode)` (`auto` = tty **and** `NO_COLOR` unset **and** `TERM !=
-  dumb`), and `paint(text, color, enabled)`, whose `color` is one or more
-  space-separated `COLORS` names so attributes compose (`"bold blue"`);
-  unknown names are skipped, never raised. Stick to the plain 30–37 hues:
-  the bright slots (90–97) are repurposed as *greys* by Solarized, and
-  `bold` reaches those same slots on terminals set to "draw bold text in
-  bright colors" — so bolting `bold` onto a hue can silently remove the
-  hue. Both were tried against a real Solarized Light terminal and backed
-  out. Widen the colored *area* or pick a better-separated hue instead.
-  Imported by scripts in this repo; keep small and stdlib-only.
-- `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
-  `CLAUDE_SESSIONS` + `live_session_pid()` (the running-process registry),
-  `mangle_cwd()`, `find_project_dir()`, `project_label()`, `has_human_prose()`
-  (strips known wrapper tags listed in `USER_WRAPPER_TAGS` — `<command-name>`,
-  `<system-reminder>`, `<local-command-caveat>`, `<bash-input>`, etc. — and
-  reports whether anything is left), `read_session_meta()` (one-pass scan:
-  titles, cwd, first/last timestamps, `human_prompts` count using
-  `has_human_prose`, `assistant_turns` count, all returned as a `SessionMeta`
-  dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
-  and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
-  `claude-session-report`, `claude-session-list`, `claude-session-find`,
-  `claude-session-rename`, and `bd-complete` — `claude-session-find`
-  predated this module and carried its own copies until beads-utils-8ju
-  folded them in. Also stdlib-only.
+  `format_ts()`, `format_priority()`, `paged_output()`, and color
+  (`add_color_arg()`, `want_color()`, `paint()`).
+- `claudeutils.py` — Claude session enumeration and resolution (path, UUID or
+  title substring), shared by the `claude-session-*` scripts and
+  `bd-complete`.
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
@@ -633,6 +98,29 @@ Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
 takes no positional args (current project unless `-g/--global`);
 `claude-session-rename` takes a session and a title; `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
+
+## Design notes live in `.claude/rules/`
+
+The rationale behind each script — why a flag delegates to `bd`, what was
+verified rather than assumed, which alternatives were tried and rejected —
+lives in path-scoped files under `.claude/rules/`. Claude Code loads each one
+when a matching file is read, so it arrives when you open the script or its
+tests and costs nothing otherwise:
+
+| Rule file | Loads for |
+|---|---|
+| `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-view.md` | that script and its test file |
+| `claude-sessions.md` | `claude-session-*`, `claudeutils.py`, their tests |
+| `completions.md` | `completions/`, `bd-complete`, their tests |
+| `bdutils.md` | `bdutils.py` and its tests |
+| `tests.md` | anything under `tests/`, `pytest.ini` |
+| `makefile.md` | `Makefile`, `tests/test_makefile.py` |
+| `screenshots.md` | `tools/`, `docs/img/` |
+
+Before changing a script's behavior, make sure its rule file is in context,
+and read it directly if not. New rationale goes into the matching rule file,
+not here: this file loads into every session, so it holds only what every
+session needs. Each script's rule file ends with its manual checks.
 
 ## Shell completion
 
@@ -647,47 +135,8 @@ script's `argparse`, which is how `claude-session-report`'s `--prompts` /
 `--replies` / `--slash-commands` were found missing from both. There is no
 caching yet; if added, it wraps `bd-complete` alone.
 
-Both files carry two shell-specific corrections that are invisible until a
-particular spelling stops completing (each was a live defect; see
-beads-utils-dk6):
-
-- **`--opt=value` must be declared.** zsh's `_arguments` matches the option
-  name literally, so a value-taking long option is spelled `--id=[…]` and a
-  short one `-n+[…]`. Without the marker only the space-separated form
-  completes and `--id=bea` falls through to the positional, offering nothing —
-  which is the form the epilogs and this file use throughout. The marker also
-  forces short/long pairs with a value apart into two specs: `{-n,--limit}`
-  can't carry both markers, and `-n=5` isn't valid `argparse`. In bash the
-  same spelling breaks differently: `=` is in `COMP_WORDBREAKS`, so `--id=bea`
-  arrives as three words and `case $prev` never fires; `__beads_split_eq`
-  folds them back, assigning to its *caller's* `cur`/`prev` via bash's dynamic
-  scoping.
-- **Comma-separated options complete one element at a time.** In zsh each
-  emitter opens with `compset -P '*,'`; in bash the value helpers split the
-  word at the last comma and re-attach the prefix to every candidate (`,` is
-  not a word break, so the current word is the whole `a,b`). The bash split
-  helper assigns to caller variables rather than echoing a result — a command
-  substitution is a subshell, so the prefix would never escape it.
-
-The completion files are read at *shell startup*. A shell that predates a new
-flag holds the old definitions and completes nothing for it; that is not a bug
-in the file, and it is what the original beads-utils-dk6 report turned out to
-be.
-
-## Screenshots
-
-`docs/img/*.png` are the README's terminal images, regenerated by `make
-screenshots`. They are not screen captures: each command's real ANSI is
-rendered deterministically (`rich` to SVG, `resvg` to PNG), so any machine
-reproduces the same image. Rationale for the non-obvious choices — PNG over
-SVG, the font-stack patch, the measured console width, the `$ command`
-prompt line — lives in `tools/make-screenshots.py` beside the code it
-explains.
-
-Two things that bite from outside the script: it must stay out of the repo
-root, or shebang discovery sweeps it into `make smoke`; and it is not
-idempotent, since the images capture live bead data, so it stays out of
-`make ci`.
+The shell-specific corrections both files carry, and how to test them in a
+real shell, are in `.claude/rules/completions.md`.
 
 ## Running & Testing
 
@@ -712,142 +161,22 @@ make outdated                                 # newer releases of the pinned too
 spelling the commands out, so a command and its pinned tool version exist in
 exactly one place. Add a target rather than documenting a raw invocation.
 
-Two Makefile details worth knowing before editing it:
-
-- `SCRIPTS` is discovered by shebang, via `HASH := \#` indirection. An inline
-  `'^#!'` inside `$(shell ...)` does not work: make strips `#` and everything
-  after it *before* parsing the function call, truncating it mid-expression.
-- `LINT_TARGETS` names `*.py` and `tests/` explicitly alongside `$(SCRIPTS)`.
-  Shebang discovery finds neither the helper modules (no shebang — which is
-  how `claudeutils.py` went unlinted until the Makefile landed) nor anything
-  in a subdirectory.
-
 Tests are a pytest suite under `tests/`, run through `uv` so nothing is
 installed into any global environment (`pytest.ini` is config, not packaging —
 a `pyproject.toml` would read as packaging the collection).
 
-Design of the suite, and the traps it exists to survive:
+The suite's traps — fake `bd`/`dolt` on `PATH`, the two assertion styles,
+timezone pinning, cache clearing — are in `.claude/rules/tests.md`; notes
+for editing the Makefile are in `.claude/rules/makefile.md`.
 
-- `tests/conftest.py` provides `load_script("bd-log")` — the scripts are
-  executables with no `.py` extension and hyphens in their names, so a normal
-  import can't reach them. `pytest.ini` sets `pythonpath = . tests`, which is
-  what makes the scripts' own `from bdutils import ...` resolve.
-- **No real external state.** `bd` and `dolt` are replaced by programmable
-  fakes on `PATH` (`fake_bd` / `fake_dolt`, matching rules against argv in the
-  order added — a bare token can shadow a longer one, so register the specific
-  rule first). Claude session history is synthetic `.jsonl` under `tmp_path`
-  with `claudeutils.CLAUDE_PROJECTS` monkeypatched, or a fake `HOME` for
-  subprocess runs. Nothing reads a real beads project or the user's sessions.
-- `bdutils.error()` calls `sys.exit(str)`; the message is printed by the
-  interpreter's top-level handler, which never runs under `pytest.raises`, so
-  assert on `excinfo.value.code`. `warn()` writes to stderr directly and *is*
-  visible to `capsys`. Two different assertion styles, same module.
-- `format_ts()` renders **local** time via `.astimezone()`, so a session
-  fixture pins `TZ=UTC` (with `time.tzset()`, which is what actually makes it
-  take). Without it, literal-timestamp assertions pass on a Mac and fail in CI.
-- `have_dolt()` is `@functools.cache`d: an autouse fixture clears it around
-  every test, or a monkeypatched `shutil.which` either does nothing (warm
-  cache) or leaks into later tests.
-- Scripts do `from bdutils import X`, so patches must target the **script**
-  module's attribute, not `bdutils`'.
-- Piping stdout inverts two defaults — `want_color("auto")` is False and
-  `_open_pager()` returns None — so end-to-end output is plain and unpaged
-  unless a flag says otherwise. Color is tested with `--color=always`.
-- `tests/test_e2e.py` runs each script as `sys.executable ./<script>`, not
-  `./<script>`: the latter sends `bd-view` back through its `uv run --script`
-  shebang, which re-resolves `rich` per call.
-- `bd-view`'s rich-path tests are `skipif(not HAVE_RICH)` rather than silently
-  exercising only the plain-text fallback; CI passes `--with rich` so the
-  branch a user actually gets is the one covered.
-- `tests/` is named explicitly in CI's ruff arguments. Shebang discovery uses
-  `grep -lE -d skip '^#!' *`, which only looks at the repo root and skips
-  subdirectories, so the tests would otherwise never be linted.
-
-`tests/test_makefile.py` is the one file that invokes `make` itself, marked
-`makefile` and skipped when make is absent. Its cheap tier reads `make -n`
-output rather than running anything, which is enough for the whole class of
-variable-expansion bug that produced `f066e16` — a `PREFIX=~/bin` that built a
-directory literally named `~`. Two rules for anything added there: never
-invoke `make test` or `make ci` (that recurses), and always pass an explicit
-`PREFIX` under `tmp_path`, or the suite installs into the developer's real
-`~/.local/bin`.
-
-The `select_subtrees` tests in `tests/test_bd_log.py::TestSelectSubtreesBranches`
-are load-bearing in a way the rest are not: they cover four `--children`
-behaviors this repo's own bead data cannot reach (a scope filter severing the
-chain to a deeper descendant, an all-non-dotted chain, a reparented bead that
-must not appear under its former parent, a parent cycle). Two of the four
-correspond to defects found only by an ad-hoc version of that check. Each was
-verified by mutation — walking the scoped set instead of the topology, dropping
-the cycle guard, or inferring parentage from dotted id text each breaks them.
-The same three-level shape (open root, filtered middle, open leaf) is what
-makes any "this filter runs *after* the walk" test discriminating — the
-`--no-deferred` e2e test uses it. A two-level fixture with the filtered bead
-as the *root* is inert: the walk seeds the named root unconditionally, so
-both orderings keep the child, and a cold-eyes review found exactly that
-fixture passing with the filter moved to the wrong side.
-
-Also verify manually against a real beads project (this repo itself is one):
+Also verify manually against a real beads project (this repo itself is
+one). Each rule file lists its script's commands; `bd-export-csv` has no
+rule file, so its are here:
 
 ```bash
 ./bd-export-csv .                             # Export this repo to CSV in cwd
 ./bd-export-csv . --sort=-priority,created_at
-./bd-dolt-check .                             # Check Dolt sync state
-./bd-dolt-diff .                              # Preview what a push would send
-./bd-dolt-diff . --base <branch-or-hash>      # Diff vs an arbitrary revision
-./bd-log                                       # All events, beads and memories
-./bd-log --about=memories                      # Memory history alone
-./bd-log --about=memories --only=end           # Memories that were forgotten
-./bd-log --about=beads                         # Beads only (the pre-grid view)
-./bd-log --only=create                         # Beads created + memories added
-./bd-log --open                                # Events for beads still open
-./bd-log --open --no-deferred                  # ...minus the currently deferred ones
-./bd-log --open --no-blocked                   # ...minus the ones waiting on a blocker
-./bd-log --open --no-deferred --no-blocked     # ...minus both
-./bd-log --only=start --status=in_progress     # What's actively being worked
-./bd-log --id beads-utils-s4s                  # One bead's whole history
-./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree
-./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
-./bd-log --color=always | cat                  # Keep color through a pipe
-./bd-log --color=never                         # Force plain (also: NO_COLOR=1)
-./bd-log --oneline                             # One row per event
-./bd-log --oneline -n 20                       # ...and columns sized to those 20
-./bd-log --legend=always | cat                 # Keep the symbol key through a pipe
-./bd-log --legend=never                        # Suppress it at a terminal
-./bd-log --open --count-beads                  # ...and how many beads that is
-./bd-log --count-events --count-memories       # One line per count, after the log
-./claude-session-find 'bd-log'                 # Sessions in this project matching
-./claude-session-find -g 'paged_output'        # All projects
-./claude-session-find -a 'dolt push'           # Include assistant/tool content
-./claude-session-find --oneline 'bd-log'       # One row per session, no snippets
-./claude-session-find -q foo | head -1         # UUID only (for `claude --resume`)
-./bd-view beads-utils-s4s                      # Pretty-print a single bead
-./claude-session-report <uuid>                 # Default discussion-only render
-./claude-session-report 'bd-view'              # Substring-match a session title
-./claude-session-report <uuid> --thinking --tools     # Add agent thinking + tool I/O
-./claude-session-report <uuid> --all > session.md     # Everything, to a file
-./claude-session-list                                  # Recent sessions for cwd's project
-./claude-session-list -g --oneline                     # Every project, one row each
-./claude-session-list -q | head -1                     # Newest UUID (for `claude --resume`)
-./claude-session-rename <uuid> 'Pager design'          # /rename without starting the session
-./claude-session-rename 'old title' 'new title'        # Resolve by title substring
-./bd-complete ids                                      # Completion feed: short ids + titles
-./bd-complete sessions                                 # Completion feed: session uuids + titles
 ```
-
-Shell completion has two layers of verification. `tests/test_completions.py`
-covers what can be read off the files — that both transcriptions match each
-script's `argparse`, and that value-taking options carry the zsh marker — by
-intercepting `parse_args` to get the real parser rather than parsing `--help`
-(the epilogs are full of example command lines, and every flag in one would
-otherwise register as defined). What it cannot cover is whether zsh and bash
-*behave*, so also tab-complete in a real shell after changing these files
-(`source completions/beads-utils.zsh` / `.bash`, then `bd-view <TAB>`). Worth
-trying both spellings and a comma: `bd-log --id=<TAB>` and
-`bd-log --only=create,<TAB>` are the two shapes that silently regressed
-before. Both files offer only the three canonical `--only` verbs; `start` and
-`close` still work but are not advertised, since five names for three things
-read as five choices.
 
 `bd-dolt-check` assumes the `dolt` CLI is installed for its richest output but
 degrades gracefully when it isn't. `bd-log` is in the same position for its
@@ -881,8 +210,13 @@ and `bd` on `PATH`.
   how it works. Group by category in the order `[breaking]`, `[feature]`,
   `[fix]`, `[refactor]`, `[cleanup]`; nest sub-bullets under a multi-part
   feature rather than spreading it across several top-level lines. Design
-  rationale belongs in this file, not in `CHANGELOG.md` — the one thing a
+  rationale belongs in `CLAUDE.md` or the matching `.claude/rules/` file, not
+  in `CHANGELOG.md` — the one thing a
   bullet must never drop is a `[breaking]` change's migration path.
+- **Color**: plain 30–37 hues only. Solarized repurposes the bright slots
+  (90–97) as greys, and `bold` reaches those slots on terminals that draw
+  bold in bright colors, so either can erase a hue. See
+  `.claude/rules/bdutils.md`.
 - **Errors**: use `bdutils.error(msg)` — exits non-zero with a lowercase `error: ...`
   line to stderr. Never raise tracebacks at the top level.
 - **Warnings**: use `bdutils.warn(msg)` — writes `warning: ...` to stderr without exit.

@@ -428,8 +428,8 @@ def test_parse_only_accepts_the_verbs_and_trims_whitespace():
 def test_parse_only_still_accepts_the_pre_grid_kind_names():
     """`--only=start,close` predates the entity axis and must keep working.
 
-    Those two spellings are in the epilog, in CLAUDE.md and in both completion
-    files, so they are an interface, not an implementation detail.
+    Those two spellings are in the epilog, in .claude/rules/ and in both
+    completion files, so they are an interface, not an implementation detail.
     """
     assert bd_log.parse_only("start") == {"change"}
     assert bd_log.parse_only("close") == {"end"}

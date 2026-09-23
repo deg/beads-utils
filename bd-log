@@ -42,7 +42,7 @@ ENTITIES = ("beads", "memories")
 VERBS = ("create", "change", "end")
 # bd-log shipped with --only=create,start,close, and those spellings stay valid
 # forever: they are the beads row's own verbs, and they are all over this
-# repo's epilogs, CLAUDE.md and both completion files.
+# repo's epilogs, design notes (.claude/rules/) and both completion files.
 VERB_ALIASES = {"start": "change", "close": "end"}
 ENTITY_ALIASES = {"bead": "beads", "memory": "memories"}
 

@@ -75,7 +75,7 @@ override PREFIX := $(patsubst %/,%,$(PREFIX))
 
 # Every executable script, found by shebang, so a new script is picked up with
 # no edit here. `-d skip` makes grep ignore subdirectories rather than exiting
-# 2 on them (which would silently abort the recipe); see the note in CLAUDE.md.
+# 2 on them (which would silently abort the recipe); see .claude/rules/makefile.md.
 #
 # HASH exists because make strips `#` and everything after it *before* parsing
 # a function call — an inline '^#!' would truncate the $(shell ...) mid-call.

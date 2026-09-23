@@ -43,8 +43,9 @@ the clone itself on `PATH`; the scripts run in place either way.
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
-Run any script with `--help` for full usage. Per-script details and
-conventions live in [`CLAUDE.md`](CLAUDE.md); see
+Run any script with `--help` for full usage. Conventions live in
+[`CLAUDE.md`](CLAUDE.md) and per-script design notes in
+[`.claude/rules/`](.claude/rules); see
 [`CONTRIBUTING.md`](CONTRIBUTING.md) to contribute.
 
 ## Why these tools?

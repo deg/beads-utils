@@ -97,7 +97,8 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
 - **Project path**: `bdutils.resolve_project_path(arg)` for the
   expanduser/resolve/`.beads/`-validation dance.
 
-If you add behavior or flags, update `README.md` and `CLAUDE.md` to match.
+If you add behavior or flags, update `README.md`, `CLAUDE.md` and the script's
+design notes under `.claude/rules/` to match.
 
 ## Releases
 

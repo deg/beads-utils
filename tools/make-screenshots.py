@@ -69,7 +69,7 @@ def _theme() -> TerminalTheme:
 # through a pipe, and at a real terminal both are the default.
 #
 # The commands run against this repo's own beads, so regenerating produces
-# a fresh diff every time — that is expected, see CLAUDE.md.
+# a fresh diff every time — that is expected, see .claude/rules/screenshots.md.
 SHOTS = [
     (
         "bd-log",
