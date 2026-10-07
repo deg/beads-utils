@@ -234,17 +234,8 @@ def live_session_pid(session_id: str) -> int | None:
     leftover from a crash, not a live session, and is ignored -- a dead
     process cannot re-emit a title, which is the only reason liveness matters.
     """
-    if not CLAUDE_SESSIONS.is_dir():
-        return None
-    for entry in CLAUDE_SESSIONS.glob("*.json"):
-        try:
-            obj = json.loads(entry.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(obj, dict) or obj.get("sessionId") != session_id:
-            continue
-        pid = obj.get("pid")
-        if not isinstance(pid, int) or pid <= 0:
+    for pid, obj in read_registry().items():
+        if obj.get("sessionId") != session_id:
             continue
         try:
             os.kill(pid, 0)
@@ -256,6 +247,40 @@ def live_session_pid(session_id: str) -> int | None:
             continue
         return pid
     return None
+
+
+def read_registry(sessions_dir: Path | None = None) -> dict[int, dict]:
+    """pid -> record for every file in the running-process registry.
+
+    Records are returned unvetted for liveness: a crash leaves its file
+    behind, so callers decide what "running" means (a signal-0 probe in
+    live_session_pid, presence in a `ps` snapshot in claude-traffic-monitor).
+    Unreadable files and records without a positive int pid are skipped.
+    """
+    sessions_dir = sessions_dir or CLAUDE_SESSIONS
+    out: dict[int, dict] = {}
+    if not sessions_dir.is_dir():
+        return out
+    for entry in sessions_dir.glob("*.json"):
+        try:
+            obj = json.loads(entry.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        pid = obj.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            out[pid] = obj
+    return out
+
+
+def transcripts_for(session_id: str, projects_dir: Path | None = None) -> list[Path]:
+    """Every `<session_id>.jsonl` under the project dirs (normally zero or one)."""
+    projects_dir = projects_dir or CLAUDE_PROJECTS
+    if not projects_dir.is_dir():
+        return []
+    return [c for c in (d / f"{session_id}.jsonl" for d in projects_dir.iterdir() if d.is_dir())
+            if c.is_file()]
 
 
 def resolve_session(arg: str) -> Path:
@@ -275,13 +300,7 @@ def resolve_session(arg: str) -> Path:
         sys.exit(f"error: no such directory: {CLAUDE_PROJECTS}")
 
     # 2. UUID — `<arg>.jsonl` under any project dir.
-    direct: list[Path] = []
-    for pdir in CLAUDE_PROJECTS.iterdir():
-        if not pdir.is_dir():
-            continue
-        candidate = pdir / f"{arg}.jsonl"
-        if candidate.is_file():
-            direct.append(candidate)
+    direct = transcripts_for(arg)
     if len(direct) == 1:
         return direct[0]
     if len(direct) > 1:

@@ -48,9 +48,27 @@ Below that come the busiest non-Claude processes.
   the developer's machine, `kernel_task` carries GB of SMB traffic to a NAS,
   which would otherwise top the list. A wildcard remote (`*`) is an
   unconnected socket and is dropped too, which also drops mDNS chatter.
+- **Tailscale's 100.64/10 (CGNAT) addresses are local.** A flow to a peer's
+  overlay address is tunnelled, so the same bytes leave the machine again as
+  Tailscale's own flow to the peer's real address (or a relay). That outer
+  flow is the metered one. Counting both would bill the bytes twice. The
+  cost is that they are billed to Tailscale, not to the app that sent them.
+  **Unverified:** that nettop shows the Tailscale network extension's outer
+  flow (it does show Norton's extension's flows). Tailscale was not connected
+  on 2026-10-07.
+- **Known gap: a full-tunnel VPN doubles the totals.** Apps' flows carry
+  public addresses, and so does the VPN client's encrypted flow that
+  carries them. Not handled yet.
+- **nettop cuts names at a byte count**, which can split a UTF-8 character
+  (seen in review). The stream is decoded with `errors="replace"`, and the
+  reader thread sends its end marker from `finally`, so a dead reader ends
+  the screen with an error instead of freezing it silently. Process lines
+  are split from the right, because a name may contain a comma.
 - **The interface line is the raw `netstat -ib` `<Link#>` counter** for the
   default-route interface. It is re-resolved every tick because the route
-  moves between Ethernet and Wi-Fi. It includes LAN traffic, so it matches
+  moves between Ethernet and Wi-Fi. Counters are read by their position
+  from the end of the row: a `utun` (VPN) row leaves Address blank, which
+  shifts every later field one place left. It includes LAN traffic, so it matches
   the per-flow sums only when the LAN is quiet.
 
 ## Attribution
@@ -59,15 +77,23 @@ Below that come the busiest non-Claude processes.
   the same registry as `claudeutils.live_session_pid`.
   - A registry file whose pid is absent from `ps` is treated as a crash
     leftover.
-  - `/clear` changes the `sessionId` for the same pid. The row is keyed by
-    pid, so the row stays and the transcript watcher switches to the new
-    transcript.
+  - **Assumed, not yet verified:** `/clear` changes the registry's
+    `sessionId` for the same pid. The row is keyed by pid, so if that holds,
+    the row stays and the transcript watcher switches to the new transcript.
+    If it does not hold, CTX and IMAGES go stale right after a `/clear`,
+    which is the very step the tool exists to prompt. To check, diff a
+    session's `~/.claude/sessions/<pid>.json` from before and after `/clear`.
   - A nettop process named like a version (`2.1.300`) that is not in the
     registry still gets a row, labelled `(unregistered claude)`.
 - Each session's whole process tree counts toward it: MCP servers, Bash-tool
   commands and hooks. One `ps -A -o pid=,ppid=,comm=` per tick is walked
-  upward from each pid. The owner found is **sticky**: every pid in the
-  table is resolved each tick, so a child that later exits keeps its session.
+  upward from each pid, stopping only at a session that is still alive.
+  The owner is **sticky only once a pid has exited**: every pid in the table
+  is resolved each tick, so a child that later exits keeps its session. A
+  pid that `ps` still shows is always walked again, because macOS recycles
+  pids. The first version trusted its cache forever, and an unrelated
+  process that inherited a dead child's pid (or a dead session's) was
+  billed to that session.
   A process born and gone between two `ps` snapshots goes unattributed and
   lands under the other processes.
 - A session whose pid disappears stays on screen, dimmed, as `(ended)`, so

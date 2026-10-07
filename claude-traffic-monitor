@@ -41,6 +41,13 @@ API_HOST = "api.anthropic.com"
 # Observed 2026-10-07; used when DNS is unavailable at startup.
 API_FALLBACK_IPS = {"160.79.104.10", "2607:6bc0::10"}
 API_REFRESH_SECONDS = 300
+# Carrier-grade NAT space, which Tailscale uses for its overlay addresses.
+# Python counts it as neither private nor global. A flow to a Tailscale peer
+# is tunnelled: the bytes leave the machine a second time as Tailscale's own
+# flow to the peer's real address (or a relay), and that flow is the one
+# metered. Counting the inner one too would bill the same bytes twice.
+CGNAT = ipaddress.ip_network("100.64.0.0/10")
+UNREGISTERED = "(unregistered claude)"
 
 
 # --- nettop parsing ---------------------------------------------------------
@@ -100,8 +107,9 @@ class NettopParser:
             return done
         if self._current is None or not line:
             return None
-        parts = line.split(",")
-        if len(parts) < 3:
+        # Split from the right: a process name may itself contain a comma.
+        parts = line.rsplit(",", 3)
+        if len(parts) != 4:
             return None
         label, b_in, b_out = parts[0], _int(parts[1]), _int(parts[2])
         if label[:3] in ("tcp", "udp") and " " in label:
@@ -133,7 +141,7 @@ def remote_kind(addr: str) -> str:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     if (ip.is_loopback or ip.is_private or ip.is_link_local
-            or ip.is_multicast or ip.is_unspecified):
+            or ip.is_multicast or ip.is_unspecified or ip in CGNAT):
         return "local"
     return "internet"
 
@@ -205,26 +213,6 @@ def process_table() -> dict[int, tuple[int, str]]:
         comm = parts[2] if len(parts) > 2 else ""
         table[int(parts[0])] = (int(parts[1]), comm.rsplit("/", 1)[-1])
     return table
-
-
-def read_registry(sessions_dir: Path) -> dict[int, dict]:
-    """pid -> registry record, from ~/.claude/sessions/<pid>.json."""
-    out = {}
-    if not sessions_dir.is_dir():
-        return out
-    for entry in sessions_dir.glob("*.json"):
-        try:
-            obj = json.loads(entry.read_text(encoding="utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(obj, dict) and isinstance(obj.get("pid"), int):
-            out[obj["pid"]] = obj
-    return out
-
-
-def find_transcript(session_id: str, projects: Path) -> Path | None:
-    hits = list(projects.glob(f"*/{session_id}.jsonl")) if projects.is_dir() else []
-    return hits[0] if hits else None
 
 
 def _image_bytes(content) -> list[int]:
@@ -381,7 +369,7 @@ class Monitor:
             self._owner_of(pid, ps)
         for proc in block:
             if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
-                self.sessions[proc.pid] = Session(proc.pid, label="(unregistered claude)")
+                self.sessions[proc.pid] = Session(proc.pid, label=UNREGISTERED)
         for d in self.tracker.update(block):
             if remote_kind(d.remote) != "internet":
                 continue
@@ -420,7 +408,7 @@ class Monitor:
             if ps and pid not in ps:
                 continue  # stale file left by a crash
             s = self.sessions.setdefault(pid, Session(pid))
-            if s.label == "(unregistered claude)":
+            if s.label == UNREGISTERED:
                 s.label = ""
             s.alive = True
             name = rec.get("name")
@@ -431,32 +419,37 @@ class Monitor:
                 s.project = Path(cwd).name or cwd
             sid = rec.get("sessionId")
             if isinstance(sid, str) and sid != s.session_id:
-                s.session_id = sid  # changes on /clear: follow the new transcript
-                path = find_transcript(sid, self.projects_dir)
-                s.watcher = TranscriptWatcher(path) if path else None
-            elif s.watcher is None and s.session_id:
-                path = find_transcript(s.session_id, self.projects_dir)
-                s.watcher = TranscriptWatcher(path) if path else None
+                s.session_id, s.watcher = sid, None  # /clear: follow the new transcript
+            if s.watcher is None and s.session_id:
+                # Retried every tick: a new session's transcript appears late.
+                paths = claudeutils.transcripts_for(s.session_id, self.projects_dir)
+                s.watcher = TranscriptWatcher(paths[0]) if paths else None
         for pid, s in self.sessions.items():
             if ps and pid not in ps:
                 s.alive = False
 
     def _owner_of(self, pid: int, ps: dict) -> int | None:
-        """The session pid whose process tree `pid` belongs to, if any.
+        """The live session pid whose process tree `pid` belongs to, if any.
 
-        Sticky: a child that exits before `ps` sees it keeps the owner it was
-        given while alive. One nettop block can still name a pid that was
-        born and died between two `ps` snapshots; that one goes unattributed.
+        Sticky: a child that has exited keeps the owner it was given while
+        alive, since nettop may still report its last bytes. A pid that `ps`
+        can see is always re-walked instead, because macOS recycles pids: a
+        cached answer would credit an unrelated process that inherited a dead
+        child's pid (or a dead session's) to that session. One nettop block
+        can still name a pid born and gone between two `ps` snapshots; that
+        one goes unattributed.
         """
-        if pid in self.owner:
-            return self.owner[pid]
+        if pid not in ps:
+            return self.owner.get(pid)
         p, hops = pid, 0
         while p and hops < 64:
-            if p in self.sessions:
+            s = self.sessions.get(p)
+            if s is not None and s.alive:
                 self.owner[pid] = p
                 return p
             p = ps.get(p, (0, ""))[0]
             hops += 1
+        self.owner.pop(pid, None)
         return None
 
 
@@ -487,11 +480,16 @@ def interface_bytes(iface: str) -> tuple[int, int] | None:
     if not lines:
         return None
     cols = lines[0].split()
+    if "Ibytes" not in cols or "Obytes" not in cols:
+        return None
+    # Index from the end of the row: a utun (VPN) row leaves the Address
+    # column blank, which shifts every field after it left by one.
+    i_in, i_out = cols.index("Ibytes") - len(cols), cols.index("Obytes") - len(cols)
     for line in lines[1:]:
         parts = line.split()
-        if len(parts) == len(cols) and parts[2].startswith("<Link#"):
+        if len(parts) >= 3 and parts[2].startswith("<Link#"):
             try:
-                return int(parts[cols.index("Ibytes")]), int(parts[cols.index("Obytes")])
+                return int(parts[i_in]), int(parts[i_out])
             except (ValueError, IndexError):
                 return None
     return None
@@ -612,12 +610,20 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tu
 
 
 def reader(proc: subprocess.Popen, out: queue.Queue) -> None:
+    """Feed nettop's stream to the parser, queueing each completed block.
+
+    The end marker is sent from `finally`: if this thread dies on its own,
+    the main loop must hear about it. Otherwise the screen freezes on stale
+    numbers with no error.
+    """
     parser = NettopParser()
-    for line in proc.stdout:
-        block = parser.feed(line)
-        if block is not None:
-            out.put((time.time(), block))
-    out.put(None)  # nettop exited
+    try:
+        for line in proc.stdout:
+            block = parser.feed(line)
+            if block is not None:
+                out.put((time.time(), block))
+    finally:
+        out.put(None)
 
 
 def run(stdscr, interval: int, top: int) -> str | None:
@@ -626,7 +632,9 @@ def run(stdscr, interval: int, top: int) -> str | None:
     styles = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "dim": curses.A_DIM}
     nettop = subprocess.Popen(
         ["nettop", "-L", "0", "-s", str(interval), "-x", "-n", "-J", "bytes_in,bytes_out"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        # nettop truncates names at a byte count, which can split a UTF-8
+        # character; a strict decode would kill the reader thread.
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
     blocks: queue.Queue = queue.Queue()
     threading.Thread(target=reader, args=(nettop, blocks), daemon=True).start()
     mon = Monitor(api_ips=resolve_api_ips() | API_FALLBACK_IPS)
@@ -646,9 +654,9 @@ def run(stdscr, interval: int, top: int) -> str | None:
                 except queue.Empty:
                     break
                 if item is None:
-                    return "nettop exited unexpectedly"
+                    return "lost the nettop stream (nettop exited or its output was unreadable)"
                 stamp, block = item
-                mon.ingest(block, process_table(), read_registry(mon.sessions_dir), stamp)
+                mon.ingest(block, process_table(), claudeutils.read_registry(mon.sessions_dir), stamp)
                 meter.poll()
                 dirty = True
             if time.time() - api_checked > API_REFRESH_SECONDS:
@@ -691,6 +699,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.interval < 1:
         error("--interval must be at least 1 second")
+    if args.top < 0:
+        error("--top must not be negative")
     if not sys.stdout.isatty():
         error("needs a terminal (it redraws the screen like top)")
     if shutil.which("nettop") is None:
@@ -700,6 +710,8 @@ def main(argv: list[str] | None = None) -> None:
         problem = curses.wrapper(run, args.interval, args.top)
     except KeyboardInterrupt:
         problem = None
+    except Exception as exc:  # repo convention: no top-level tracebacks
+        problem = f"internal error: {type(exc).__name__}: {exc}"
     if problem:
         error(problem)
 

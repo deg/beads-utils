@@ -70,6 +70,39 @@ def test_parser_emits_a_block_only_when_the_next_header_arrives():
     assert [p.pid for p in done] == [1]
 
 
+def test_a_comma_in_a_process_name_does_not_misattach_its_flows():
+    """Splitting from the left cut 'Foo, Inc.42' at its comma, failed the pid
+    check, and dropped the process line, so its flows were appended to the
+    *previous* process, which could be a Claude session."""
+    (block,) = blocks(f"""{HEADER}
+2.1.292.100,0,0,
+tcp4 a:1<->160.79.104.10:443,1,1,
+Foo, Inc.42,0,0,
+tcp4 a:2<->8.8.8.8:443,5,5,
+""")
+    assert [(p.name, p.pid, len(p.flows)) for p in block] == [
+        ("2.1.292", 100, 1), ("Foo, Inc", 42, 1)]
+
+
+def test_reader_signals_the_end_even_when_the_stream_breaks():
+    """A strict UTF-8 decode error once killed the reader thread without
+    sending the end marker, so the screen froze on stale numbers silently."""
+    import queue
+
+    class Broken:
+        def __iter__(self):
+            yield HEADER + "\n"
+            raise UnicodeDecodeError("utf-8", b"\xc3", 0, 1, "truncated name")
+
+    class Proc:
+        stdout = Broken()
+
+    out = queue.Queue()
+    with pytest.raises(UnicodeDecodeError):
+        ctm.reader(Proc(), out)
+    assert out.get_nowait() is None
+
+
 @pytest.mark.parametrize("addr,kind", [
     ("160.79.104.10", "internet"),
     ("2607:6bc0::10", "internet"),
@@ -79,6 +112,8 @@ def test_parser_emits_a_block_only_when_the_next_header_arrives():
     ("224.0.0.251", "local"),
     ("fe80::1", "local"),
     ("::ffff:10.0.0.1", "local"),
+    ("100.101.102.103", "local"),  # Tailscale: metered as its outer flow
+    ("100.128.0.1", "internet"),
     ("*", "unknown"),
     ("some.host.name", "internet"),
 ])
@@ -192,6 +227,30 @@ def test_a_child_that_exits_stays_attributed(mon):
     assert mon.other_total.total == 0
 
 
+def test_a_recycled_child_pid_is_not_credited_to_the_session(mon):
+    """macOS recycles pids. The owner cache once trusted a pid forever, so an
+    unrelated process inheriting a dead MCP child's pid billed its traffic to
+    the Claude session -- inflating exactly the number the tool exists for."""
+    feed(mon, sample(("node", CHILD, "34.1.1.1", 0, 0)))
+    gone = {k: v for k, v in PS.items() if k != CHILD}
+    mon.ingest(sample(), gone, REG, now=1001.0)
+    reborn = {**gone, CHILD: (1, "Dropbox")}
+    mon.ingest(sample(("Dropbox", CHILD, "8.8.8.8", 0, 90)), reborn, REG, now=1002.0)
+    assert mon.sessions[CLAUDE].traffic.total == 0
+    assert mon.others["Dropbox"].total_out == 90
+
+
+def test_a_recycled_session_pid_is_not_credited_to_the_ended_session(mon):
+    """An ended session stays on screen, so its pid stays in `sessions`; a
+    process later given that pid must not be walked into the dead row."""
+    feed(mon, sample(("2.1.292", CLAUDE, "160.79.104.10", 0, 0)))
+    mon.ingest(sample(), {OTHER: PS[OTHER]}, {}, now=1001.0)
+    reborn = {OTHER: PS[OTHER], CLAUDE: (1, "curl")}
+    mon.ingest(sample(("curl", CLAUDE, "8.8.8.8", 0, 30)), reborn, {}, now=1002.0)
+    assert mon.sessions[CLAUDE].traffic.total == 0
+    assert mon.others["curl"].total_out == 30
+
+
 def test_a_session_whose_process_exits_is_kept_as_ended(mon):
     feed(mon, sample(("2.1.292", CLAUDE, "160.79.104.10", 0, 0)))
     mon.ingest(sample(), {OTHER: PS[OTHER]}, REG, now=1001.0)
@@ -200,7 +259,8 @@ def test_a_session_whose_process_exits_is_kept_as_ended(mon):
 
 def test_an_unregistered_claude_process_still_gets_a_row(mon):
     feed(mon, sample(("2.1.300", 555, "160.79.104.10", 0, 0)),
-         sample(("2.1.300", 555, "160.79.104.10", 0, 40)), reg={})
+         sample(("2.1.300", 555, "160.79.104.10", 0, 40)),
+         ps={**PS, 555: (1, "claude")}, reg={})
     assert mon.sessions[555].label == "(unregistered claude)"
     assert mon.sessions[555].traffic.total_out == 40
 
@@ -296,6 +356,28 @@ def test_render_shows_sessions_children_and_others(mon):
     session_row = next(t for t, _ in ctm.render(mon, ctm.InterfaceMeter(), 1010.0, 5)
                        if t.startswith("my session"))
     assert "4.0 KB" in session_row and " 75 " in session_row  # API share 3000/4000
+
+
+NETSTAT_HEADER = ("Name       Mtu   Network       Address            Ipkts Ierrs     "
+                  "Ibytes    Opkts Oerrs     Obytes  Coll")
+
+
+@pytest.mark.parametrize("row", [
+    "en0        1500  <Link#15>   72:ba:53:fb:ce:6c   362578     0  142735868    80949     0    8438812     0",
+    # A VPN row has no Address; matching the header's field count rejected it.
+    "utun0      1500  <Link#19>                       362578     0  142735868    80949     0    8438812     0",
+])
+def test_interface_bytes_reads_ethernet_and_vpn_rows(monkeypatch, row):
+    out = f"{NETSTAT_HEADER}\n{row}\n"
+    monkeypatch.setattr(ctm.subprocess, "run",
+                        lambda *a, **k: ctm.subprocess.CompletedProcess(a, 0, out, ""))
+    assert ctm.interface_bytes("x") == (142735868, 8438812)
+
+
+def test_negative_top_is_refused():
+    with pytest.raises(SystemExit) as excinfo:
+        ctm.main(["--top", "-1"])
+    assert "--top" in str(excinfo.value.code)
 
 
 def test_interval_below_one_is_refused():
