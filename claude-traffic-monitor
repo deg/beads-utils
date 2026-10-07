@@ -751,7 +751,7 @@ def header_rows(first: str) -> list[tuple[str, str]]:
 
 
 SORTS = ("total", "rate", "name")
-KEY_HELP = ("keys:  s sort (total / 1m rate / name)   c child processes   "
+KEY_HELP = (" keys:  s sort (total / 1m rate / name)   c child processes   "
             "o other processes   r reset totals   p pause   ? hide keys   q quit")
 
 
@@ -806,15 +806,8 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
     span = mon.span(now)
     lines: list[tuple[str, str]] = []
     add = lines.append
-    state = [f"sort: {view.sort}"]
-    if not view.children:
-        state.append("children hidden")
-    if view.paused:
-        state.append("PAUSED")
     add((f"claude-traffic-monitor   counting {hms(now - mon.counting_since)}   "
-         f"internet only (LAN and loopback excluded)   {'   '.join(state)}   ? keys", "bold"))
-    if view.help:
-        add((KEY_HELP, "dim"))
+         "internet only (LAN and loopback excluded)", "bold"))
     if meter.iface and meter.since:
         add((f"interface {meter.iface} (raw, includes LAN):  "
              f"up {human(meter.since[1])}   down {human(meter.since[0])}", ""))
@@ -844,15 +837,35 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
         add((f"upload per context token: {ratio:.2f} B measured over {n} requests "
              f"(NEXT assumes {BYTES_PER_TOKEN:.2f})", "dim"))
     add(("", ""))
+    if not view.others:
+        # Collapsed to one row under the session columns, which it lines up with.
+        add((traffic_row("Other processes", f"{len(mon.others)} hidden",
+                         mon.other_total, now, span), "bold"))
+        return lines
     lines.extend(header_rows("OTHER PROCESSES (internet)"))
     hot = sorted(mon.others.items(), key=lambda kv: _sort_key(view, kv[0], kv[1], now, span))
-    shown = hot[:top] if view.others else []
-    for name, c in shown:
+    for name, c in hot[:top]:
         add((traffic_row(name, "", c, now, span), ""))
-    if len(hot) > len(shown):
-        add((f"  … and {len(hot) - len(shown)} more", "dim"))
+    if len(hot) > top:
+        add((f"  … and {len(hot) - top} more", "dim"))
     add((traffic_row("Everything else total", "", mon.other_total, now, span), "bold"))
     return lines
+
+
+def status_lines(view: View) -> list[tuple[str, str]]:
+    """The bottom of the screen: the key list when asked for, then the state."""
+    # Each value is padded to its longest form, so toggling one does not
+    # shift everything after it along the bar.
+    sort_w = max(map(len, SORTS))
+    state = [f"sort: {view.sort:<{sort_w}}",
+             f"children: {'shown' if view.children else 'hidden':<6}",
+             f"others: {'shown' if view.others else 'hidden':<6}"]
+    state.append("? hides keys" if view.help else "? keys")
+    state.append("q quit")
+    if view.paused:
+        state.append("PAUSED (p resumes)")  # last, so nothing before it moves
+    status = (" " + "   ".join(state), "status")
+    return [(KEY_HELP, "dim"), status] if view.help else [status]
 
 
 # --- the live screen --------------------------------------------------------
@@ -877,8 +890,15 @@ def reader(proc: subprocess.Popen, out: queue.Queue) -> None:
 
 def run(stdscr, interval: int, top: int) -> str | None:
     curses.curs_set(0)
+    try:
+        # curses.wrapper starts color, which paints every cell white on black;
+        # this keeps the terminal's own theme (Solarized Light included).
+        curses.use_default_colors()
+    except curses.error:
+        pass
     stdscr.timeout(200)
-    styles = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "dim": curses.A_DIM}
+    styles = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "dim": curses.A_DIM,
+              "status": curses.A_REVERSE}
     nettop = subprocess.Popen(
         ["nettop", "-L", "0", "-s", str(interval), "-x", "-n", "-J", "bytes_in,bytes_out"],
         # nettop truncates names at a byte count, which can split a UTF-8
@@ -920,19 +940,30 @@ def run(stdscr, interval: int, top: int) -> str | None:
                 mon.api_ips |= resolve_api_ips()
                 api_checked = time.time()
             if dirty:
-                draw(stdscr, render(mon, meter, time.time(), top, view), styles)
+                draw(stdscr, render(mon, meter, time.time(), top, view),
+                     status_lines(view), styles)
                 dirty = False
     finally:
         nettop.kill()
         nettop.wait()
 
 
-def draw(stdscr, lines: list[tuple[str, str]], styles: dict) -> None:
+def draw(stdscr, lines: list[tuple[str, str]], footer: list[tuple[str, str]],
+         styles: dict) -> None:
+    """Paint `lines` from the top and pin `footer` to the bottom rows."""
     stdscr.erase()
     height, width = stdscr.getmaxyx()
-    for y, (text, style) in enumerate(lines[: height]):
+    body = max(height - len(footer), 0)
+    placed = list(enumerate(lines[:body])) + [
+        (height - len(footer) + i, item) for i, item in enumerate(footer)]
+    for y, (text, style) in placed:
+        if y < 0:
+            continue
+        attr = styles.get(style, curses.A_NORMAL)
+        if style == "status":
+            text = text.ljust(width - 1)  # a full-width bar, as in top
         try:
-            stdscr.addnstr(y, 0, text, width - 1, styles.get(style, curses.A_NORMAL))
+            stdscr.addnstr(y, 0, text, width - 1, attr)
         except curses.error:
             pass  # writing the bottom-right cell raises; harmless
     stdscr.refresh()

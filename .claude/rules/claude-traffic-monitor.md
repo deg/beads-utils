@@ -189,8 +189,19 @@ David approved:
   do. The view only changes what is drawn, never what is counted.
 - **Rate sort uses the 1-minute average.** The 5 s figure would reshuffle
   the rows every second. Live sessions always stay above ended ones.
-- **Hiding children (`c`) keeps their bytes in the session's row.** Hiding
-  others (`o`) keeps their total line and an "… and N more" count.
+- **A status bar is pinned to the bottom row** in reverse video, as in `top`.
+  It shows the sort mode, whether children and others are hidden, PAUSED,
+  and the `? keys` / `q quit` hints. `?` adds the key list above it. David
+  asked for this; the state first lived in the title line, where it was easy
+  to miss.
+- **Hiding children (`c`) keeps their bytes in the session's row.**
+- **Hiding others (`o`) collapses the whole section into one row**:
+  `Other processes`, `N hidden`, and their totals, aligned with the session
+  columns above it. The first version kept the section header and an
+  "… and N more" line, which David found read as leftover text.
+- **`curses.use_default_colors()`** keeps the terminal's own theme. Without
+  it, `curses.wrapper` painted every cell white on black, which a pty check
+  showed as `ESC[37m ESC[40m` on every write.
 - **`r` zeroes everything**: totals, rolling rates, the bytes-per-token
   measurement and the interface baseline. It also restarts the title's
   counting clock.

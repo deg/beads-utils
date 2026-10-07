@@ -533,18 +533,48 @@ def test_hiding_children_keeps_their_bytes_in_the_session_row(mon):
     assert "4.0 KB" in session  # 3000 own + 1000 from the hidden child
 
 
-def test_hiding_others_keeps_their_total_and_says_how_many(mon):
+def test_hiding_others_collapses_them_to_one_aligned_row(mon):
+    """The first version kept the section header and an "… and N more" line,
+    which read as leftover text in a mode meant to remove the section."""
     busy(mon)
     rows = screen(mon, ctm.View(others=False))
-    assert not any(t.startswith(("Dropbox", "Zoom")) for t in rows)
-    assert any("and 2 more" in t for t in rows)
-    assert any(t.startswith("Everything else total") for t in rows)
+    assert not any(t.startswith(("Dropbox", "Zoom", "OTHER PROCESSES", "Everything else"))
+                   for t in rows)
+    assert not any("more" in t for t in rows)
+    (row,) = [t for t in rows if t.startswith("Other processes")]
+    assert "2 hidden" in row and "5.1 KB" in row  # 5000 + 100 bytes up
+    claude = next(t for t in rows if t.startswith("Claude total"))
+    assert row.index("5.1 KB") + len("5.1 KB") == claude.index("4.0 KB") + len("4.0 KB")
 
 
-def test_title_shows_pause_and_help_shows_the_keys(mon):
-    rows = screen(mon, ctm.View(paused=True, help=True))
-    assert "PAUSED" in rows[0]
-    assert rows[1] == ctm.KEY_HELP
+def test_status_line_shows_the_state_and_how_to_get_help():
+    (status,) = ctm.status_lines(ctm.View(sort="rate", children=False, paused=True))
+    text, style = status
+    assert style == "status"
+    for part in ("sort: rate", "children: hidden", "others: shown", "PAUSED", "? keys", "q quit"):
+        assert part in text
+
+
+def test_status_line_does_not_shift_when_a_mode_changes():
+    """'total' is longer than 'rate', and 'hidden' than 'shown': unpadded,
+    each keypress slid the rest of the bar by a character."""
+    def hint_column(view):
+        (text, _), = ctm.status_lines(view)
+        return text.index("? keys")
+    base = hint_column(ctm.View())
+    for view in (ctm.View(sort="rate"), ctm.View(sort="name"),
+                 ctm.View(children=False), ctm.View(others=False), ctm.View(paused=True)):
+        assert hint_column(view) == base
+
+
+def test_help_adds_the_key_list_above_the_status_line():
+    help_line, status = ctm.status_lines(ctm.View(help=True))
+    assert help_line == (ctm.KEY_HELP, "dim")
+    assert "? hides keys" in status[0]
+
+
+def test_the_title_no_longer_carries_state(mon):
+    assert "sort:" not in screen(mon, ctm.View(paused=True))[0]
 
 
 def test_reset_zeroes_counts_and_drops_ended_sessions(mon):
