@@ -13,6 +13,7 @@ Design notes: .claude/rules/claude-traffic-monitor.md.
 from __future__ import annotations
 
 import argparse
+import collections
 import curses
 import ipaddress
 import json
@@ -26,6 +27,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import claudeutils
@@ -48,6 +50,22 @@ API_REFRESH_SECONDS = 300
 # metered. Counting the inner one too would bill the same bytes twice.
 CGNAT = ipaddress.ip_network("100.64.0.0/10")
 UNREGISTERED = "(unregistered claude)"
+
+# Rolling-rate tiers, in seconds. Conversational traffic is bursty: one
+# request uploads its whole context in a second or two and then the link is
+# idle. Averages alone dilute that, so the peak tick of the last minute is
+# shown beside them.
+RATE_WINDOWS = (5, 60, 900)
+PEAK_WINDOW = 60
+
+# Upload cost of a request, for the NEXT column. Claude Code gzips request
+# bodies. The ~0.7 bytes per context token comes from home-dir session
+# f2206181 ("Brainstorm Claude traffic monitor"), which read one-shot nettop
+# per-process totals. Those count only sockets open at that moment, so 0.7 is
+# probably low. Images are already compressed; gzip saves only ~25% of their
+# base64. The footer shows the ratio measured live, to correct these.
+BYTES_PER_TOKEN = 0.7
+IMAGE_GZIP_RATIO = 0.75
 
 
 # --- nettop parsing ---------------------------------------------------------
@@ -235,17 +253,33 @@ class TranscriptWatcher:
     Tracks what the next request will re-send: the context size from the
     latest main-thread `usage`, and the images since the last
     `compact_boundary` (an image rides along on every request until then).
+
+    Also totals the requests made at or after `since` -- the context tokens
+    and image bytes they carried -- so the monitor can measure real upload
+    bytes per token against BYTES_PER_TOKEN. One response can span several
+    entries that repeat its `usage`, so requests are deduplicated by message id.
     """
 
     INTERESTING = ('"image"', '"usage"', "compact_boundary", '"custom-title"', '"ai-title"')
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, since: float = 0.0):
         self.path = path
+        self.since = since
         self.offset = 0
         self.context_tokens: int | None = None
         self.images: list[int] = []
         self.title: str | None = None
+        self.requests = 0
+        self.sent_tokens = 0
+        self.sent_image_bytes = 0
         self._custom = False
+        self._last_msg_id: str | None = None
+
+    def next_request_bytes(self) -> float | None:
+        """Estimated upload of the next request: context plus images."""
+        if self.context_tokens is None:
+            return None
+        return self.context_tokens * BYTES_PER_TOKEN + sum(self.images) * IMAGE_GZIP_RATIO
 
     def poll(self) -> None:
         try:
@@ -293,6 +327,22 @@ class TranscriptWatcher:
             self.context_tokens = sum(
                 u.get(k) or 0 for k in
                 ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+            msg_id = msg.get("id")
+            if msg_id != self._last_msg_id and _epoch(obj.get("timestamp")) >= self.since:
+                self.requests += 1
+                self.sent_tokens += self.context_tokens
+                self.sent_image_bytes += sum(self.images)
+            self._last_msg_id = msg_id
+
+
+def _epoch(ts) -> float:
+    """An ISO-8601 transcript timestamp as epoch seconds; 0 if absent or bad."""
+    if not isinstance(ts, str):
+        return 0.0
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 # --- accounting -------------------------------------------------------------
@@ -300,12 +350,16 @@ class TranscriptWatcher:
 
 @dataclass
 class Counter:
+    """Totals since start, plus the recent ticks that rolling rates need.
+
+    Only ticks that moved bytes are kept, and only for the longest window,
+    so an idle counter holds nothing.
+    """
     total_in: int = 0
     total_out: int = 0
-    rate_in: float = 0.0
-    rate_out: float = 0.0
     _tick_in: int = 0
     _tick_out: int = 0
+    _ticks: collections.deque = field(default_factory=collections.deque)
 
     def add(self, d_in: int, d_out: int) -> None:
         self.total_in += d_in
@@ -313,10 +367,29 @@ class Counter:
         self._tick_in += d_in
         self._tick_out += d_out
 
-    def close_tick(self, seconds: float) -> None:
-        seconds = max(seconds, 1e-6)
-        self.rate_in, self.rate_out = self._tick_in / seconds, self._tick_out / seconds
-        self._tick_in = self._tick_out = 0
+    def close_tick(self, now: float, seconds: float) -> None:
+        if self._tick_in or self._tick_out:
+            self._ticks.append((now, max(seconds, 1e-6), self._tick_in, self._tick_out))
+            self._tick_in = self._tick_out = 0
+        while self._ticks and self._ticks[0][0] <= now - max(RATE_WINDOWS + (PEAK_WINDOW,)):
+            self._ticks.popleft()
+
+    def rate(self, window: float, now: float, span: float) -> tuple[float, float]:
+        """(in, out) bytes/s over the last `window` seconds.
+
+        `span` is how long the monitor has been counting. Early on, dividing
+        by the whole window would understate the rate, so the divisor is
+        whichever is shorter.
+        """
+        seconds = max(min(window, span), 1e-6)
+        recent = [t for t in self._ticks if t[0] > now - window]
+        return sum(t[2] for t in recent) / seconds, sum(t[3] for t in recent) / seconds
+
+    def peak(self, now: float) -> tuple[float, float]:
+        """(in, out) of the busiest single tick in the last PEAK_WINDOW seconds."""
+        recent = [t for t in self._ticks if t[0] > now - PEAK_WINDOW]
+        return (max((t[2] / t[1] for t in recent), default=0.0),
+                max((t[3] / t[1] for t in recent), default=0.0))
 
     @property
     def total(self) -> int:
@@ -332,6 +405,7 @@ class Session:
     alive: bool = True
     traffic: Counter = field(default_factory=Counter)
     api_bytes: int = 0
+    api_out: int = 0
     children: dict[str, Counter] = field(default_factory=dict)
     watcher: TranscriptWatcher | None = None
 
@@ -359,6 +433,7 @@ class Monitor:
         self.claude_total = Counter()
         self.owner: dict[int, int] = {}   # sticky pid -> session pid
         self.started = time.time()
+        self.first_block: float | None = None
         self.last_block: float | None = None
 
     # The process table and registry are passed in so tests drive them.
@@ -385,15 +460,43 @@ class Monitor:
             self.claude_total.add(d.d_in, d.d_out)
             if d.remote in self.api_ips:
                 s.api_bytes += d.d_in + d.d_out
+                s.api_out += d.d_out
             if d.pid != owner:
                 s.children.setdefault(name, Counter()).add(d.d_in, d.d_out)
+        if self.first_block is None:
+            self.first_block = now  # the baseline: counting starts here
         elapsed = now - self.last_block if self.last_block else 1.0
         self.last_block = now
         for c in self._counters():
-            c.close_tick(elapsed)
+            c.close_tick(now, elapsed)
         for s in self.sessions.values():
             if s.watcher:
                 s.watcher.poll()
+
+    def span(self, now: float) -> float:
+        """Seconds of traffic counted so far (since the baseline block)."""
+        return now - self.first_block if self.first_block else 0.0
+
+    def measured_bytes_per_token(self) -> tuple[float, int] | None:
+        """(upload bytes per context token, requests seen) since start.
+
+        API upload over the context tokens of the requests the transcripts
+        recorded, counting only sessions that carried no images. Subtracting
+        an *estimated* image share was tried first: when images are 90% of
+        the bytes, a small error in that estimate swamps the token signal (a
+        live run read 5.01 where the transcripts implied about 1.2). Only
+        sessions with a transcript count, for bytes as well as tokens; an
+        unregistered `claude -p` would otherwise inflate the ratio. Requests
+        absent from a main transcript (subagents, title generation,
+        compaction) still upload, so this reads somewhat high.
+        """
+        clean = [s for s in self.sessions.values()
+                 if s.watcher and s.watcher.sent_tokens and not s.watcher.sent_image_bytes]
+        tokens_sent = sum(s.watcher.sent_tokens for s in clean)
+        if not tokens_sent:
+            return None
+        uploaded = sum(s.api_out for s in clean)
+        return uploaded / tokens_sent, sum(s.watcher.requests for s in clean)
 
     def _counters(self):
         yield self.other_total
@@ -423,7 +526,7 @@ class Monitor:
             if s.watcher is None and s.session_id:
                 # Retried every tick: a new session's transcript appears late.
                 paths = claudeutils.transcripts_for(s.session_id, self.projects_dir)
-                s.watcher = TranscriptWatcher(paths[0]) if paths else None
+                s.watcher = TranscriptWatcher(paths[0], self.started) if paths else None
         for pid, s in self.sessions.items():
             if ps and pid not in ps:
                 s.alive = False
@@ -556,17 +659,64 @@ def fit(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-ROW_FMT = "{:<28} {:<12} {:>6} {:>10} {:>10} {:>9} {:>9} {:>4} {:>6} {:>10}"
-OTHER_FMT = "{:<48} {:>10} {:>10} {:>9} {:>9}"
+def short(n: float) -> str:
+    """A byte count in at most 5 characters, for the dense rate columns."""
+    if n < 0.5:
+        return "0"
+    for unit in ("", "K", "M", "G"):
+        if n < 1000 or unit == "G":
+            return f"{n:.0f}{unit}" if n >= 10 or not unit else f"{n:.1f}{unit}"
+        n /= 1000
+    return f"{n:.0f}G"
 
 
-def _rates(c: Counter) -> tuple[str, str, str, str]:
-    return (f"{human(c.rate_out)}/s", f"{human(c.rate_in)}/s",
-            human(c.total_out), human(c.total_in))
+# Every traffic row -- sessions, children, other processes, totals -- shares
+# one layout, so the rate and total columns line up down the whole screen.
+NAME_W, PROJ_W, RATE_W = 26, 12, 5
+TIERS = len(RATE_WINDOWS) + 1  # the averages plus the peak
+TOTAL_FMT = "{:>8} {:>8}"
+EXTRA_FMT = "{:>4} {:>5} {:>10} {:>6}"
+
+
+def _tier_label(seconds: int) -> str:
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m"
+
+
+def _rate_cells(c: Counter, now: float, span: float, direction: int) -> str:
+    """The TIERS rate cells for one direction (0 = in, 1 = out)."""
+    vals = [c.rate(w, now, span)[direction] for w in RATE_WINDOWS]
+    vals.append(c.peak(now)[direction])
+    return " ".join(f"{short(v):>{RATE_W}}" for v in vals)
+
+
+def traffic_row(name: str, project: str, c: Counter, now: float, span: float,
+                extra: tuple[str, str, str, str] = ("", "", "", "")) -> str:
+    return " ".join([
+        f"{fit(name, NAME_W):<{NAME_W}}", f"{fit(project, PROJ_W):<{PROJ_W}}",
+        _rate_cells(c, now, span, 1), " ", _rate_cells(c, now, span, 0),
+        TOTAL_FMT.format(human(c.total_out), human(c.total_in)),
+        EXTRA_FMT.format(*extra),
+    ]).rstrip()
+
+
+def header_rows(first: str) -> list[tuple[str, str]]:
+    tiers = " ".join(f"{t:>{RATE_W}}" for t in
+                     [_tier_label(w) for w in RATE_WINDOWS] + ["peak"])
+    group_w = TIERS * (RATE_W + 1) - 1
+    lead = " " * (NAME_W + PROJ_W + 2)
+    top = (lead + f"{'UP per second':^{group_w}}" + "   " + f"{'DOWN per second':^{group_w}}"
+           + " " + f"{'TOTAL':^17}")
+    cols = " ".join([
+        f"{first:<{NAME_W}}", f"{'PROJECT' if first == 'SESSION' else '':<{PROJ_W}}",
+        tiers, " ", tiers, TOTAL_FMT.format("UP", "DOWN"),
+        EXTRA_FMT.format("API%", "CTX", "IMAGES", "NEXT") if first == "SESSION" else "",
+    ]).rstrip()
+    return [(top.rstrip(), "dim"), (cols, "bold")]
 
 
 def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tuple[str, str]]:
     """The whole screen as (text, style) lines; style is '', 'bold' or 'dim'."""
+    span = mon.span(now)
     lines: list[tuple[str, str]] = []
     add = lines.append
     add((f"claude-traffic-monitor   running {hms(now - mon.started)}   "
@@ -577,32 +727,34 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tu
     else:
         add(("interface: no default route", "dim"))
     add(("", ""))
-    add((ROW_FMT.format("SESSION", "PROJECT", "PID", "UP/s", "DOWN/s", "UP", "DOWN",
-                        "API%", "CTX", "IMAGES"), "bold"))
+    lines.extend(header_rows("SESSION"))
     sessions = sorted(mon.sessions.values(),
                       key=lambda s: (not s.alive, -s.traffic.total, s.pid))
     for s in sessions:
-        t = s.traffic
+        t, w = s.traffic, s.watcher
         api = f"{100 * s.api_bytes // t.total}" if t.total else "-"
-        w = s.watcher
-        imgs = "-"
-        if w and w.images:
-            imgs = f"{len(w.images)}/{human(sum(w.images))}"
+        imgs = f"{len(w.images)}/{human(sum(w.images))}" if w and w.images else "-"
+        nxt = w.next_request_bytes() if w else None
+        extra = (api, tokens(w.context_tokens if w else None), imgs,
+                 "-" if nxt is None else short(nxt))
         title = s.title if s.alive else f"{s.title} (ended)"
-        add((ROW_FMT.format(fit(title, 28), fit(s.project, 12), s.pid, *_rates(t),
-                            api, tokens(w.context_tokens if w else None), imgs),
-             "" if s.alive else "dim"))
+        add((traffic_row(title, s.project, t, now, span, extra), "" if s.alive else "dim"))
         for name, c in sorted(s.children.items(), key=lambda kv: -kv[1].total):
-            add((ROW_FMT.format(fit(f"  └ {name}", 28), "", "", *_rates(c), "", "", ""), "dim"))
-    add((ROW_FMT.format("Claude total", "", "", *_rates(mon.claude_total), "", "", ""), "bold"))
+            add((traffic_row(f"  └ {name}", "", c, now, span), "dim"))
+    add((traffic_row("Claude total", "", mon.claude_total, now, span), "bold"))
+    measured = mon.measured_bytes_per_token()
+    if measured:
+        ratio, n = measured
+        add((f"upload per context token: {ratio:.2f} B measured over {n} requests "
+             f"(NEXT assumes {BYTES_PER_TOKEN:.2f})", "dim"))
     add(("", ""))
-    add((OTHER_FMT.format("OTHER PROCESSES (internet)", "UP/s", "DOWN/s", "UP", "DOWN"), "bold"))
+    lines.extend(header_rows("OTHER PROCESSES (internet)"))
     hot = sorted(mon.others.items(), key=lambda kv: -kv[1].total)
     for name, c in hot[:top]:
-        add((OTHER_FMT.format(fit(name, 48), *_rates(c)), ""))
+        add((traffic_row(name, "", c, now, span), ""))
     if len(hot) > top:
         add((f"  … and {len(hot) - top} more", "dim"))
-    add((OTHER_FMT.format("Everything else total", *_rates(mon.other_total)), "bold"))
+    add((traffic_row("Everything else total", "", mon.other_total, now, span), "bold"))
     return lines
 
 

@@ -80,8 +80,10 @@ Current scripts:
   session.
 - `claude-traffic-monitor` — Live `top`-style screen (curses) of internet
   traffic per running Claude Code session since the monitor started:
-  rates, totals, API share, context size and images in context, plus the
-  busiest non-Claude processes. macOS only (`nettop`). Needs a terminal.
+  5 s / 1 min / 15 min rates plus a 1-minute peak, totals, API share,
+  context size, images in context and the estimated upload of the next
+  request, plus the busiest non-Claude processes. macOS only (`nettop`).
+  Needs a terminal.
 - `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
   `sessions`); the single front door behind `completions/`.
 

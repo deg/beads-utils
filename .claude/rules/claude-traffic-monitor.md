@@ -83,6 +83,9 @@ Below that come the busiest non-Claude processes.
     If it does not hold, CTX and IMAGES go stale right after a `/clear`,
     which is the very step the tool exists to prompt. To check, diff a
     session's `~/.claude/sessions/<pid>.json` from before and after `/clear`.
+    Tracked as beads-utils-6tf (verify the registry's sessionId follows
+    /clear). `/clear` does start a new transcript with a new id, verified on
+    two throwaway sessions.
   - A nettop process named like a version (`2.1.300`) that is not in the
     registry still gets a row, labelled `(unregistered claude)`.
 - Each session's whole process tree counts toward it: MCP servers, Bash-tool
@@ -121,6 +124,51 @@ Below that come the busiest non-Claude processes.
   of 483 transcripts carry a `compact_boundary` entry.
 - The first poll reads the whole transcript, which takes about 0.3 s across
   five sessions.
+
+## Rates and the NEXT column
+
+Added for beads-utils-7hb (tiered rolling rates) and beads-utils-sfm
+(estimated upload cost of the next request).
+
+- **Rates come in three tiers, 5 s, 1 min and 15 min, plus a peak**, for
+  both directions. Conversational traffic is bursty: a request uploads its
+  whole context in a second or two, then the link is idle. Any average
+  dilutes that burst, so the **peak** (the busiest single tick in the last
+  minute) keeps it visible after the 5 s figure has dropped back to zero.
+  - David asked for both directions "to see how it fits". The rows come to
+    about 145 columns.
+  - The tier lengths were Claude's pick, since David had no strong view.
+    Change them in `RATE_WINDOWS` if they read wrong in use.
+- **A young monitor divides by the time it has actually counted.** Each
+  average divides by the shorter of its window and that time. Otherwise the
+  15 min tier would read near zero for its first several minutes.
+- **A `Counter` keeps only ticks that moved bytes**, and only for the longest
+  window. An idle process stores nothing.
+- **NEXT is the estimated upload of a session's next request**: `CTX x 0.7 B`
+  plus the image bytes x 0.75. Both factors are fixed constants. The 0.7
+  comes from the 2026-10-07 brainstorm, which read one-shot nettop process
+  totals. Those miss the bytes of connections already closed, so 0.7 is
+  probably an undercount.
+- **The footer shows the measured ratio, so the constant can be corrected.**
+  It is API upload since start divided by the context tokens of the requests
+  the transcripts recorded since start, **over sessions that carried no
+  images**.
+  - An earlier version subtracted an estimated image share instead. On a
+    live run it read 5.01 B per token, where the transcripts implied about
+    1.2. When images are 90% of the bytes, a small error in that estimate
+    swamps the token signal.
+  - Requests are deduplicated by message id, because one response spans
+    several transcript entries that each repeat its `usage`.
+  - Only requests timestamped after the monitor started count.
+  - Only sessions that have a transcript count, for the bytes as well as the
+    tokens. An unregistered `claude -p` would otherwise inflate the ratio.
+  - Known bias: it reads high. Requests missing from a main transcript
+    (subagents, title generation, compaction) still upload.
+- **NEXT checked out on a live run (2026-10-07).** `novalty-56` (21 images,
+  6.4 MB of base64, 377k tokens) made exactly 3 requests in a 4-minute
+  sample. NEXT predicted 5.1 MB per request. The measured upload was 15.4 MB,
+  or 5.13 MB each, so the 0.75 image factor holds. The 1-minute peak also
+  read 5.1M, because each request went out within about a second.
 
 ## Scope of the first pass
 

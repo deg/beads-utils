@@ -1,6 +1,8 @@
 ## Unreleased
 
 * [feature] Add `claude-traffic-monitor`, a live `top`-like view of how much each running Claude Code session uploads and downloads, which share goes to the API, and the context and images driving it, plus the busiest other processes on the link (macOS)
+  * Rates over 5 s, 1 min and 15 min, plus the peak second of the last minute, so a single request's burst stays visible
+  * An estimate of what each session's next message will upload, with the live-measured bytes per token beside it
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`

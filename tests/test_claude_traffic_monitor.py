@@ -8,6 +8,7 @@ trimmed from a real `nettop -L 0 -x -n -J bytes_in,bytes_out` capture.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -265,10 +266,57 @@ def test_an_unregistered_claude_process_still_gets_a_row(mon):
     assert mon.sessions[555].traffic.total_out == 40
 
 
-def test_rates_are_per_second_of_the_last_interval(mon):
+def test_peak_is_the_busiest_tick_per_second(mon):
     mon.ingest(sample(("Dropbox", OTHER, "8.8.8.8", 0, 0)), PS, REG, now=1000.0)
     mon.ingest(sample(("Dropbox", OTHER, "8.8.8.8", 0, 400)), PS, REG, now=1002.0)
-    assert mon.other_total.rate_out == 200
+    assert mon.other_total.peak(1002.0) == (0, 200)  # 400 bytes over a 2 s tick
+
+
+# --- rolling rates ------------------------------------------------------------
+
+
+def ticks(*rows):
+    """A Counter fed (now, seconds, out_bytes) ticks."""
+    c = ctm.Counter()
+    for now, seconds, out in rows:
+        c.add(0, out)
+        c.close_tick(now, seconds)
+    return c
+
+
+def test_each_tier_averages_only_its_own_window():
+    c = ticks((100.0, 1, 6000), (190.0, 1, 600), (199.0, 1, 50))
+    now, span = 200.0, 1000.0
+    assert c.rate(5, now, span)[1] == 50 / 5
+    assert c.rate(60, now, span)[1] == 650 / 60
+    assert c.rate(900, now, span)[1] == 6650 / 900
+
+
+def test_a_young_monitor_divides_by_time_counted_not_the_full_window():
+    """Dividing by 900 s after 10 s of counting would show a 15-minute rate
+    90x too low, and the tier would read as near zero for its first minutes."""
+    c = ticks((10.0, 1, 1000))
+    assert c.rate(900, 10.0, span=10.0)[1] == 100
+
+
+def test_peak_survives_after_the_short_average_has_dropped():
+    """The point of the peak: one request's burst stays visible for a minute."""
+    c = ticks((100.0, 1, 900_000))
+    assert c.rate(5, 130.0, 1000.0)[1] == 0
+    assert c.peak(130.0)[1] == 900_000
+    assert c.peak(161.0)[1] == 0  # older than PEAK_WINDOW
+
+
+def test_old_ticks_are_dropped():
+    c = ticks((0.0, 1, 10), (1000.0, 1, 20))
+    assert [t[0] for t in c._ticks] == [1000.0]
+
+
+def test_idle_ticks_are_not_stored():
+    """Most counters are idle most of the time; storing their empty ticks
+    would keep 900 entries apiece for nothing."""
+    c = ticks((0.0, 1, 10), (5.0, 1, 0))
+    assert [t[0] for t in c._ticks] == [0.0]
 
 
 # --- transcripts --------------------------------------------------------------
@@ -326,6 +374,64 @@ def test_watcher_reads_context_size_and_prefers_the_custom_title(tmp_path):
     assert w.title == "mine"
 
 
+def assistant(msg_id, ctx, ts="2026-10-07T12:00:00Z"):
+    usage = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": ctx}
+    return json.dumps({"type": "assistant", "timestamp": ts,
+                       "message": {"id": msg_id, "usage": usage}}) + "\n"
+
+
+def test_watcher_counts_each_request_once_and_only_after_since(tmp_path):
+    """A response written as several entries repeats its usage; counting each
+    would multiply the tokens and push the measured bytes/token down."""
+    since = ctm._epoch("2026-10-07T12:00:00Z")
+    path = tmp_path / "s.jsonl"
+    path.write_text(assistant("old", 999, ts="2026-10-07T11:59:59Z")
+                    + entry("user", [IMAGE])
+                    + assistant("m1", 100) + assistant("m1", 100) + assistant("m2", 300))
+    w = ctm.TranscriptWatcher(path, since)
+    w.poll()
+    assert (w.requests, w.sent_tokens, w.sent_image_bytes) == (2, 400, 2000)
+
+
+def test_next_request_estimate_combines_context_and_images(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text(entry("user", [IMAGE]) + assistant("m1", 10_000))
+    w = ctm.TranscriptWatcher(path)
+    w.poll()
+    expected = 10_000 * ctm.BYTES_PER_TOKEN + 1000 * ctm.IMAGE_GZIP_RATIO
+    assert w.next_request_bytes() == pytest.approx(expected)
+
+
+def test_measured_ratio_is_api_upload_over_tokens(mon):
+    w = ctm.TranscriptWatcher(Path("/nonexistent"))
+    w.requests, w.sent_tokens = 2, 1000
+    mon.sessions[CLAUDE] = ctm.Session(CLAUDE, api_out=1300, watcher=w)
+    assert mon.measured_bytes_per_token() == (1.3, 2)
+
+
+def test_measured_ratio_skips_sessions_that_sent_images(mon):
+    """Image bytes dwarf token bytes; estimating and subtracting them made
+    the ratio read 5.01 where the transcripts implied about 1.2."""
+    plain = ctm.TranscriptWatcher(Path("/nonexistent"))
+    plain.requests, plain.sent_tokens = 1, 1000
+    pics = ctm.TranscriptWatcher(Path("/nonexistent"))
+    pics.requests, pics.sent_tokens, pics.sent_image_bytes = 3, 1000, 19_000_000
+    mon.sessions[CLAUDE] = ctm.Session(CLAUDE, api_out=900, watcher=plain)
+    mon.sessions[555] = ctm.Session(555, api_out=15_000_000, watcher=pics)
+    assert mon.measured_bytes_per_token() == (0.9, 1)
+
+
+def test_measured_ratio_ignores_upload_from_sessions_without_a_transcript(mon):
+    """An unregistered `claude -p` uploads but records no tokens we can see;
+    counting its bytes would inflate the ratio the footer offers as the
+    correction for BYTES_PER_TOKEN."""
+    w = ctm.TranscriptWatcher(Path("/nonexistent"))
+    w.requests, w.sent_tokens = 1, 1000
+    mon.sessions[CLAUDE] = ctm.Session(CLAUDE, api_out=700, watcher=w)
+    mon.sessions[555] = ctm.Session(555, label=ctm.UNREGISTERED, api_out=50_000)
+    assert mon.measured_bytes_per_token()[0] == pytest.approx(0.7)
+
+
 def test_monitor_follows_a_sessions_transcript(tmp_path, mon):
     proj = tmp_path / "projects" / "-x-proj"
     proj.mkdir(parents=True)
@@ -335,6 +441,15 @@ def test_monitor_follows_a_sessions_transcript(tmp_path, mon):
 
 
 # --- rendering and CLI ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("n,text", [
+    (0, "0"), (0.4, "0"), (7, "7"), (999, "999"), (1500, "1.5K"),
+    (15_000, "15K"), (999_000, "999K"), (2_340_000, "2.3M"), (5e9, "5.0G"),
+])
+def test_short_fits_five_characters(n, text):
+    assert ctm.short(n) == text
+    assert len(ctm.short(n)) <= ctm.RATE_W
 
 
 @pytest.mark.parametrize("n,text", [
