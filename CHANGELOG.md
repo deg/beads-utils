@@ -4,6 +4,7 @@
   * Rates over 5 s, 1 min and 15 min, plus the peak second of the last minute, so a single request's burst stays visible
   * An estimate of what each session's next message will upload, with the live-measured bytes per token beside it
   * `top`-style keys (sort, hide child or other processes, reset the totals, pause), with a status bar showing the current mode
+  * Count traffic from apps that send without a fixed destination, such as Tailscale and many VPNs and calls, and flag tunnelled traffic that appears on screen twice
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`

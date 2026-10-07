@@ -441,6 +441,81 @@ def test_monitor_follows_a_sessions_transcript(tmp_path, mon):
     assert mon.sessions[CLAUDE].watcher.images == [1000]
 
 
+# --- unconnected UDP and tunnels --------------------------------------------------
+
+
+@pytest.mark.parametrize("conn,expected", [
+    ("tcp4 192.168.86.24:53563<->160.79.104.10:443", ("192.168.86.24", "53563", "160.79.104.10", "443")),
+    ("tcp6 fe80::1%en0.53000<->2607:6bc0::10.443", ("fe80::1", "53000", "2607:6bc0::10", "443")),
+    ("udp4 *:41641<->*:*", ("*", "41641", "*", "*")),
+    ("udp6 *.5353<->*.*", ("*", "5353", "*", "*")),
+])
+def test_endpoints(conn, expected):
+    assert ctm.endpoints(conn) == expected
+
+
+@pytest.mark.parametrize("conn,kind", [
+    ("udp4 *:41641<->*:*", "internet"),   # Tailscale's WireGuard socket
+    ("udp4 *:5353<->*:*", "unknown"),     # mDNS never leaves the LAN
+    ("udp6 *.67<->*.*", "unknown"),       # DHCP
+    ("tcp4 *:22<->*:*", "unknown"),       # a listener carries no bytes
+])
+def test_unconnected_udp_counts_unless_its_port_is_lan_only(conn, kind):
+    _, lport, remote, _ = ctm.endpoints(conn)
+    assert ctm.flow_kind(conn, remote, lport) == kind
+
+
+def test_tailscale_wireguard_traffic_is_counted(mon):
+    """Live capture, 2026-10-07: Tailscale's tunnel runs over an unconnected
+    UDP socket. Treated as 'unknown', and with the inner 100.x flow local,
+    traffic to a Tailscale peer was counted zero times."""
+    def tick(n):
+        (b,) = blocks(f"{HEADER}\nio.tailscale.ip.700,0,0,\nudp4 *:41641<->*:*,{n},{n},")
+        return b
+    ps = {**PS, 700: (1, "io.tailscale.ipn.macsys.network-extension")}
+    feed(mon, tick(0), tick(500), ps=ps)
+    assert mon.other_total.total == 1000
+
+
+IFCONFIG = """\
+en7: flags=8963<UP,BROADCAST,SMART,RUNNING> mtu 1500
+\tinet 192.168.86.24 netmask 0xffffff00 broadcast 192.168.86.255
+utun6: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+\tinet 100.75.6.123 --> 100.75.6.123 netmask 0xffffffff
+\tinet6 fd7a:115c:a1e0::d139:67b prefixlen 48
+\tinet6 fe80::1%utun6 prefixlen 64 scopeid 0x13
+bridge100: flags=8a63<UP,BROADCAST> mtu 1500
+\tinet 192.168.64.1 netmask 0xffffff00
+"""
+
+
+def test_tunnel_addresses_come_only_from_tunnel_interfaces():
+    assert ctm.tunnel_addresses(IFCONFIG) == {
+        "100.75.6.123", "fd7a:115c:a1e0::d139:67b", "fe80::1"}
+
+
+def test_traffic_sent_from_a_tunnel_address_is_reported_as_counted_twice(mon):
+    mon.tunnel_ips = {"100.75.6.123"}
+    def tick(n):
+        (b,) = blocks(f"{HEADER}\n2.1.292.{CLAUDE},0,0,\n"
+                      f"tcp4 100.75.6.123:5000<->160.79.104.10:443,0,{n},\n"
+                      f"tcp4 192.168.86.24:5001<->160.79.104.10:443,0,{n},")
+        return b
+    feed(mon, tick(0), tick(300))
+    assert mon.sessions[CLAUDE].traffic.total_out == 600  # still credited to its app
+    assert mon.tunnelled.total_out == 300                 # only the tunnel-side flow
+    note = [t for t in screen(mon) if t.startswith("Tunnelled")]
+    assert len(note) == 1 and "sent twice" in note[0]
+    # The note is about every row, so it survives hiding the other processes.
+    assert any(t.startswith("Tunnelled") for t in screen(mon, ctm.View(others=False)))
+
+
+def test_no_tunnel_note_without_tunnelled_traffic(mon):
+    busy(mon)
+    assert not any(t.startswith("Tunnelled") for t in screen(mon))
+    assert not any(t.startswith("Tunnelled") for t in screen(mon, ctm.View(others=False)))
+
+
 # --- rendering and CLI ----------------------------------------------------------
 
 

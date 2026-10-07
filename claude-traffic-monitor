@@ -77,6 +77,8 @@ class Flow:
     remote: str        # the remote address alone, port stripped
     bytes_in: int
     bytes_out: int
+    local: str = ""    # the local address, port stripped
+    local_port: str = ""
 
 
 @dataclass
@@ -93,17 +95,27 @@ def _int(s: str) -> int:
         return 0
 
 
-def remote_addr(conn: str) -> str:
-    """The remote address of a nettop connection string, port stripped.
+def endpoints(conn: str) -> tuple[str, str, str, str]:
+    """(local address, local port, remote address, remote port) of a nettop
+    connection string, scope ids (`%en0`) stripped.
 
     IPv4 endpoints are `addr:port`, IPv6 ones `addr.port` (and the wildcard
     is `*:*` or `*.*`), so the separator depends on the family.
     """
-    _, _, rest = conn.partition(" ")
-    _, _, remote = rest.partition("<->")
-    sep = "." if conn.split(" ", 1)[0].endswith("6") else ":"
-    addr = remote.rsplit(sep, 1)[0] if sep in remote else remote
-    return addr.split("%", 1)[0]
+    family, _, rest = conn.partition(" ")
+    sep = "." if family.endswith("6") else ":"
+
+    def split(ep: str) -> tuple[str, str]:
+        addr, _, port = ep.rpartition(sep) if sep in ep else (ep, "", "")
+        return addr.split("%", 1)[0], port
+
+    local, _, remote = rest.partition("<->")
+    return (*split(local), *split(remote))
+
+
+def remote_addr(conn: str) -> str:
+    """The remote address of a nettop connection string, port stripped."""
+    return endpoints(conn)[2]
 
 
 class NettopParser:
@@ -132,14 +144,40 @@ class NettopParser:
         label, b_in, b_out = parts[0], _int(parts[1]), _int(parts[2])
         if label[:3] in ("tcp", "udp") and " " in label:
             if self._current:
+                local, lport, remote, _ = endpoints(label)
                 self._current[-1].flows.append(
-                    Flow(label, remote_addr(label), b_in, b_out))
+                    Flow(label, remote, b_in, b_out, local, lport))
             return None
         name, _, pid = label.rpartition(".")  # names contain dots: 2.1.292.70303
         if not pid.isdigit():
             return None
         self._current.append(ProcSample(name, int(pid)))
         return None
+
+
+# Unconnected UDP sockets show no remote, so where their bytes went is
+# unknown. They are counted as internet -- Tailscale's WireGuard traffic runs
+# over one (`udp4 *:41641<->*:*`), as can VPNs, calls and games -- except on
+# ports whose protocols never leave the LAN.
+LAN_ONLY_UDP_PORTS = {
+    "67", "68",      # DHCP
+    "137", "138",    # NetBIOS
+    "1900",          # SSDP
+    "5353",          # mDNS
+    "5355",          # LLMNR
+}
+
+
+def flow_kind(conn: str, remote: str, local_port: str) -> str:
+    """remote_kind(), plus the call on unconnected UDP sockets.
+
+    Erring toward 'internet' overcounts a LAN-only peer reached through such a
+    socket (a Tailscale peer on the same LAN), which is the safer direction
+    for a meter.
+    """
+    if remote in ("*", "") and conn.startswith("udp"):
+        return "unknown" if local_port in LAN_ONLY_UDP_PORTS else "internet"
+    return remote_kind(remote)
 
 
 def remote_kind(addr: str) -> str:
@@ -171,6 +209,8 @@ class FlowDelta:
     remote: str
     d_in: int
     d_out: int
+    kind: str = "internet"
+    local: str = ""
 
 
 class FlowTracker:
@@ -208,7 +248,9 @@ class FlowTracker:
                 if d_in < 0 or d_out < 0:
                     d_in, d_out = flow.bytes_in, flow.bytes_out
                 if d_in or d_out:
-                    out.append(FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out))
+                    out.append(FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out,
+                                         flow_kind(flow.conn, flow.remote, flow.local_port),
+                                         flow.local))
         self._prev = cur
         return out
 
@@ -436,6 +478,8 @@ class Monitor:
         self.others: dict[str, Counter] = {}
         self.other_total = Counter()
         self.claude_total = Counter()
+        self.tunnelled = Counter()
+        self.tunnel_ips: set[str] = set()  # refreshed by the caller
         self.owner: dict[int, int] = {}   # sticky pid -> session pid
         self.started = time.time()
         self.counting_since = self.started  # moves on reset
@@ -452,8 +496,12 @@ class Monitor:
             if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
                 self.sessions[proc.pid] = Session(proc.pid, label=UNREGISTERED)
         for d in self.tracker.update(block):
-            if remote_kind(d.remote) != "internet":
+            if d.kind != "internet":
                 continue
+            if d.local in self.tunnel_ips:
+                # Sent from a tunnel interface: the tunnel's own process sends
+                # these bytes again, encrypted, so they appear twice on screen.
+                self.tunnelled.add(d.d_in, d.d_out)
             owner = self._owner_of(d.pid, ps)
             # nettop truncates names to 15 characters; ps has the full one.
             name = ps.get(d.pid, (0, ""))[1] or d.name
@@ -492,7 +540,7 @@ class Monitor:
         # since that block, and dividing them by the milliseconds since `now`
         # would show a spike of tens of MB/s.
         self.first_block = self.last_block or now
-        self.claude_total, self.other_total = Counter(), Counter()
+        self.claude_total, self.other_total, self.tunnelled = Counter(), Counter(), Counter()
         self.others = {}
         self.sessions = {pid: s for pid, s in self.sessions.items() if s.alive}
         # An exited child may still map to a dropped session; its last bytes
@@ -532,6 +580,7 @@ class Monitor:
     def _counters(self):
         yield self.other_total
         yield self.claude_total
+        yield self.tunnelled
         yield from self.others.values()
         for s in self.sessions.values():
             yield s.traffic
@@ -658,6 +707,33 @@ class InterfaceMeter:
         """Re-baseline every interface at its next reading."""
         self.base = {}
         self.since = (0, 0) if self.since else None
+
+
+TUNNEL_PREFIXES = ("utun", "ipsec", "ppp", "tun", "tap", "wg")
+
+
+def tunnel_addresses(ifconfig_text: str | None = None) -> set[str]:
+    """Every address assigned to a tunnel interface, from `ifconfig`.
+
+    A flow whose local address is one of these went into a tunnel. Which
+    process carries the tunnel out is not recoverable from nettop, ps or
+    ifconfig, so the tunnelled bytes are reported, not subtracted.
+    """
+    if ifconfig_text is None:
+        try:
+            ifconfig_text = subprocess.run(["ifconfig"], capture_output=True, text=True,
+                                           timeout=5).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+    out, in_tunnel = set(), False
+    for line in ifconfig_text.splitlines():
+        if line and not line[0].isspace():
+            in_tunnel = line.split(":", 1)[0].startswith(TUNNEL_PREFIXES)
+            continue
+        parts = line.split()
+        if in_tunnel and len(parts) >= 2 and parts[0] in ("inet", "inet6"):
+            out.add(parts[1].split("%", 1)[0])
+    return out
 
 
 def resolve_api_ips() -> set[str]:
@@ -841,6 +917,7 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
         # Collapsed to one row under the session columns, which it lines up with.
         add((traffic_row("Other processes", f"{len(mon.others)} hidden",
                          mon.other_total, now, span), "bold"))
+        _add_tunnel_note(add, mon, now, span)
         return lines
     lines.extend(header_rows("OTHER PROCESSES (internet)"))
     hot = sorted(mon.others.items(), key=lambda kv: _sort_key(view, kv[0], kv[1], now, span))
@@ -849,7 +926,14 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
     if len(hot) > top:
         add((f"  … and {len(hot) - top} more", "dim"))
     add((traffic_row("Everything else total", "", mon.other_total, now, span), "bold"))
+    _add_tunnel_note(add, mon, now, span)
     return lines
+
+
+def _add_tunnel_note(add, mon: Monitor, now: float, span: float) -> None:
+    if mon.tunnelled.total:
+        add((traffic_row("Tunnelled, in rows above", "sent twice",
+                         mon.tunnelled, now, span), "dim"))
 
 
 def status_lines(view: View) -> list[tuple[str, str]]:
@@ -933,6 +1017,7 @@ def run(stdscr, interval: int, top: int) -> str | None:
                 if item is None:
                     return "lost the nettop stream (nettop exited or its output was unreadable)"
                 stamp, block = item
+                mon.tunnel_ips = tunnel_addresses()
                 mon.ingest(block, process_table(), claudeutils.read_registry(mon.sessions_dir), stamp)
                 meter.poll()
                 dirty = dirty or not view.paused

@@ -46,19 +46,36 @@ Below that come the busiest non-Claude processes.
 - **Only internet traffic is counted.** A remote address that is loopback,
   private, link-local, multicast or unspecified is "local" and is dropped. On
   the developer's machine, `kernel_task` carries GB of SMB traffic to a NAS,
-  which would otherwise top the list. A wildcard remote (`*`) is an
-  unconnected socket and is dropped too, which also drops mDNS chatter.
+  which would otherwise top the list.
+- **Unconnected UDP sockets count as internet.** nettop shows such a socket
+  with a wildcard remote (`udp4 *:41641<->*:*`), so where its bytes went is
+  unknown.
+  - The exception is a socket bound to a LAN-only port: mDNS, DHCP, SSDP,
+    NetBIOS or LLMNR (`LAN_ONLY_UDP_PORTS`). A wildcard TCP socket is a
+    listener and carries nothing.
+  - Found live on 2026-10-07 (beads-utils-d31, count VPN/tunnel traffic
+    once): Tailscale's WireGuard traffic runs over such a socket. Treating it
+    as unknown, while also treating the inner 100.x flow as local, meant
+    traffic to a Tailscale peer was counted **zero** times.
+  - After the fix, 150 requests to a peer, about 82 KB of responses, showed
+    as 84 KB down under the Tailscale extension.
+  - This errs toward overcounting: a peer on the same LAN reached this way
+    is counted as internet.
 - **Tailscale's 100.64/10 (CGNAT) addresses are local.** A flow to a peer's
-  overlay address is tunnelled, so the same bytes leave the machine again as
-  Tailscale's own flow to the peer's real address (or a relay). That outer
-  flow is the metered one. Counting both would bill the bytes twice. The
-  cost is that they are billed to Tailscale, not to the app that sent them.
-  **Unverified:** that nettop shows the Tailscale network extension's outer
-  flow (it does show Norton's extension's flows). Tailscale was not connected
-  on 2026-10-07.
-- **Known gap: a full-tunnel VPN doubles the totals.** Apps' flows carry
-  public addresses, and so does the VPN client's encrypted flow that
-  carries them. Not handled yet.
+  overlay address is the inner copy. The outer copy, the WireGuard socket
+  above, is the one metered, so it is counted there, once, under the
+  Tailscale process.
+- **Tunnelled traffic is reported, not subtracted.** A flow whose local
+  address is on a tunnel interface (`utun`, `ipsec`, `ppp`, `tun`, `tap`,
+  `wg`, read from `ifconfig` every tick) stays credited to its app. A dim
+  "Tunnelled, in rows above / sent twice" line under the totals shows those
+  bytes, because the tunnel's process sends them again, encrypted.
+  - Option C (a "VPN overhead" row) was dropped: nothing in nettop, ps or
+    ifconfig says which process carries a tunnel.
+  - **Untested:** a full tunnel (exit node). That is the case where apps'
+    internet flows leave from the tunnel address. David has no exit node
+    configured. Without one, only flows to 100.x peers use the tunnel, and
+    those are local.
 - **nettop cuts names at a byte count**, which can split a UTF-8 character
   (seen in review). The stream is decoded with `errors="replace"`, and the
   reader thread sends its end marker from `finally`, so a dead reader ends
