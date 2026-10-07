@@ -170,6 +170,49 @@ Added for beads-utils-7hb (tiered rolling rates) and beads-utils-sfm
   or 5.13 MB each, so the 0.75 image factor holds. The 1-minute peak also
   read 5.1M, because each request went out within about a second.
 
+## Keys
+
+Added for beads-utils-84u (top-style interactive keys), with the key set
+David approved:
+
+| Key | Action |
+|---|---|
+| `s` | cycle the sort: total, then 1-minute rate, then name |
+| `c` | hide or show child-process rows |
+| `o` | hide or show the list of other processes |
+| `r` | reset the totals |
+| `p` | pause the display |
+| `?` | show or hide the key help line |
+| `q` | quit |
+
+- `handle_key()` is pure: it changes a `View` and returns what the loop must
+  do. The view only changes what is drawn, never what is counted.
+- **Rate sort uses the 1-minute average.** The 5 s figure would reshuffle
+  the rows every second. Live sessions always stay above ended ones.
+- **Hiding children (`c`) keeps their bytes in the session's row.** Hiding
+  others (`o`) keeps their total line and an "… and N more" count.
+- **`r` zeroes everything**: totals, rolling rates, the bytes-per-token
+  measurement and the interface baseline. It also restarts the title's
+  counting clock.
+  - It drops ended sessions and the other processes, since zeroed they say
+    nothing.
+  - It keeps the flow baselines and pid ownership, because those describe
+    connections and processes, not counts.
+  - It also prunes owner-cache entries that point at dropped sessions.
+    Without that, an exited child's last bytes looked up a session that was
+    gone and crashed the screen. The mutation test caught it.
+  - Rates restart from the **last block ingested**, not from the keypress.
+    A block already queued when `r` was pressed carries deltas since that
+    block; dividing them by the milliseconds since the keypress showed tens
+    of MB/s.
+  - A watcher created after a reset counts requests from the reset, not
+    from the monitor's start. Otherwise pre-reset tokens would be set
+    against post-reset bytes in the footer.
+- **`p` freezes the drawing; counting continues.** A view key pressed while
+  paused redraws once, with current numbers.
+- Checking the keys in a pty: curses rewrites only the characters that
+  changed, so look for fragments ("rate" -> "name" writes only `n` and `m`).
+
 ## Scope of the first pass
 
 Totals live in memory only and start when the monitor starts. There is no
@@ -177,12 +220,12 @@ state file, which keeps to the repo's "no state" convention. Deliberately
 deferred:
 - beads-utils-hrc (background logger so traffic counts while closed)
 - beads-utils-7fe (`--once` / `--log`)
-- beads-utils-84u (interactive keys)
+- beads-utils-84u (interactive keys), since done; see Keys above
 
 ## Manual checks
 
 ```bash
-./claude-traffic-monitor                 # live screen; q quits
+./claude-traffic-monitor                 # live screen; ? lists the keys, q quits
 ./claude-traffic-monitor -s 2 --top 15   # slower sampling, more processes
 pgrep -fl 'nettop -L 0'                  # after quitting: must print nothing
 ```

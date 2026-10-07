@@ -8,6 +8,7 @@ trimmed from a real `nettop -L 0 -x -n -J bytes_in,bytes_out` capture.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -471,6 +472,135 @@ def test_render_shows_sessions_children_and_others(mon):
     session_row = next(t for t, _ in ctm.render(mon, ctm.InterfaceMeter(), 1010.0, 5)
                        if t.startswith("my session"))
     assert "4.0 KB" in session_row and " 75 " in session_row  # API share 3000/4000
+
+
+# --- keys and view --------------------------------------------------------------
+
+
+def screen(mon, view=None, now=1010.0):
+    return [t for t, _ in ctm.render(mon, ctm.InterfaceMeter(), now, 5, view)]
+
+
+def busy(mon):
+    """A session with a child, and two other processes of different weight."""
+    zero = sample(("2.1.292", CLAUDE, "160.79.104.10", 0, 0), ("node", CHILD, "34.1.1.1", 0, 0),
+                  ("Dropbox", OTHER, "8.8.8.8", 0, 0), ("Zoom", 400, "9.9.9.9", 0, 0))
+    ps = {**PS, 400: (1, "Zoom")}
+    feed(mon, zero, sample(("2.1.292", CLAUDE, "160.79.104.10", 0, 3000),
+                           ("node", CHILD, "34.1.1.1", 0, 1000),
+                           ("Dropbox", OTHER, "8.8.8.8", 0, 100),
+                           ("Zoom", 400, "9.9.9.9", 0, 5000)), ps=ps)
+
+
+def test_s_cycles_the_sort_through_every_order():
+    view = ctm.View()
+    seen = [view.sort]
+    for _ in ctm.SORTS:
+        assert ctm.handle_key(view, "s") == "redraw"
+        seen.append(view.sort)
+    assert seen == ["total", "rate", "name", "total"]
+
+
+@pytest.mark.parametrize("key,action", [("q", "quit"), ("Q", "quit"), ("r", "reset"), ("x", None)])
+def test_keys_that_the_loop_acts_on(key, action):
+    assert ctm.handle_key(ctm.View(), key) == action
+
+
+@pytest.mark.parametrize("key,attr", [("c", "children"), ("o", "others"),
+                                      ("p", "paused"), ("?", "help")])
+def test_toggle_keys_flip_their_setting_and_back(key, attr):
+    view = ctm.View()
+    before = getattr(view, attr)
+    ctm.handle_key(view, key)
+    assert getattr(view, attr) is not before
+    ctm.handle_key(view, key)
+    assert getattr(view, attr) is before
+
+
+def test_sorting_by_name_reorders_other_processes(mon):
+    busy(mon)
+    by_total = [t.split()[0] for t in screen(mon) if t.startswith(("Dropbox", "Zoom"))]
+    by_name = [t.split()[0] for t in screen(mon, ctm.View(sort="name"))
+               if t.startswith(("Dropbox", "Zoom"))]
+    assert by_total == ["Zoom", "Dropbox"] and by_name == ["Dropbox", "Zoom"]
+
+
+def test_hiding_children_keeps_their_bytes_in_the_session_row(mon):
+    busy(mon)
+    rows = screen(mon, ctm.View(children=False))
+    assert not any("└ node" in t for t in rows)
+    session = next(t for t in rows if t.startswith("my session"))
+    assert "4.0 KB" in session  # 3000 own + 1000 from the hidden child
+
+
+def test_hiding_others_keeps_their_total_and_says_how_many(mon):
+    busy(mon)
+    rows = screen(mon, ctm.View(others=False))
+    assert not any(t.startswith(("Dropbox", "Zoom")) for t in rows)
+    assert any("and 2 more" in t for t in rows)
+    assert any(t.startswith("Everything else total") for t in rows)
+
+
+def test_title_shows_pause_and_help_shows_the_keys(mon):
+    rows = screen(mon, ctm.View(paused=True, help=True))
+    assert "PAUSED" in rows[0]
+    assert rows[1] == ctm.KEY_HELP
+
+
+def test_reset_zeroes_counts_and_drops_ended_sessions(mon):
+    busy(mon)
+    mon.sessions[999] = ctm.Session(999, alive=False)
+    w = ctm.TranscriptWatcher(Path("/nonexistent"))
+    w.requests, w.sent_tokens = 4, 800
+    mon.sessions[CLAUDE].watcher = w
+    mon.reset(2000.0)
+    s = mon.sessions[CLAUDE]
+    assert (w.requests, w.sent_tokens, w.since) == (0, 0, 2000.0)
+    assert 999 not in mon.sessions
+    assert (s.traffic.total, s.api_bytes, s.children, mon.others) == (0, 0, {}, {})
+    assert mon.claude_total.total == 0
+    assert mon.first_block == mon.last_block  # rates span from the last block seen
+    assert mon.counting_since == 2000.0
+
+
+def test_reset_then_a_late_byte_from_a_dropped_sessions_child_does_not_crash(mon):
+    """reset() drops ended sessions, but an exited child could still map to
+    one in the owner cache; its last bytes then hit a KeyError."""
+    feed(mon, sample(("node", CHILD, "34.1.1.1", 0, 0)))
+    mon.ingest(sample(("node", CHILD, "34.1.1.1", 0, 0)), {OTHER: PS[OTHER]}, {}, now=1001.0)
+    mon.reset(1002.0)
+    mon.ingest(sample(("node", CHILD, "34.1.1.1", 0, 80)), {OTHER: PS[OTHER]}, {}, now=1003.0)
+    assert mon.others["node"].total_out == 80
+
+
+def test_a_block_queued_before_reset_does_not_spike_the_rates(mon):
+    """The loop resets at time.time() but may then ingest a block stamped
+    before it. Spanning from the reset made the 5 s rate divide 5 KB by a
+    few milliseconds."""
+    mon.ingest(sample(("Dropbox", OTHER, "8.8.8.8", 0, 0)), PS, REG, now=1000.0)
+    mon.reset(1001.3)
+    mon.ingest(sample(("Dropbox", OTHER, "8.8.8.8", 0, 5000)), PS, REG, now=1001.0)
+    up_5s = mon.other_total.rate(5, 1001.31, mon.span(1001.31))[1]
+    assert up_5s <= 5000
+
+
+def test_a_session_found_after_reset_counts_requests_from_the_reset(tmp_path, mon):
+    """New watchers took the monitor's start time, so a session appearing
+    after `r` counted pre-reset tokens against post-reset bytes."""
+    proj = tmp_path / "projects" / "-x-proj"
+    proj.mkdir(parents=True)
+    early = datetime.fromtimestamp(mon.started + 10, timezone.utc).isoformat()
+    (proj / "s1.jsonl").write_text(assistant("m1", 5000, ts=early))
+    mon.reset(mon.started + 20)
+    mon.ingest(sample(), PS, REG, now=mon.started + 21)
+    assert mon.sessions[CLAUDE].watcher.requests == 0
+
+
+def test_reset_restarts_the_request_count(tmp_path):
+    w = ctm.TranscriptWatcher(tmp_path / "none.jsonl")
+    w.requests, w.sent_tokens, w.sent_image_bytes = 3, 900, 50
+    w.restart_count(5000.0)
+    assert (w.requests, w.sent_tokens, w.sent_image_bytes, w.since) == (0, 0, 0, 5000.0)
 
 
 NETSTAT_HEADER = ("Name       Mtu   Network       Address            Ipkts Ierrs     "

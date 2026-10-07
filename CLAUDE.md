@@ -82,8 +82,8 @@ Current scripts:
   traffic per running Claude Code session since the monitor started:
   5 s / 1 min / 15 min rates plus a 1-minute peak, totals, API share,
   context size, images in context and the estimated upload of the next
-  request, plus the busiest non-Claude processes. macOS only (`nettop`).
-  Needs a terminal.
+  request, plus the busiest non-Claude processes. `top`-style keys (`?`
+  lists them). macOS only (`nettop`). Needs a terminal.
 - `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
   `sessions`); the single front door behind `completions/`.
 

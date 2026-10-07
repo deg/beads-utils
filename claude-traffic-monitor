@@ -275,6 +275,11 @@ class TranscriptWatcher:
         self._custom = False
         self._last_msg_id: str | None = None
 
+    def restart_count(self, since: float) -> None:
+        """Forget the requests counted so far; count from `since` on."""
+        self.since = since
+        self.requests = self.sent_tokens = self.sent_image_bytes = 0
+
     def next_request_bytes(self) -> float | None:
         """Estimated upload of the next request: context plus images."""
         if self.context_tokens is None:
@@ -433,6 +438,7 @@ class Monitor:
         self.claude_total = Counter()
         self.owner: dict[int, int] = {}   # sticky pid -> session pid
         self.started = time.time()
+        self.counting_since = self.started  # moves on reset
         self.first_block: float | None = None
         self.last_block: float | None = None
 
@@ -472,6 +478,31 @@ class Monitor:
         for s in self.sessions.values():
             if s.watcher:
                 s.watcher.poll()
+
+    def reset(self, now: float) -> None:
+        """Zero every total and rate, as if the monitor had just started.
+
+        Flow baselines and pid ownership are kept, since they describe the
+        connections and processes, not what was counted. Ended sessions and
+        idle other processes are dropped, because zeroed they say nothing.
+        """
+        self.counting_since = now
+        # Rates are measured from the last block ingested, not from `now`:
+        # a block already queued when the key was pressed carries deltas
+        # since that block, and dividing them by the milliseconds since `now`
+        # would show a spike of tens of MB/s.
+        self.first_block = self.last_block or now
+        self.claude_total, self.other_total = Counter(), Counter()
+        self.others = {}
+        self.sessions = {pid: s for pid, s in self.sessions.items() if s.alive}
+        # An exited child may still map to a dropped session; its last bytes
+        # would then look up a session that is gone.
+        self.owner = {pid: o for pid, o in self.owner.items() if o in self.sessions}
+        for s in self.sessions.values():
+            s.traffic, s.children = Counter(), {}
+            s.api_bytes = s.api_out = 0
+            if s.watcher:
+                s.watcher.restart_count(now)
 
     def span(self, now: float) -> float:
         """Seconds of traffic counted so far (since the baseline block)."""
@@ -526,7 +557,7 @@ class Monitor:
             if s.watcher is None and s.session_id:
                 # Retried every tick: a new session's transcript appears late.
                 paths = claudeutils.transcripts_for(s.session_id, self.projects_dir)
-                s.watcher = TranscriptWatcher(paths[0], self.started) if paths else None
+                s.watcher = TranscriptWatcher(paths[0], self.counting_since) if paths else None
         for pid, s in self.sessions.items():
             if ps and pid not in ps:
                 s.alive = False
@@ -623,6 +654,11 @@ class InterfaceMeter:
         base = self.base.setdefault(self.iface, cur)
         self.since = (cur[0] - base[0], cur[1] - base[1])
 
+    def reset(self) -> None:
+        """Re-baseline every interface at its next reading."""
+        self.base = {}
+        self.since = (0, 0) if self.since else None
+
 
 def resolve_api_ips() -> set[str]:
     try:
@@ -714,13 +750,71 @@ def header_rows(first: str) -> list[tuple[str, str]]:
     return [(top.rstrip(), "dim"), (cols, "bold")]
 
 
-def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tuple[str, str]]:
+SORTS = ("total", "rate", "name")
+KEY_HELP = ("keys:  s sort (total / 1m rate / name)   c child processes   "
+            "o other processes   r reset totals   p pause   ? hide keys   q quit")
+
+
+@dataclass
+class View:
+    """What the keys control. Display only: none of it changes the counting."""
+    sort: str = "total"
+    children: bool = True
+    others: bool = True
+    paused: bool = False
+    help: bool = False
+
+
+def handle_key(view: View, ch: str) -> str | None:
+    """Apply one keypress to `view`.
+
+    Returns 'quit' or 'reset' for the caller to act on, 'redraw' when only
+    the view changed, or None for a key with no meaning.
+    """
+    ch = ch.lower()
+    if ch == "q":
+        return "quit"
+    if ch == "r":
+        return "reset"
+    if ch == "s":
+        view.sort = SORTS[(SORTS.index(view.sort) + 1) % len(SORTS)]
+    elif ch == "c":
+        view.children = not view.children
+    elif ch == "o":
+        view.others = not view.others
+    elif ch == "p":
+        view.paused = not view.paused
+    elif ch == "?":
+        view.help = not view.help
+    else:
+        return None
+    return "redraw"
+
+
+def _sort_key(view: View, name: str, c: Counter, now: float, span: float):
+    if view.sort == "name":
+        return name.lower()
+    if view.sort == "rate":
+        return -sum(c.rate(60, now, span))  # 1 min: the 5 s figure reshuffles every second
+    return -c.total
+
+
+def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
+           view: View | None = None) -> list[tuple[str, str]]:
     """The whole screen as (text, style) lines; style is '', 'bold' or 'dim'."""
+    view = view or View()
     span = mon.span(now)
     lines: list[tuple[str, str]] = []
     add = lines.append
-    add((f"claude-traffic-monitor   running {hms(now - mon.started)}   "
-         "internet traffic only (LAN and loopback excluded)   q quits", "bold"))
+    state = [f"sort: {view.sort}"]
+    if not view.children:
+        state.append("children hidden")
+    if view.paused:
+        state.append("PAUSED")
+    add((f"claude-traffic-monitor   counting {hms(now - mon.counting_since)}   "
+         f"internet only (LAN and loopback excluded)   {'   '.join(state)}   ? keys", "bold"))
+    if view.help:
+        add((KEY_HELP, "dim"))
     if meter.iface and meter.since:
         add((f"interface {meter.iface} (raw, includes LAN):  "
              f"up {human(meter.since[1])}   down {human(meter.since[0])}", ""))
@@ -728,8 +822,8 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tu
         add(("interface: no default route", "dim"))
     add(("", ""))
     lines.extend(header_rows("SESSION"))
-    sessions = sorted(mon.sessions.values(),
-                      key=lambda s: (not s.alive, -s.traffic.total, s.pid))
+    sessions = sorted(mon.sessions.values(), key=lambda s: (
+        not s.alive, _sort_key(view, s.title, s.traffic, now, span), s.pid))
     for s in sessions:
         t, w = s.traffic, s.watcher
         api = f"{100 * s.api_bytes // t.total}" if t.total else "-"
@@ -739,6 +833,8 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tu
                  "-" if nxt is None else short(nxt))
         title = s.title if s.alive else f"{s.title} (ended)"
         add((traffic_row(title, s.project, t, now, span, extra), "" if s.alive else "dim"))
+        if not view.children:
+            continue  # their bytes stay in the session's row
         for name, c in sorted(s.children.items(), key=lambda kv: -kv[1].total):
             add((traffic_row(f"  └ {name}", "", c, now, span), "dim"))
     add((traffic_row("Claude total", "", mon.claude_total, now, span), "bold"))
@@ -749,11 +845,12 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tu
              f"(NEXT assumes {BYTES_PER_TOKEN:.2f})", "dim"))
     add(("", ""))
     lines.extend(header_rows("OTHER PROCESSES (internet)"))
-    hot = sorted(mon.others.items(), key=lambda kv: -kv[1].total)
-    for name, c in hot[:top]:
+    hot = sorted(mon.others.items(), key=lambda kv: _sort_key(view, kv[0], kv[1], now, span))
+    shown = hot[:top] if view.others else []
+    for name, c in shown:
         add((traffic_row(name, "", c, now, span), ""))
-    if len(hot) > top:
-        add((f"  … and {len(hot) - top} more", "dim"))
+    if len(hot) > len(shown):
+        add((f"  … and {len(hot) - len(shown)} more", "dim"))
     add((traffic_row("Everything else total", "", mon.other_total, now, span), "bold"))
     return lines
 
@@ -791,15 +888,23 @@ def run(stdscr, interval: int, top: int) -> str | None:
     threading.Thread(target=reader, args=(nettop, blocks), daemon=True).start()
     mon = Monitor(api_ips=resolve_api_ips() | API_FALLBACK_IPS)
     meter = InterfaceMeter()
+    view = View()
     api_checked = time.time()
     dirty = True
     try:
         while True:
             key = stdscr.getch()
-            if key in (ord("q"), ord("Q")):
-                return None
             if key == curses.KEY_RESIZE:
                 dirty = True
+            elif 0 < key < 256:
+                action = handle_key(view, chr(key))
+                if action == "quit":
+                    return None
+                if action == "reset":
+                    mon.reset(time.time())
+                    meter.reset()
+                # Any key redraws, so a view change while paused shows at once.
+                dirty = dirty or action is not None
             while True:
                 try:
                     item = blocks.get_nowait()
@@ -810,12 +915,12 @@ def run(stdscr, interval: int, top: int) -> str | None:
                 stamp, block = item
                 mon.ingest(block, process_table(), claudeutils.read_registry(mon.sessions_dir), stamp)
                 meter.poll()
-                dirty = True
+                dirty = dirty or not view.paused
             if time.time() - api_checked > API_REFRESH_SECONDS:
                 mon.api_ips |= resolve_api_ips()
                 api_checked = time.time()
             if dirty:
-                draw(stdscr, render(mon, meter, time.time(), top), styles)
+                draw(stdscr, render(mon, meter, time.time(), top, view), styles)
                 dirty = False
     finally:
         nettop.kill()
@@ -841,7 +946,7 @@ def main(argv: list[str] | None = None) -> None:
                     "counted since the monitor started.",
         epilog="Counts internet traffic only: loopback and LAN flows are excluded.\n"
                "Totals start at zero when the monitor starts and are kept in memory only.\n"
-               "Requires macOS nettop. Press q to quit.",
+               "Requires macOS nettop. Press ? on the screen for its keys.",
     )
     parser.add_argument("-s", "--interval", type=int, default=1, metavar="SECONDS",
                         help="Sampling interval in whole seconds (default: 1)")
