@@ -1,0 +1,708 @@
+#!/usr/bin/env python3
+"""Live, top-like view of the network traffic of every Claude Code session.
+
+Built for metered links (a cruise ship's Wi-Fi): shows, per running Claude
+session, the upload/download rate and the total since the monitor started,
+how much of it went to the Anthropic API, and the two things that drive the
+upload -- the context size re-sent on every request and the images riding
+in that context. Below the sessions, the busiest non-Claude processes, so
+an iCloud or Dropbox sync eating the link is visible too.
+
+Design notes: .claude/rules/claude-traffic-monitor.md.
+"""
+from __future__ import annotations
+
+import argparse
+import curses
+import ipaddress
+import json
+import locale
+import queue
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import claudeutils
+from bdutils import add_version_arg, error
+
+NETTOP_HEADER = ",bytes_in,bytes_out,"
+
+# Claude Code's process shows up in nettop under its version number, e.g.
+# `2.1.292.70303` -- the fallback for a session missing from the registry.
+VERSION_NAME_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+API_HOST = "api.anthropic.com"
+# Observed 2026-10-07; used when DNS is unavailable at startup.
+API_FALLBACK_IPS = {"160.79.104.10", "2607:6bc0::10"}
+API_REFRESH_SECONDS = 300
+
+
+# --- nettop parsing ---------------------------------------------------------
+
+
+@dataclass
+class Flow:
+    conn: str          # nettop's connection string, e.g. 'tcp4 a:1<->b:443'
+    remote: str        # the remote address alone, port stripped
+    bytes_in: int
+    bytes_out: int
+
+
+@dataclass
+class ProcSample:
+    name: str
+    pid: int
+    flows: list[Flow] = field(default_factory=list)
+
+
+def _int(s: str) -> int:
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def remote_addr(conn: str) -> str:
+    """The remote address of a nettop connection string, port stripped.
+
+    IPv4 endpoints are `addr:port`, IPv6 ones `addr.port` (and the wildcard
+    is `*:*` or `*.*`), so the separator depends on the family.
+    """
+    _, _, rest = conn.partition(" ")
+    _, _, remote = rest.partition("<->")
+    sep = "." if conn.split(" ", 1)[0].endswith("6") else ":"
+    addr = remote.rsplit(sep, 1)[0] if sep in remote else remote
+    return addr.split("%", 1)[0]
+
+
+class NettopParser:
+    """Turns nettop's `-L 0 -x -n -J bytes_in,bytes_out` stream into blocks.
+
+    A block is one sample: a header line, then each process line followed by
+    its flow lines. A block is complete only when the next header arrives,
+    so the view runs one interval behind the stream.
+    """
+
+    def __init__(self):
+        self._current: list[ProcSample] | None = None
+
+    def feed(self, line: str) -> list[ProcSample] | None:
+        """Consume one line; return the previous block when a header ends it."""
+        line = line.rstrip("\n")
+        if line == NETTOP_HEADER:
+            done, self._current = self._current, []
+            return done
+        if self._current is None or not line:
+            return None
+        parts = line.split(",")
+        if len(parts) < 3:
+            return None
+        label, b_in, b_out = parts[0], _int(parts[1]), _int(parts[2])
+        if label[:3] in ("tcp", "udp") and " " in label:
+            if self._current:
+                self._current[-1].flows.append(
+                    Flow(label, remote_addr(label), b_in, b_out))
+            return None
+        name, _, pid = label.rpartition(".")  # names contain dots: 2.1.292.70303
+        if not pid.isdigit():
+            return None
+        self._current.append(ProcSample(name, int(pid)))
+        return None
+
+
+def remote_kind(addr: str) -> str:
+    """'internet', 'local' (loopback/LAN/link-local/multicast) or 'unknown'.
+
+    Only 'internet' traffic is metered on a ship, so only it is counted. A
+    wildcard remote (`*`) is an unconnected socket and is 'unknown'; an
+    unparseable address (a hostname, should `-n` ever be ignored) is assumed
+    to be internet rather than silently dropped.
+    """
+    if addr in ("*", ""):
+        return "unknown"
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return "internet"
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if (ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_multicast or ip.is_unspecified):
+        return "local"
+    return "internet"
+
+
+@dataclass
+class FlowDelta:
+    pid: int
+    name: str
+    remote: str
+    d_in: int
+    d_out: int
+
+
+class FlowTracker:
+    """Per-flow byte deltas between successive blocks.
+
+    nettop's counters cover only sockets open *now*: a closed connection's
+    bytes vanish from the next sample. So totals are built from per-flow
+    deltas, never from the process line. Flows in the first block are the
+    baseline (traffic from before the monitor started); a flow first seen
+    later opened since, so its whole count is new. A counter that went
+    backwards means the same connection string was reused by a new socket.
+    """
+
+    def __init__(self):
+        self._prev: dict[tuple, tuple[int, int]] | None = None
+
+    def update(self, block: list[ProcSample]) -> list[FlowDelta]:
+        cur: dict[tuple, tuple[int, int]] = {}
+        out: list[FlowDelta] = []
+        first = self._prev is None
+        for proc in block:
+            seen: dict[str, int] = {}
+            for flow in proc.flows:
+                # Identical strings repeat within a process (several
+                # unconnected `udp4 *:*<->*:*` sockets), so number them.
+                n = seen.get(flow.conn, 0)
+                seen[flow.conn] = n + 1
+                key = (proc.pid, flow.conn, n)
+                cur[key] = (flow.bytes_in, flow.bytes_out)
+                if first:
+                    continue
+                p_in, p_out = self._prev.get(key, (0, 0))
+                d_in = flow.bytes_in - p_in
+                d_out = flow.bytes_out - p_out
+                if d_in < 0 or d_out < 0:
+                    d_in, d_out = flow.bytes_in, flow.bytes_out
+                if d_in or d_out:
+                    out.append(FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out))
+        self._prev = cur
+        return out
+
+
+# --- process tree and session registry ---------------------------------------
+
+
+def process_table() -> dict[int, tuple[int, str]]:
+    """pid -> (ppid, command basename) for every process, from one `ps`."""
+    try:
+        res = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    table = {}
+    for line in res.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        comm = parts[2] if len(parts) > 2 else ""
+        table[int(parts[0])] = (int(parts[1]), comm.rsplit("/", 1)[-1])
+    return table
+
+
+def read_registry(sessions_dir: Path) -> dict[int, dict]:
+    """pid -> registry record, from ~/.claude/sessions/<pid>.json."""
+    out = {}
+    if not sessions_dir.is_dir():
+        return out
+    for entry in sessions_dir.glob("*.json"):
+        try:
+            obj = json.loads(entry.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("pid"), int):
+            out[obj["pid"]] = obj
+    return out
+
+
+def find_transcript(session_id: str, projects: Path) -> Path | None:
+    hits = list(projects.glob(f"*/{session_id}.jsonl")) if projects.is_dir() else []
+    return hits[0] if hits else None
+
+
+def _image_bytes(content) -> list[int]:
+    """Encoded sizes of every image block, including inside tool results."""
+    out = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "image":
+                data = (block.get("source") or {}).get("data") or ""
+                out.append(len(data))
+            out.extend(_image_bytes(block.get("content")))
+    return out
+
+
+class TranscriptWatcher:
+    """Follows one transcript by offset, reading only what was appended.
+
+    Tracks what the next request will re-send: the context size from the
+    latest main-thread `usage`, and the images since the last
+    `compact_boundary` (an image rides along on every request until then).
+    """
+
+    INTERESTING = ('"image"', '"usage"', "compact_boundary", '"custom-title"', '"ai-title"')
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.offset = 0
+        self.context_tokens: int | None = None
+        self.images: list[int] = []
+        self.title: str | None = None
+        self._custom = False
+
+    def poll(self) -> None:
+        try:
+            with self.path.open("rb") as f:
+                f.seek(self.offset)
+                chunk = f.read()
+        except OSError:
+            return
+        end = chunk.rfind(b"\n")
+        if end < 0:
+            return  # only a partial line so far
+        self.offset += end + 1
+        for raw in chunk[:end].split(b"\n"):
+            line = raw.decode("utf-8", errors="replace")
+            if not any(tag in line for tag in self.INTERESTING):
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                self._apply(obj)
+
+    def _apply(self, obj: dict) -> None:
+        t = obj.get("type")
+        if t == "custom-title" and isinstance(obj.get("customTitle"), str):
+            self.title, self._custom = obj["customTitle"], True
+            return
+        if t == "ai-title" and isinstance(obj.get("aiTitle"), str):
+            if not self._custom:
+                self.title = obj["aiTitle"]
+            return
+        if obj.get("isSidechain"):
+            return
+        if obj.get("subtype") == "compact_boundary":
+            self.images = []
+            return
+        msg = obj.get("message")
+        if not isinstance(msg, dict):
+            return
+        if t == "user":
+            self.images.extend(_image_bytes(msg.get("content")))
+        elif t == "assistant" and isinstance(msg.get("usage"), dict):
+            u = msg["usage"]
+            self.context_tokens = sum(
+                u.get(k) or 0 for k in
+                ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+
+
+# --- accounting -------------------------------------------------------------
+
+
+@dataclass
+class Counter:
+    total_in: int = 0
+    total_out: int = 0
+    rate_in: float = 0.0
+    rate_out: float = 0.0
+    _tick_in: int = 0
+    _tick_out: int = 0
+
+    def add(self, d_in: int, d_out: int) -> None:
+        self.total_in += d_in
+        self.total_out += d_out
+        self._tick_in += d_in
+        self._tick_out += d_out
+
+    def close_tick(self, seconds: float) -> None:
+        seconds = max(seconds, 1e-6)
+        self.rate_in, self.rate_out = self._tick_in / seconds, self._tick_out / seconds
+        self._tick_in = self._tick_out = 0
+
+    @property
+    def total(self) -> int:
+        return self.total_in + self.total_out
+
+
+@dataclass
+class Session:
+    pid: int
+    label: str = ""
+    project: str = ""
+    session_id: str | None = None
+    alive: bool = True
+    traffic: Counter = field(default_factory=Counter)
+    api_bytes: int = 0
+    children: dict[str, Counter] = field(default_factory=dict)
+    watcher: TranscriptWatcher | None = None
+
+    @property
+    def title(self) -> str:
+        if self.label:
+            return self.label
+        if self.watcher and self.watcher.title:
+            return self.watcher.title
+        return "(untitled)"
+
+
+class Monitor:
+    """Everything the screen shows, updated one nettop block at a time."""
+
+    def __init__(self, sessions_dir: Path | None = None,
+                 projects_dir: Path | None = None, api_ips: set[str] | None = None):
+        self.sessions_dir = sessions_dir or claudeutils.CLAUDE_SESSIONS
+        self.projects_dir = projects_dir or claudeutils.CLAUDE_PROJECTS
+        self.api_ips = set(api_ips or API_FALLBACK_IPS)
+        self.tracker = FlowTracker()
+        self.sessions: dict[int, Session] = {}
+        self.others: dict[str, Counter] = {}
+        self.other_total = Counter()
+        self.claude_total = Counter()
+        self.owner: dict[int, int] = {}   # sticky pid -> session pid
+        self.started = time.time()
+        self.last_block: float | None = None
+
+    # The process table and registry are passed in so tests drive them.
+    def ingest(self, block: list[ProcSample], ps: dict[int, tuple[int, str]],
+               registry: dict[int, dict], now: float) -> None:
+        self._sync_sessions(registry, ps)
+        for pid in ps:  # learn owners while children are alive (sticky)
+            self._owner_of(pid, ps)
+        for proc in block:
+            if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
+                self.sessions[proc.pid] = Session(proc.pid, label="(unregistered claude)")
+        for d in self.tracker.update(block):
+            if remote_kind(d.remote) != "internet":
+                continue
+            owner = self._owner_of(d.pid, ps)
+            # nettop truncates names to 15 characters; ps has the full one.
+            name = ps.get(d.pid, (0, ""))[1] or d.name
+            if owner is None:
+                self.others.setdefault(name, Counter()).add(d.d_in, d.d_out)
+                self.other_total.add(d.d_in, d.d_out)
+                continue
+            s = self.sessions[owner]
+            s.traffic.add(d.d_in, d.d_out)
+            self.claude_total.add(d.d_in, d.d_out)
+            if d.remote in self.api_ips:
+                s.api_bytes += d.d_in + d.d_out
+            if d.pid != owner:
+                s.children.setdefault(name, Counter()).add(d.d_in, d.d_out)
+        elapsed = now - self.last_block if self.last_block else 1.0
+        self.last_block = now
+        for c in self._counters():
+            c.close_tick(elapsed)
+        for s in self.sessions.values():
+            if s.watcher:
+                s.watcher.poll()
+
+    def _counters(self):
+        yield self.other_total
+        yield self.claude_total
+        yield from self.others.values()
+        for s in self.sessions.values():
+            yield s.traffic
+            yield from s.children.values()
+
+    def _sync_sessions(self, registry: dict[int, dict], ps: dict) -> None:
+        for pid, rec in registry.items():
+            if ps and pid not in ps:
+                continue  # stale file left by a crash
+            s = self.sessions.setdefault(pid, Session(pid))
+            if s.label == "(unregistered claude)":
+                s.label = ""
+            s.alive = True
+            name = rec.get("name")
+            if isinstance(name, str) and name:
+                s.label = name
+            cwd = rec.get("cwd")
+            if isinstance(cwd, str):
+                s.project = Path(cwd).name or cwd
+            sid = rec.get("sessionId")
+            if isinstance(sid, str) and sid != s.session_id:
+                s.session_id = sid  # changes on /clear: follow the new transcript
+                path = find_transcript(sid, self.projects_dir)
+                s.watcher = TranscriptWatcher(path) if path else None
+            elif s.watcher is None and s.session_id:
+                path = find_transcript(s.session_id, self.projects_dir)
+                s.watcher = TranscriptWatcher(path) if path else None
+        for pid, s in self.sessions.items():
+            if ps and pid not in ps:
+                s.alive = False
+
+    def _owner_of(self, pid: int, ps: dict) -> int | None:
+        """The session pid whose process tree `pid` belongs to, if any.
+
+        Sticky: a child that exits before `ps` sees it keeps the owner it was
+        given while alive. One nettop block can still name a pid that was
+        born and died between two `ps` snapshots; that one goes unattributed.
+        """
+        if pid in self.owner:
+            return self.owner[pid]
+        p, hops = pid, 0
+        while p and hops < 64:
+            if p in self.sessions:
+                self.owner[pid] = p
+                return p
+            p = ps.get(p, (0, ""))[0]
+            hops += 1
+        return None
+
+
+# --- interface counters and API addresses -----------------------------------
+
+
+def default_interface() -> str | None:
+    try:
+        res = subprocess.run(["route", "-n", "get", "default"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in res.stdout.splitlines():
+        key, _, val = line.strip().partition(":")
+        if key == "interface":
+            return val.strip() or None
+    return None
+
+
+def interface_bytes(iface: str) -> tuple[int, int] | None:
+    """(bytes in, bytes out) for `iface` from `netstat -ib`'s <Link#> row."""
+    try:
+        res = subprocess.run(["netstat", "-ib", "-I", iface],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = res.stdout.splitlines()
+    if not lines:
+        return None
+    cols = lines[0].split()
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) == len(cols) and parts[2].startswith("<Link#"):
+            try:
+                return int(parts[cols.index("Ibytes")]), int(parts[cols.index("Obytes")])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+class InterfaceMeter:
+    """Bytes through the default-route interface since the monitor started.
+
+    The raw counter includes LAN traffic, so it is ground truth for "nothing
+    escaped the per-flow count" only when the LAN is quiet. Re-resolved every
+    tick: the default route moves between Ethernet and Wi-Fi.
+    """
+
+    def __init__(self):
+        self.base: dict[str, tuple[int, int]] = {}
+        self.iface: str | None = None
+        self.since: tuple[int, int] | None = None
+
+    def poll(self) -> None:
+        self.iface = default_interface()
+        if not self.iface:
+            self.since = None
+            return
+        cur = interface_bytes(self.iface)
+        if cur is None:
+            self.since = None
+            return
+        base = self.base.setdefault(self.iface, cur)
+        self.since = (cur[0] - base[0], cur[1] - base[1])
+
+
+def resolve_api_ips() -> set[str]:
+    try:
+        infos = socket.getaddrinfo(API_HOST, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return set()
+    return {info[4][0] for info in infos}
+
+
+# --- rendering --------------------------------------------------------------
+
+
+def human(n: float) -> str:
+    """Bytes as a short human string: 512 B, 12.3 KB, 4.1 MB."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1000 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1000
+    return f"{n:.1f} GB"
+
+
+def tokens(n: int | None) -> str:
+    if n is None:
+        return "-"
+    return f"{n / 1000:.0f}k" if n < 1_000_000 else f"{n / 1e6:.2f}M"
+
+
+def hms(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def fit(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+ROW_FMT = "{:<28} {:<12} {:>6} {:>10} {:>10} {:>9} {:>9} {:>4} {:>6} {:>10}"
+OTHER_FMT = "{:<48} {:>10} {:>10} {:>9} {:>9}"
+
+
+def _rates(c: Counter) -> tuple[str, str, str, str]:
+    return (f"{human(c.rate_out)}/s", f"{human(c.rate_in)}/s",
+            human(c.total_out), human(c.total_in))
+
+
+def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int) -> list[tuple[str, str]]:
+    """The whole screen as (text, style) lines; style is '', 'bold' or 'dim'."""
+    lines: list[tuple[str, str]] = []
+    add = lines.append
+    add((f"claude-traffic-monitor   running {hms(now - mon.started)}   "
+         "internet traffic only (LAN and loopback excluded)   q quits", "bold"))
+    if meter.iface and meter.since:
+        add((f"interface {meter.iface} (raw, includes LAN):  "
+             f"up {human(meter.since[1])}   down {human(meter.since[0])}", ""))
+    else:
+        add(("interface: no default route", "dim"))
+    add(("", ""))
+    add((ROW_FMT.format("SESSION", "PROJECT", "PID", "UP/s", "DOWN/s", "UP", "DOWN",
+                        "API%", "CTX", "IMAGES"), "bold"))
+    sessions = sorted(mon.sessions.values(),
+                      key=lambda s: (not s.alive, -s.traffic.total, s.pid))
+    for s in sessions:
+        t = s.traffic
+        api = f"{100 * s.api_bytes // t.total}" if t.total else "-"
+        w = s.watcher
+        imgs = "-"
+        if w and w.images:
+            imgs = f"{len(w.images)}/{human(sum(w.images))}"
+        title = s.title if s.alive else f"{s.title} (ended)"
+        add((ROW_FMT.format(fit(title, 28), fit(s.project, 12), s.pid, *_rates(t),
+                            api, tokens(w.context_tokens if w else None), imgs),
+             "" if s.alive else "dim"))
+        for name, c in sorted(s.children.items(), key=lambda kv: -kv[1].total):
+            add((ROW_FMT.format(fit(f"  └ {name}", 28), "", "", *_rates(c), "", "", ""), "dim"))
+    add((ROW_FMT.format("Claude total", "", "", *_rates(mon.claude_total), "", "", ""), "bold"))
+    add(("", ""))
+    add((OTHER_FMT.format("OTHER PROCESSES (internet)", "UP/s", "DOWN/s", "UP", "DOWN"), "bold"))
+    hot = sorted(mon.others.items(), key=lambda kv: -kv[1].total)
+    for name, c in hot[:top]:
+        add((OTHER_FMT.format(fit(name, 48), *_rates(c)), ""))
+    if len(hot) > top:
+        add((f"  … and {len(hot) - top} more", "dim"))
+    add((OTHER_FMT.format("Everything else total", *_rates(mon.other_total)), "bold"))
+    return lines
+
+
+# --- the live screen --------------------------------------------------------
+
+
+def reader(proc: subprocess.Popen, out: queue.Queue) -> None:
+    parser = NettopParser()
+    for line in proc.stdout:
+        block = parser.feed(line)
+        if block is not None:
+            out.put((time.time(), block))
+    out.put(None)  # nettop exited
+
+
+def run(stdscr, interval: int, top: int) -> str | None:
+    curses.curs_set(0)
+    stdscr.timeout(200)
+    styles = {"": curses.A_NORMAL, "bold": curses.A_BOLD, "dim": curses.A_DIM}
+    nettop = subprocess.Popen(
+        ["nettop", "-L", "0", "-s", str(interval), "-x", "-n", "-J", "bytes_in,bytes_out"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    blocks: queue.Queue = queue.Queue()
+    threading.Thread(target=reader, args=(nettop, blocks), daemon=True).start()
+    mon = Monitor(api_ips=resolve_api_ips() | API_FALLBACK_IPS)
+    meter = InterfaceMeter()
+    api_checked = time.time()
+    dirty = True
+    try:
+        while True:
+            key = stdscr.getch()
+            if key in (ord("q"), ord("Q")):
+                return None
+            if key == curses.KEY_RESIZE:
+                dirty = True
+            while True:
+                try:
+                    item = blocks.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    return "nettop exited unexpectedly"
+                stamp, block = item
+                mon.ingest(block, process_table(), read_registry(mon.sessions_dir), stamp)
+                meter.poll()
+                dirty = True
+            if time.time() - api_checked > API_REFRESH_SECONDS:
+                mon.api_ips |= resolve_api_ips()
+                api_checked = time.time()
+            if dirty:
+                draw(stdscr, render(mon, meter, time.time(), top), styles)
+                dirty = False
+    finally:
+        nettop.kill()
+        nettop.wait()
+
+
+def draw(stdscr, lines: list[tuple[str, str]], styles: dict) -> None:
+    stdscr.erase()
+    height, width = stdscr.getmaxyx()
+    for y, (text, style) in enumerate(lines[: height]):
+        try:
+            stdscr.addnstr(y, 0, text, width - 1, styles.get(style, curses.A_NORMAL))
+        except curses.error:
+            pass  # writing the bottom-right cell raises; harmless
+    stdscr.refresh()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="claude-traffic-monitor",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Live, top-like view of network traffic per Claude Code session, "
+                    "counted since the monitor started.",
+        epilog="Counts internet traffic only: loopback and LAN flows are excluded.\n"
+               "Totals start at zero when the monitor starts and are kept in memory only.\n"
+               "Requires macOS nettop. Press q to quit.",
+    )
+    parser.add_argument("-s", "--interval", type=int, default=1, metavar="SECONDS",
+                        help="Sampling interval in whole seconds (default: 1)")
+    parser.add_argument("--top", type=int, default=8, metavar="N",
+                        help="How many non-Claude processes to list (default: 8)")
+    add_version_arg(parser)
+    args = parser.parse_args(argv)
+    if args.interval < 1:
+        error("--interval must be at least 1 second")
+    if not sys.stdout.isatty():
+        error("needs a terminal (it redraws the screen like top)")
+    if shutil.which("nettop") is None:
+        error("nettop not found (macOS only)")
+    locale.setlocale(locale.LC_ALL, "")
+    try:
+        problem = curses.wrapper(run, args.interval, args.top)
+    except KeyboardInterrupt:
+        problem = None
+    if problem:
+        error(problem)
+
+
+if __name__ == "__main__":
+    main()

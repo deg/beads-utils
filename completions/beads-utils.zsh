@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-rename claude-session-report
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-rename claude-session-report claude-traffic-monitor
 #
 # zsh tab completion for beads-utils.
 #
@@ -225,6 +225,14 @@ _beads_dispatch() {
       '--no-pager[write directly to stdout; skip the pager]' \
       '1:query:'
     ;;
+  claude-traffic-monitor)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '(-s --interval)-s+[sampling interval in whole seconds]:seconds' \
+      '(-s --interval)--interval=[sampling interval in whole seconds]:seconds' \
+      '--top=[how many non-Claude processes to list]:count'
+    ;;
   claude-session-rename)
     _arguments -s -S \
       '(- *)--version[show version and exit]' \
@@ -238,4 +246,4 @@ _beads_dispatch() {
 compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff \
   claude-session-find claude-session-list claude-session-rename \
-  claude-session-report
+  claude-session-report claude-traffic-monitor

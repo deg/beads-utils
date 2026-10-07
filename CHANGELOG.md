@@ -1,5 +1,6 @@
 ## Unreleased
 
+* [feature] Add `claude-traffic-monitor`, a live `top`-like view of how much each running Claude Code session uploads and downloads, which share goes to the API, and the context and images driving it, plus the busiest other processes on the link (macOS)
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`

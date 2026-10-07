@@ -78,6 +78,10 @@ Current scripts:
 - `claude-session-rename` — Retitles a session from the shell exactly as
   `/rename` would, by appending the same two records. Refuses a running
   session.
+- `claude-traffic-monitor` — Live `top`-style screen (curses) of internet
+  traffic per running Claude Code session since the monitor started:
+  rates, totals, API share, context size and images in context, plus the
+  busiest non-Claude processes. macOS only (`nettop`). Needs a terminal.
 - `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
   `sessions`); the single front door behind `completions/`.
 
@@ -96,7 +100,8 @@ Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
 auto-discovery from the current directory); `claude-session-report` takes a
 Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
 takes no positional args (current project unless `-g/--global`);
-`claude-session-rename` takes a session and a title; `bd-complete`
+`claude-session-rename` takes a session and a title; `claude-traffic-monitor`
+takes none (it watches the whole machine); `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
 
 ## Design notes live in `.claude/rules/`
@@ -111,6 +116,7 @@ tests and costs nothing otherwise:
 |---|---|
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-view.md` | that script and its test file |
 | `claude-sessions.md` | `claude-session-*`, `claudeutils.py`, their tests |
+| `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
 | `bdutils.md` | `bdutils.py` and its tests |
 | `tests.md` | anything under `tests/`, `pytest.ini` |

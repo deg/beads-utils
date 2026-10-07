@@ -41,6 +41,7 @@ the clone itself on `PATH`; the scripts run in place either way.
 | [`claude-session-rename`](claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
+| [`claude-traffic-monitor`](claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
 Run any script with `--help` for full usage. Conventions live in

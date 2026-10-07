@@ -28,7 +28,7 @@ pytestmark = pytest.mark.e2e
 SCRIPTS = [
     "bd-complete", "bd-dolt-check", "bd-dolt-diff", "bd-export-csv",
     "bd-log", "bd-view", "claude-session-find", "claude-session-list",
-    "claude-session-rename", "claude-session-report",
+    "claude-session-rename", "claude-session-report", "claude-traffic-monitor",
 ]
 
 

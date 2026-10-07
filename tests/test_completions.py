@@ -41,6 +41,7 @@ COMMANDS = [
     "claude-session-find",
     "claude-session-list",
     "claude-session-rename",
+    "claude-traffic-monitor",
     "claude-session-report",
 ]
 
