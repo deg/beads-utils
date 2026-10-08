@@ -36,8 +36,9 @@ for one beads repo, or with `-g/--global` for every one on the machine
   places, because a backup check cannot pass on what it did not see: a
   working set that could not be read, and `UNVERIFIABLE`, both fail here
   (bd-dolt-check exits 0 on them). `BEHIND` passes, for the reason above.
-  A `.beads` with no Dolt database (a legacy JSONL store, `degel/fortune`)
-  fails as `no Dolt database`.
+  A `.beads` with no Dolt database (a legacy sqlite/JSONL store, as
+  `degel/fortune` was until its 2026-10-08 migration) fails as `no Dolt
+  database`.
 - **Never runs `bd`.** Opening a store with a newer bd migrates it on the
   spot (see the `bd-upgrade-playbook` memory), so a read-only sweep of 20
   repos must stick to git, dolt and file reads.
@@ -80,8 +81,8 @@ with `.beads/metadata.json`:
 3. `~/.emacs.d`, `~/bin`, `~/core-personal-files` (`EXTRA_REPOS`), the three
    the bd-upgrade inventory found outside `~/Documents`.
 
-No exclusion list, by the owner's choice: a dead store like `degel/fortune`
-fails every run until its `.beads` goes. `mirror/beads` drops out on its own,
+No exclusion list, by the owner's choice: a dead or legacy store fails every
+run until its `.beads` goes or is migrated. `mirror/beads` drops out on its own,
 since it has a `.beads` but no `metadata.json`.
 
 ## Tests
