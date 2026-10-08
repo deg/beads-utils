@@ -18,7 +18,27 @@ SVG, the font-stack patch, the measured console width, the `$ command`
 prompt line — lives in `tools/make-screenshots.py` beside the code it
 explains.
 
+Two shots run on staged input (`tools/staging.py`), chosen by the owner on
+2026-10-08. The real data would show the whole machine in a public README:
+`bd-verify-backup -g` lists every beads repo, client names included, and
+`claude-traffic-monitor` lists every running session's title and project.
+The real code still draws both:
+- `bd-verify-backup` runs for real, in a fake `HOME` of throwaway repos built
+  with real `git`, `bd init` and `bd dolt push` to local bare remotes. This
+  takes about 40 s, which is most of a `make screenshots` run. The env also
+  overrides `XDG_CONFIG_HOME` and the git config variables, so the user's
+  signing and hooks stay out. The temp root is resolved before it becomes
+  `HOME`, because macOS's temp dir sits under the `/var` symlink and an
+  unresolved `HOME` printed every row's full path instead of `~/...`.
+- `claude-traffic-monitor` is curses and cannot be piped. So synthetic
+  nettop blocks, a process table, a registry and transcripts go through its
+  own `Monitor.ingest()` and `render()`, on a fixed clock. The totals, API%,
+  NEXT and bytes per token are therefore what the code computes, not numbers
+  typed in.
+Unlike the others, both images come out byte-identical on every run
+(checked on 2026-10-08), so they show no diff unless their code changed.
+
 Two things that bite from outside the script: it must stay out of the repo
 root, or shebang discovery sweeps it into `make smoke`; and it is not
 idempotent, since the images capture live bead data, so it stays out of
-`make ci`.
+`make ci`. The two staged shots are reproducible, but the run as a whole is not.

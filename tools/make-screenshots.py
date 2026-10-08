@@ -10,6 +10,11 @@ pipe, and the ANSI it emits is rendered deterministically: rich turns it
 into an SVG, which resvg rasterizes. Nothing depends on anyone's terminal
 settings, and every viewer sees the same finished raster.
 
+Two shots run on staged input instead of this repo's data, because the real
+thing would show the whole machine: ``bd-verify-backup -g`` and
+``claude-traffic-monitor``. ``staging.py`` explains how, and why it is still
+the real code that draws them.
+
 Layout is machine-independent (rich lays out from font_aspect_ratio, not from
 font metrics), but the pixels are not: the font stack below prefers Menlo,
 which ships only on macOS, so a Linux run rasterizes with DejaVu Sans Mono.
@@ -29,6 +34,9 @@ import io
 import re
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import resvg_py
@@ -36,6 +44,8 @@ from rich.cells import cell_len
 from rich.console import Console
 from rich.terminal_theme import TerminalTheme
 from rich.text import Text
+
+import staging
 
 REPO = Path(__file__).resolve().parent.parent
 OUT = REPO / "docs" / "img"
@@ -60,30 +70,44 @@ def _theme() -> TerminalTheme:
     return TerminalTheme(_rgb("#0d1117"), _rgb("#c9d1d9"), shades, shades)
 
 
-# Each entry is (filename stem, typed, command).
-#
+@dataclass
+class Shot:
+    """One image: docs/img/<stem>.png.
+
+    `typed` is drawn as the prompt line. The output comes from `command`, run
+    in the repo; with `stage`, in an environment it builds in a temp dir. A
+    curses screen cannot be piped, so `screen` produces its ANSI directly.
+    """
+    stem: str
+    typed: str
+    command: str = ""
+    stage: Callable[[Path], dict[str, str]] | None = None
+    screen: Callable[[Path], str] | None = None
+
+
 # `typed` is what a reader should type, and it is drawn as a prompt line at
 # the top of the image — without it the image shows output with no way to
 # tell what produced it. It deliberately omits the capture scaffolding in
 # `command`: --color=always and --no-pager only exist because we render
 # through a pipe, and at a real terminal both are the default.
 #
-# The commands run against this repo's own beads, so regenerating produces
+# Most commands run against this repo's own beads, so regenerating produces
 # a fresh diff every time — that is expected, see .claude/rules/screenshots.md.
+# The two staged shots at the end are the exception.
 SHOTS = [
-    (
+    Shot(
         "bd-log",
         "bd-log --oneline -n 10",
         "./bd-log --oneline --legend=always --color=always -n 10 --no-pager",
     ),
-    (
+    Shot(
         "bd-log-live",
         "bd-log --oneline --open --about=beads --no-deferred --no-blocked"
         " --legend=never -n 8",
         "./bd-log --oneline --open --about=beads --no-deferred --no-blocked"
         " --color=always --legend=never -n 8 --no-pager",
     ),
-    (
+    Shot(
         "claude-session-list",
         "claude-session-list --oneline -n 8",
         # -n 8 keeps the image short, and keeps the STARTED column
@@ -92,12 +116,12 @@ SHOTS = [
         # a static image.
         "./claude-session-list --oneline -n 8 --no-pager",
     ),
-    (
+    Shot(
         "bd-dolt-check",
         "bd-dolt-check",
         "./bd-dolt-check .",
     ),
-    (
+    Shot(
         # A bead whose notes are actually Markdown, so the image shows the
         # bullets, bold headings and status color that are this script's
         # entire reason to exist. Most beads here are plain prose, which
@@ -106,12 +130,25 @@ SHOTS = [
         "bd-view beads-utils-5lw",
         "./bd-view beads-utils-5lw --no-pager",
     ),
+    Shot(
+        # Staged repos: the real -g table would list every repo on the machine.
+        "bd-verify-backup",
+        "bd-verify-backup -g",
+        "./bd-verify-backup -g --color=always",
+        stage=staging.stage_backup_repos,
+    ),
+    Shot(
+        # Staged traffic through the monitor's own accounting and render().
+        "claude-traffic-monitor",
+        "claude-traffic-monitor",
+        screen=staging.traffic_monitor_screen,
+    ),
 ]
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def capture(command: str) -> str:
+def capture(command: str, env: dict[str, str] | None = None) -> str:
     """Run one command in the repo and return the ANSI it printed.
 
     stderr is kept rather than discarded so a failure names its own cause.
@@ -121,7 +158,7 @@ def capture(command: str) -> str:
     design when the repo is unpushed, which is the state its shot depicts.
     """
     done = subprocess.run(
-        command, shell=True, cwd=REPO, text=True, errors="replace",
+        command, shell=True, cwd=REPO, text=True, errors="replace", env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     out = done.stdout.rstrip("\n")
@@ -217,10 +254,15 @@ def render(ansi: str, title: str, dest: Path) -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    for stem, typed, command in SHOTS:
-        check_typed(typed, command)
-        body = prompt_line(typed) + capture(command)
-        render(body, stem, OUT / f"{stem}.png")
+    for shot in SHOTS:
+        with tempfile.TemporaryDirectory(prefix="beads-utils-shot-") as tmp:
+            if shot.screen:
+                out = shot.screen(Path(tmp))
+            else:
+                check_typed(shot.typed, shot.command)
+                env = shot.stage(Path(tmp)) if shot.stage else None
+                out = capture(shot.command, env)
+        render(prompt_line(shot.typed) + out, shot.stem, OUT / f"{shot.stem}.png")
 
 
 if __name__ == "__main__":

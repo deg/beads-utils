@@ -118,6 +118,8 @@ answers the follow-up — what exactly would a `bd dolt push` send? —
 with an issue-level diff: added and removed beads, field-by-field
 changes, dependency and comment edits.
 
+![bd-dolt-check reporting an unpushed repo](docs/img/bd-dolt-check.png)
+
 `bd-verify-backup` asks the wider question: if this laptop died now, what
 would be lost? Per repo it checks for uncommitted files and stashes, for
 any local branch with no upstream or commits not pushed to it, and for
@@ -126,7 +128,7 @@ beads data not committed and pushed (the same check as `bd-dolt-check`).
 in parallel, one line each, failures first, and exits non-zero if any of
 them would lose something.
 
-![bd-dolt-check reporting an unpushed repo](docs/img/bd-dolt-check.png)
+![bd-verify-backup -g over a set of sample repos](docs/img/bd-verify-backup.png)
 
 ### Looking at Claude sessions
 
@@ -171,6 +173,8 @@ drive it, with an estimate of what the next message will upload. Below that
 come the busiest other processes on the link, so you can tell when Claude isn't
 the one using it. Press `?` for its keys. It reads macOS's `nettop`, so it runs
 on macOS only.
+
+![claude-traffic-monitor with sample sessions and traffic](docs/img/claude-traffic-monitor.png)
 
 ## Tests and tooling
 
