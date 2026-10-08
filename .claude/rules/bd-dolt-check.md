@@ -11,9 +11,43 @@ The one-paragraph summary lives in the root `CLAUDE.md`; this is the
 rationale an editor needs. Keep new design notes here, not there.
 
 `bd-dolt-check` — Verifies that a beads repo's Dolt data (stored under
-`refs/dolt/data` on the git remote, invisible in GitHub's UI) has actually been
-pushed. Compares `.beads/push-state.json` against `git ls-remote` and the local
-`.dolt/repo_state.json` / `dolt log`. Exits 1 on OUT OF SYNC so CI can gate on it.
+`refs/dolt/data` on the beads remote, invisible in GitHub's UI) has actually been
+pushed. Checks that ref with `git ls-remote`, then compares the local Dolt
+branch against its remote-tracking ref after a `dolt fetch`. Exits 1 on OUT OF
+SYNC so CI can gate on it. (Earlier docs said it read `.beads/push-state.json`;
+no version of the code ever did.)
+
+**Which remote.** `bdutils.resolve_beads_remote()` picks, in order, the Dolt
+database's own remote (`repo_state.json`, `origin` else the first — what `bd
+dolt push` pushes to and what the `dolt fetch` below already used), then
+`sync.remote` from `.beads/config.yaml`, then the git origin. It used to be
+the git origin unconditionally (`beads-utils-tj0`): `~/Documents/degel/website`
+has a public git origin and pushes its beads to a private
+`degel-website-internal-assets` repo, so the check said `NOT FOUND` about data
+that was safely pushed — and would have said `IN SYNC` had someone pushed to
+the public repo by mistake. The header prints the remote used and its source,
+and says `not the git origin` when they differ; that is stated, not warned
+about, because for a public code repo it is the point. `config.yaml` comes in
+two spellings on this machine (flat `sync.remote:` and a nested `sync:` block),
+read line-wise so `bdutils` stays stdlib-only. A Dolt remote that is not a git
+repository (az://, DoltHub) has no `refs/dolt/data`, so the presence check is
+skipped and the Dolt-native comparison decides.
+
+Two things the first cut of that fix got wrong, both found by running it on
+all 19 repos here rather than by the suite:
+- **`./` in a stored Dolt URL.** Six repos (article-drafts, miluim, namer,
+  nscheme, novalty, nutshell-mvp) have `git+ssh://git@github.com/./deg/<repo>.git`.
+  `dolt fetch` reads it fine; `git ls-remote` passes it through and GitHub
+  refuses it, which read as `NOT FOUND`. `git_url_for_dolt_remote()` drops
+  `./` segments, and `same_repo_url()` does too, or all six would be
+  labelled "not the git origin".
+- **The git-origin fallback is not a Dolt remote.** With neither a Dolt
+  remote nor `sync.remote` (vuagain23), the header says `none configured;
+  looking on the git origin` rather than presenting the origin as one.
+
+`git ls-remote` failing (offline, auth) still reads as `NOT FOUND`, as it
+always has: `get_remote_dolt_ref()` does not tell "absent" from "could not
+ask".
 It answers **committed *and* pushed**, on two independent axes. The commit
 comparison above is one; the other is the Dolt **working set**, read from the
 `dolt_status` system table. Without it a repo reads `IN SYNC` / exit 0 while

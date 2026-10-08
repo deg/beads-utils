@@ -26,18 +26,23 @@ from bdutils import (
     dolt_status,
     get_git_remote_url,
     get_head_branch,
+    git_url_for_dolt_remote,
     have_dolt,
     locate_dolt_db,
+    pick_dolt_remote,
     read_dolt_remotes,
     read_metadata,
+    resolve_beads_remote,
     resolve_project_path,
     run,
+    same_repo_url,
     strip_ansi,
 )
 
 
-def get_remote_dolt_ref(project_path: Path) -> str | None:
-    result = run(["git", "ls-remote", "origin", "refs/dolt/data"], cwd=project_path)
+def get_remote_dolt_ref(project_path: Path, git_url: str) -> str | None:
+    """Hash of refs/dolt/data on `git_url`, or None if it is absent."""
+    result = run(["git", "ls-remote", git_url, "refs/dolt/data"], cwd=project_path)
     line = result.stdout.strip()
     if not line:
         return None
@@ -192,20 +197,37 @@ def main() -> int:
     db_name, dolt_mode = read_metadata(beads_dir)
     remote_url = get_git_remote_url(project_path)
 
-    print(f"Repository:  {project_path}")
-    print(f"Remote:      {remote_url}")
-    print(f"Dolt DB:     {db_name} (mode: {dolt_mode})")
-    print()
-
     dolt_db_dir = locate_dolt_db(beads_dir, db_name)
     dolt_remotes = read_dolt_remotes(dolt_db_dir) if dolt_db_dir else {}
+    beads_remote = resolve_beads_remote(project_path, beads_dir, dolt_remotes)
+
+    print(f"Repository:  {project_path}")
+    print(f"Git remote:  {remote_url}")
+    if beads_remote is None:
+        print("Dolt remote: (none)")
+    elif beads_remote[1] == "git origin":
+        print("Dolt remote: (none configured; looking on the git origin)")
+    else:
+        url, source = beads_remote
+        # A beads remote other than the git origin is often deliberate (a
+        # public code repo whose beads live in a private one), so it is
+        # stated rather than warned about.
+        differs = "" if same_repo_url(url, remote_url) else "; not the git origin"
+        print(f"Dolt remote: {url} (from {source}{differs})")
+    print(f"Dolt DB:     {db_name} (mode: {dolt_mode})")
+    print()
 
     dirty = dolt_status(dolt_db_dir) if dolt_db_dir is not None else None
     n_dirty = len(dirty) if dirty else 0
     print_working_set(dirty, dolt_db_dir, db_name, dolt_mode)
 
-    remote_ref = get_remote_dolt_ref(project_path)
-    if remote_ref is None:
+    ls_url = git_url_for_dolt_remote(beads_remote[0]) if beads_remote else None
+    remote_ref = get_remote_dolt_ref(project_path, ls_url) if ls_url else None
+    if beads_remote is not None and ls_url is None:
+        # Not a git repository (az://, DoltHub, ...): there is no
+        # refs/dolt/data to look for, so go straight to Dolt's own comparison.
+        print("Remote:  not a git remote; refs/dolt/data presence not checked")
+    elif remote_ref is None:
         print("Remote:  refs/dolt/data NOT FOUND")
         print()
         if not dolt_remotes:
@@ -231,7 +253,8 @@ def main() -> int:
             print("Run 'bd dolt push' to push.")
         return 1
 
-    print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
+    else:
+        print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
 
     if dolt_db_dir is not None:
         if dolt_remotes:
@@ -259,7 +282,7 @@ def main() -> int:
         )
 
     branch = get_head_branch(dolt_db_dir)
-    remote_name = "origin" if "origin" in dolt_remotes else next(iter(dolt_remotes), "origin")
+    remote_name = pick_dolt_remote(dolt_remotes) or "origin"
     tracking_ref = f"remotes/{remote_name}/{branch}"
 
     if not dolt_fetch(dolt_db_dir, remote_name):

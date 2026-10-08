@@ -228,6 +228,99 @@ def get_git_remote_url(project_path: Path) -> str:
     return url if url else "(no remote)"
 
 
+def pick_dolt_remote(dolt_remotes: dict[str, str]) -> str | None:
+    """The Dolt remote `bd dolt push` would use: 'origin', else the first."""
+    if "origin" in dolt_remotes:
+        return "origin"
+    return next(iter(dolt_remotes), None)
+
+
+def read_sync_remote(beads_dir: Path) -> str | None:
+    """`sync.remote` from .beads/config.yaml, or None.
+
+    bd writes it in both spellings seen on this machine: a flat
+    `sync.remote: "..."` line, and a nested `sync:` block holding
+    `remote: "..."`. A line-level read covers both without a YAML parser
+    (bdutils stays stdlib-only); commented-out lines are skipped, since bd's
+    template ships a commented `# sync.remote:` example.
+    """
+    try:
+        lines = (beads_dir / "config.yaml").read_text().splitlines()
+    except OSError:
+        return None
+    in_sync = False
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.strip().partition(":")
+        if not sep:
+            continue
+        if line[0] not in " \t":
+            in_sync = key == "sync" and not value.strip()
+            if key == "sync.remote":
+                return value.strip().strip("'\"") or None
+        elif in_sync and key == "remote":
+            return value.strip().strip("'\"") or None
+    return None
+
+
+def git_url_for_dolt_remote(url: str) -> str | None:
+    """The URL `git ls-remote` can read for a Dolt remote, or None.
+
+    Dolt's git-backed remotes are spelled `git+ssh://` / `git+https://`;
+    dropping the `git+` gives the plain git URL. A remote already in git's own
+    spelling (scp-style `git@host:path`, `ssh://`, `https://`) passes through.
+    Anything else (az://, gs://, DoltHub) is not a git repository at all.
+
+    `./` path segments are dropped, as Dolt drops them: bd stored several of
+    this machine's remotes as `git+ssh://git@github.com/./deg/<repo>.git`
+    (from an scp-style `git@github.com:deg/<repo>`), which `dolt fetch`
+    reads fine and GitHub refuses ("./deg/miluim is not a valid repository
+    name") when git passes it through literally.
+    """
+    if url.startswith(("git+ssh://", "git+https://", "git+http://")):
+        scheme, _, rest = url[len("git+"):].partition("://")
+        host, _, path = rest.partition("/")
+        return f"{scheme}://{host}/{'/'.join(p for p in path.split('/') if p != '.')}"
+    if re.match(r"^[\w.-]+@[^:/]+:", url) or url.startswith(("ssh://", "https://", "http://")):
+        return url
+    return None
+
+
+def same_repo_url(a: str, b: str) -> bool:
+    """True when two remote URLs name the same repository, whatever their
+    spelling (`git+ssh://git@h/o/r.git`, `git@h:o/r`, `https://h/o/r`)."""
+    def norm(u: str) -> str:
+        u = re.sub(r"^(git\+)?[a-z]+://", "", u)
+        u = re.sub(r"^[^@/]+@", "", u)
+        u = u.replace(":", "/", 1).replace("/./", "/")
+        return re.sub(r"(\.git)?/*$", "", u).lower()
+    return norm(a) == norm(b)
+
+
+def resolve_beads_remote(project_path: Path, beads_dir: Path,
+                         dolt_remotes: dict[str, str]) -> tuple[str, str] | None:
+    """(url, source) of the remote a beads repo's Dolt data is pushed to.
+
+    In the order bd itself trusts them: the Dolt database's own remote (what
+    `bd dolt push` actually pushes to), then `sync.remote` from config.yaml,
+    and only then the git origin. Going straight to the git origin was
+    beads-utils-tj0: ~/Documents/degel/website pushes its beads to a private
+    repo while its git origin is public, so the check reported "no off-machine
+    copy" about a repo that had one.
+    """
+    name = pick_dolt_remote(dolt_remotes)
+    if name is not None:
+        return dolt_remotes[name], f"Dolt remote '{name}'"
+    sync_remote = read_sync_remote(beads_dir)
+    if sync_remote:
+        return sync_remote, "sync.remote"
+    git_url = get_git_remote_url(project_path)
+    if git_url != "(no remote)":
+        return git_url, "git origin"
+    return None
+
+
 def dolt_fetch(dolt_db_dir: Path, remote: str) -> bool:
     """Best-effort `dolt fetch <remote>` to refresh remote-tracking refs.
 

@@ -672,3 +672,63 @@ def test_paged_output_does_not_swallow_other_exceptions(monkeypatch):
     with pytest.raises(ValueError):
         with bdutils.paged_output(no_pager=True):
             raise ValueError("real bug")
+
+
+# --- beads remote resolution (beads-utils-tj0) ----------------------------
+
+
+@pytest.mark.parametrize("config,expected", [
+    ('sync.remote: "git+ssh://git@github.com/o/r.git"\n', "git+ssh://git@github.com/o/r.git"),
+    ('export.auto: false\nsync:\n    remote: "git@github.com:o/r.git"\nimport:\n    auto: false\n',
+     "git@github.com:o/r.git"),
+    # bd's template ships a commented example; it is not a setting.
+    ('# sync.remote: "git+ssh://x/y"\n', None),
+    # `remote:` under some other block is not sync's.
+    ('import:\n    remote: "nope"\n', None),
+    ("", None),
+])
+def test_read_sync_remote_reads_both_spellings(tmp_path, config, expected):
+    (tmp_path / "config.yaml").write_text(config)
+    assert bdutils.read_sync_remote(tmp_path) == expected
+
+
+def test_read_sync_remote_returns_none_without_a_config(tmp_path):
+    assert bdutils.read_sync_remote(tmp_path) is None
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("git+ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"),
+    ("git+ssh://git@github.com/./deg/miluim.git", "ssh://git@github.com/deg/miluim.git"),
+    ("git+https://github.com/o/r", "https://github.com/o/r"),
+    ("git@github.com:o/r.git", "git@github.com:o/r.git"),
+    ("https://github.com/o/r", "https://github.com/o/r"),
+    ("az://acct/db", None),
+    ("https://doltremoteapi.dolthub.com/o/r", "https://doltremoteapi.dolthub.com/o/r"),
+])
+def test_git_url_for_dolt_remote(url, expected):
+    assert bdutils.git_url_for_dolt_remote(url) == expected
+
+
+@pytest.mark.parametrize("a,b,same", [
+    ("git+ssh://git@github.com/deg/x.git", "git@github.com:deg/x", True),
+    ("https://github.com/Deg/X/", "git@github.com:deg/x.git", True),
+    ("git+ssh://git@github.com/./deg/x.git", "git@github.com:deg/x.git", True),
+    ("git+ssh://git@github.com/deg/x-internal.git", "git@github.com:deg/x.git", False),
+])
+def test_same_repo_url_ignores_spelling(a, b, same):
+    assert bdutils.same_repo_url(a, b) is same
+
+
+def test_resolve_beads_remote_prefers_the_dolt_remote(project, monkeypatch):
+    (project / ".beads" / "config.yaml").write_text('sync.remote: "git+ssh://h/sync"\n')
+    monkeypatch.setattr(bdutils, "get_git_remote_url", lambda p: "git@h:origin")
+    remotes = {"backup": "git+ssh://h/b", "origin": "git+ssh://h/dolt"}
+    assert bdutils.resolve_beads_remote(project, project / ".beads", remotes) == (
+        "git+ssh://h/dolt", "Dolt remote 'origin'")
+    assert bdutils.resolve_beads_remote(project, project / ".beads", {}) == (
+        "git+ssh://h/sync", "sync.remote")
+    (project / ".beads" / "config.yaml").unlink()
+    assert bdutils.resolve_beads_remote(project, project / ".beads", {}) == (
+        "git@h:origin", "git origin")
+    monkeypatch.setattr(bdutils, "get_git_remote_url", lambda p: "(no remote)")
+    assert bdutils.resolve_beads_remote(project, project / ".beads", {}) is None

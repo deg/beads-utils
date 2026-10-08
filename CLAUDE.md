@@ -51,9 +51,10 @@ Current scripts:
   and writes a flat CSV suitable for spreadsheet review. Supports `-s/--sort` with
   comma-separated keys and `-`-prefixed descending order.
 - `bd-dolt-check` — Verifies that a beads repo's Dolt data is committed *and*
-  pushed. The Dolt data lives under `refs/dolt/data` on the git remote,
-  invisible in GitHub's UI. It compares `.beads/push-state.json` against `git
-  ls-remote` and the local Dolt log, and reads the Dolt working set
+  pushed. The Dolt data lives under `refs/dolt/data` on the beads remote
+  (the Dolt database's own remote, else `sync.remote`, else the git origin),
+  invisible in GitHub's UI. It checks that ref with `git ls-remote`, compares
+  the local Dolt branch with its remote-tracking ref, and reads the Dolt working set
   (`dolt_status`) for tables changed but in no commit. Exits 1 on `OUT OF
   SYNC` or `UNCOMMITTED` so CI can gate on it.
 - `bd-dolt-diff` — Previews what a `bd dolt push` would send: an issue-level

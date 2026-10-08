@@ -12,6 +12,7 @@ import subprocess
 
 import pytest
 
+import bdutils
 from conftest import load_script
 
 bd_dolt_check = load_script("bd-dolt-check")
@@ -64,12 +65,12 @@ def test_get_remote_dolt_ref_returns_the_hash_from_ls_remote(project, monkeypatc
     )
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake}:{__import__('os').environ['PATH']}")
-    assert bd_dolt_check.get_remote_dolt_ref(project) == "deadbeef" * 5
+    assert bd_dolt_check.get_remote_dolt_ref(project, "origin") == "deadbeef" * 5
 
 
 def test_get_remote_dolt_ref_returns_none_when_the_ref_is_absent(project, tmp_path):
     make_git_repo(project)
-    assert bd_dolt_check.get_remote_dolt_ref(project) is None
+    assert bd_dolt_check.get_remote_dolt_ref(project, "origin") is None
 
 
 # --- get_recent_dolt_log --------------------------------------------------
@@ -167,6 +168,47 @@ def test_main_exits_one_when_the_remote_has_no_dolt_data(dolt_project, monkeypat
     assert "NOT FOUND" in capsys.readouterr().out
 
 
+def test_main_looks_for_dolt_data_on_the_dolt_remote_not_the_git_origin(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """beads-utils-tj0: website's git origin is public and its beads go to a
+    private repo. Asking the git origin reported NOT FOUND about data that
+    was safely pushed."""
+    bindir = tmp_path / "gitbin"
+    bindir.mkdir()
+    # Answers ls-remote only for the Dolt remote's URL (git+ dropped).
+    (bindir / "git").write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2" in\n'
+        "  'ls-remote ssh://git@github.com/o/r') printf 'abc123\\trefs/dolt/data\\n';;\n"
+        "  'remote get-url') echo git@github.com:o/public.git;;\n"
+        "esac\n")
+    (bindir / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    working_set(fake_dolt)
+    fake_dolt.default(stdout="samehash a commit\n")
+    assert run_main(monkeypatch, dolt_project) == 0
+    out = capsys.readouterr().out
+    assert "Remote:  refs/dolt/data = abc123" in out
+    assert ("Dolt remote: git+ssh://git@github.com/o/r "
+            "(from Dolt remote 'origin'; not the git origin)") in out
+
+
+def test_main_skips_the_presence_check_for_a_non_git_dolt_remote(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    """An az:// or DoltHub remote has no refs/dolt/data; asking git about it
+    would report NOT FOUND for any repo, pushed or not."""
+    state = dolt_project / ".beads" / "embeddeddolt" / "testdb" / ".dolt" / "repo_state.json"
+    state.write_text(json.dumps({"head": "refs/heads/main",
+                                 "remotes": {"origin": {"url": "az://acct/db"}}}))
+    install_fake_git(tmp_path, monkeypatch, "")
+    working_set(fake_dolt)
+    fake_dolt.default(stdout="samehash a commit\n")
+    assert run_main(monkeypatch, dolt_project) == 0
+    out = capsys.readouterr().out
+    assert "presence not checked" in out
+    assert "IN SYNC" in out
+
+
 def test_main_suggests_a_remote_url_when_none_is_configured(project, monkeypatch,
                                                             tmp_path, capsys):
     """No .dolt dir at all -> no configured remotes -> show how to add one."""
@@ -176,6 +218,18 @@ def test_main_suggests_a_remote_url_when_none_is_configured(project, monkeypatch
     assert run_main(monkeypatch, project) == 1
     out = capsys.readouterr().out
     assert "bd dolt remote add origin git+ssh://git@github.com/owner/repo.git" in out
+
+
+def test_main_says_when_it_falls_back_to_the_git_origin(project, monkeypatch,
+                                                        tmp_path, capsys):
+    """No Dolt remote and no sync.remote: the git origin is only where we look,
+    so it must not be presented as the Dolt remote."""
+    install_fake_git(tmp_path, monkeypatch, "")
+    # resolve_beads_remote() looks the origin up inside bdutils itself.
+    monkeypatch.setattr(bdutils, "get_git_remote_url",
+                        lambda p: "git@github.com:owner/repo.git")
+    assert run_main(monkeypatch, project) == 1
+    assert "Dolt remote: (none configured; looking on the git origin)" in capsys.readouterr().out
 
 
 def test_main_reports_unverifiable_without_the_dolt_cli(dolt_project, monkeypatch,
