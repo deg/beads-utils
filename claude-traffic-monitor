@@ -794,6 +794,10 @@ def _tier_label(seconds: int) -> str:
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m"
 
 
+# "peak" alone did not say over what period; the window is in the label.
+PEAK_LABEL = f"max{_tier_label(PEAK_WINDOW)}"
+
+
 def _rate_cells(c: Counter, now: float, span: float, direction: int) -> str:
     """The TIERS rate cells for one direction (0 = in, 1 = out)."""
     vals = [c.rate(w, now, span)[direction] for w in RATE_WINDOWS]
@@ -813,7 +817,7 @@ def traffic_row(name: str, project: str, c: Counter, now: float, span: float,
 
 def header_rows(first: str) -> list[tuple[str, str]]:
     tiers = " ".join(f"{t:>{RATE_W}}" for t in
-                     [_tier_label(w) for w in RATE_WINDOWS] + ["peak"])
+                     [_tier_label(w) for w in RATE_WINDOWS] + [PEAK_LABEL])
     group_w = TIERS * (RATE_W + 1) - 1
     lead = " " * (NAME_W + PROJ_W + 2)
     top = (lead + f"{'UP per second':^{group_w}}" + "   " + f"{'DOWN per second':^{group_w}}"

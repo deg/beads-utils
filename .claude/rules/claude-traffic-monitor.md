@@ -152,6 +152,8 @@ Added for beads-utils-7hb (tiered rolling rates) and beads-utils-sfm
   whole context in a second or two, then the link is idle. Any average
   dilutes that burst, so the **peak** (the busiest single tick in the last
   minute) keeps it visible after the 5 s figure has dropped back to zero.
+  Its column is labelled `max1m`, built from `PEAK_WINDOW`. A bare "peak"
+  did not say what period it covered (David).
   - David asked for both directions "to see how it fits". The rows come to
     about 145 columns.
   - The tier lengths were Claude's pick, since David had no strong view.

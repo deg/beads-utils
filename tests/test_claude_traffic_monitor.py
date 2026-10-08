@@ -622,6 +622,13 @@ def test_hiding_others_collapses_them_to_one_aligned_row(mon):
     assert row.index("5.1 KB") + len("5.1 KB") == claude.index("4.0 KB") + len("4.0 KB")
 
 
+def test_peak_column_names_its_window():
+    """A bare "peak" header left the period it covers unstated."""
+    cols = ctm.header_rows("SESSION")[1][0].split()
+    assert "max1m" in cols and "peak" not in cols
+    assert len(ctm.PEAK_LABEL) <= ctm.RATE_W
+
+
 def test_status_line_shows_the_state_and_how_to_get_help():
     (status,) = ctm.status_lines(ctm.View(sort="rate", children=False, paused=True))
     text, style = status
