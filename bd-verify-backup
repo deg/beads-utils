@@ -51,6 +51,7 @@ class Report:
     dirty: list[str] = field(default_factory=list)
     stashes: int = 0
     branches: list[tuple[str, str]] = field(default_factory=list)  # (branch, problem)
+    cleanup: list[tuple[str, str]] = field(default_factory=list)   # (branch, advice)
     n_branches: int = 0
     beads: str = ""
     beads_ok: bool = False
@@ -78,14 +79,24 @@ def last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-def branch_problems(path: Path) -> tuple[list[tuple[str, str]], int]:
-    """(branch, problem) for every local branch not safely on its upstream,
-    and how many local branches there are. A detached HEAD holding commits
-    that no remote has is reported too: no branch holds them, so the
-    per-branch check alone would call the repo backed up."""
+def branch_problems(path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]], int]:
+    """(problems, cleanup, count) over the local branches.
+
+    A problem is a branch not safely on its upstream. A detached HEAD holding
+    commits that no remote has is one too: no branch holds them, so the
+    per-branch check alone would call the repo backed up.
+
+    Cleanup is a branch whose upstream is gone but whose every commit is on
+    some remote branch -- typically a merged PR's leftover. Nothing would be
+    lost, so it does not fail the repo, but it is still clutter worth
+    deleting, so the detailed view lists it. "On some remote" rather than
+    "merged into the default branch": origin/HEAD is often unset, and a
+    branch merged anywhere is equally safe. A squash- or rebase-merged
+    branch's own commits are on no remote, so it stays a problem -- true to
+    the letter, since those exact commits exist nowhere else."""
     out = git(path, "for-each-ref", "--format=%(refname:short)%00%(upstream:short)%00"
               "%(upstream:track,nobracket)%00%(upstream:remotename)", "refs/heads").stdout
-    problems = []
+    problems, cleanup = [], []
     rows = [ln.split("\0") for ln in out.splitlines() if ln]
     for name, upstream, track, remote in rows:
         if not upstream:
@@ -95,15 +106,29 @@ def branch_problems(path: Path) -> tuple[list[tuple[str, str]], int]:
             # nothing about any remote, even when that branch is pushed.
             problems.append((name, f"no upstream (tracks local {upstream})"))
         elif track == "gone":
-            problems.append((name, f"upstream {upstream} is gone"))
+            n = commits_on_no_remote(path, f"refs/heads/{name}")
+            if n:
+                problems.append((name, f"upstream {upstream} is gone, {plural(n, 'commit')} on no remote"))
+            else:
+                cleanup.append((name, f"upstream {upstream} is gone, every commit is on a remote"))
         elif "ahead" in track:
             n = track.split("ahead ", 1)[1].split(",")[0]
-            problems.append((name, f"{n} commit{'s' if n != '1' else ''} not pushed"))
+            problems.append((name, f"{plural(int(n), 'commit')} not pushed"))
     if git(path, "symbolic-ref", "-q", "HEAD").returncode != 0:
-        n = git(path, "rev-list", "--count", "HEAD", "--not", "--remotes").stdout.strip()
-        if n not in ("", "0"):
-            problems.append(("detached HEAD", f"{n} commit{'s' if n != '1' else ''} not pushed"))
-    return problems, len(rows)
+        n = commits_on_no_remote(path, "HEAD")
+        if n:
+            problems.append(("detached HEAD", f"{plural(n, 'commit')} not pushed"))
+    return problems, cleanup, len(rows)
+
+
+def commits_on_no_remote(path: Path, rev: str) -> int:
+    """How many commits reachable from `rev` no remote-tracking branch has."""
+    out = git(path, "rev-list", "--count", rev, "--not", "--remotes").stdout.strip()
+    return int(out) if out.isdigit() else 0
+
+
+def plural(n: int, word: str, many: str = "") -> str:
+    return f"{n} {word if n == 1 else (many or word + 's')}"
 
 
 def beads_verdict(path: Path, fetch: bool) -> tuple[str, bool, list[str]]:
@@ -151,7 +176,7 @@ def check_repo(path: Path, fetch: bool) -> Report:
                                  "compared against the last-fetched refs")
         rep.dirty = [ln for ln in git(path, "status", "--porcelain").stdout.splitlines() if ln]
         rep.stashes = len(git(path, "stash", "list").stdout.splitlines())
-        rep.branches, rep.n_branches = branch_problems(path)
+        rep.branches, rep.cleanup, rep.n_branches = branch_problems(path)
         rep.beads, rep.beads_ok, notes = beads_verdict(path, fetch)
         rep.notes.extend(notes)
     except SystemExit as exc:
@@ -199,7 +224,7 @@ def branches_cell(rep: Report) -> str:
     unpushed = [f"{name} +{why.split()[0]}" for name, why in rep.branches
                 if why.endswith("not pushed")]
     no_up = sum(1 for _, why in rep.branches if why.startswith("no upstream"))
-    gone = sum(1 for _, why in rep.branches if why.endswith("is gone"))
+    gone = sum(1 for _, why in rep.branches if " is gone" in why)
     parts = unpushed[:2] + ([f"{len(unpushed) - 2} more ahead"] if len(unpushed) > 2 else [])
     if no_up:
         parts.append(f"{no_up} no upstream")
@@ -263,6 +288,13 @@ def print_detail(rep: Report, color: bool) -> None:
             print(f"               {name:<{width}}  {why}")
     else:
         print(f"Branches:    {tint(f'all {rep.n_branches} pushed', True)}")
+    if rep.cleanup:
+        # Not a failure, so not red: nothing is lost by leaving these.
+        print(f"Cleanup:     {plural(len(rep.cleanup), 'merged branch', 'merged branches')} to delete")
+        width = max(len(name) for name, _ in rep.cleanup)
+        for name, why in rep.cleanup:
+            print(f"               {name:<{width}}  {why}")
+        print("               (delete each with 'git branch -d <name>'; it refuses unmerged work)")
     print(f"Beads:       {tint(rep.beads, rep.beads_ok)}")
     if not rep.beads_ok:
         print("               (bd-dolt-check gives the detail and the remedy)")
@@ -286,6 +318,11 @@ def main() -> int:
             "--global finds repos in ~/.claude.json's projects, in ~/Documents/*/*/,\n"
             "and in ~/.emacs.d, ~/bin and ~/core-personal-files: any that has\n"
             ".beads/metadata.json. Exit status is 1 if anything is not backed up.\n"
+            "\n"
+            "A branch whose upstream is gone but whose commits are all on a remote\n"
+            "(a merged PR's leftover) passes, and the detailed view lists it as\n"
+            "cleanup. A squash- or rebase-merged branch still fails: its own\n"
+            "commits are on no remote.\n"
         ),
     )
     parser.add_argument(

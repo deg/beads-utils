@@ -3,6 +3,7 @@
 * [feature] Add `bd-verify-backup`, which says whether a repo would lose anything if this machine died: uncommitted files or stashes, branches not pushed, or beads not pushed
   * `-g/--global` checks every beads repo on the machine at once, one line each, failures first
   * Fetches first so the answer is current; `--no-fetch` skips it
+  * A merged branch whose remote copy was deleted is listed as cleanup rather than counted as unbacked-up
 * [feature] Add `claude-traffic-monitor`, a live `top`-like view of how much each running Claude Code session uploads and downloads, which share goes to the API, and the context and images driving it, plus the busiest other processes on the link (macOS)
   * Rates over 5 s, 1 min and 15 min, plus the peak second of the last minute, so a single request's burst stays visible
   * An estimate of what each session's next message will upload, with the live-measured bytes per token beside it

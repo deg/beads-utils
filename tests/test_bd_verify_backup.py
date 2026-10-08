@@ -112,6 +112,7 @@ def test_a_branch_tracking_a_local_branch_has_no_upstream(repo, beads_ok):
 
 def test_a_branch_whose_upstream_was_deleted_is_gone(repo, beads_ok):
     sh(repo, "checkout", "-q", "-b", "topic")
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "only on topic")
     sh(repo, "push", "-q", "-u", "origin", "topic")
     # Deleted on the remote directly, as a merged PR's branch is; a local
     # `push --delete` would drop the remote-tracking ref itself.
@@ -119,7 +120,28 @@ def test_a_branch_whose_upstream_was_deleted_is_gone(repo, beads_ok):
     # The fetch is what notices: --prune drops the stale remote-tracking ref.
     assert bvb.check_repo(repo, fetch=False).branches == []
     assert bvb.check_repo(repo, fetch=True).branches == [
-        ("topic", "upstream origin/topic is gone")]
+        ("topic", "upstream origin/topic is gone, 1 commit on no remote")]
+
+
+def test_a_gone_branch_whose_commits_are_all_on_a_remote_is_only_cleanup(
+        repo, beads_ok, monkeypatch, capsys):
+    """A merged PR's leftover: its upstream was deleted, but every commit is
+    on origin/main, so nothing would be lost. It must not fail the repo --
+    temperature-bot had 12 of these -- yet the detailed view still lists it,
+    so the clutter is not forgotten."""
+    sh(repo, "checkout", "-q", "-b", "topic")
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "merged work")
+    sh(repo, "push", "-q", "-u", "origin", "topic")
+    sh(repo, "push", "-q", "origin", "topic:main")      # the merge
+    sh(repo.parent / "remote.git", "branch", "-q", "-D", "topic")
+    rep = bvb.check_repo(repo, fetch=True)
+    assert rep.branches == []
+    assert rep.cleanup == [("topic", "upstream origin/topic is gone, every commit is on a remote")]
+    assert rep.ok
+    bvb.print_detail(rep, color=False)
+    out = capsys.readouterr().out
+    assert "Cleanup:     1 merged branch to delete" in out
+    assert "Status:      BACKED UP" in out
 
 
 def test_a_branch_behind_its_upstream_is_backed_up(repo, beads_ok, tmp_path):
@@ -301,5 +323,5 @@ def test_branches_cell_summarizes_long_lists():
     rep = bvb.Report(Path("/x"), branches=[
         ("a", "1 commit not pushed"), ("b", "2 commits not pushed"),
         ("c", "5 commits not pushed"), ("d", "no upstream"), ("e", "no upstream"),
-        ("f", "upstream origin/f is gone")])
+        ("f", "upstream origin/f is gone, 2 commits on no remote")])
     assert bvb.branches_cell(rep) == "a +1, b +2, 1 more ahead, 2 no upstream, 1 gone"

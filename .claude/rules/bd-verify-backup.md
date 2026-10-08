@@ -16,7 +16,13 @@ for one beads repo, or with `-g/--global` for every one on the machine
 
 - **Every local branch counts, not just the current one.** A branch with no
   upstream, one whose upstream is `[gone]`, and one ahead of its upstream
-  all fail. So does a detached HEAD holding commits on no remote: no branch
+  all fail, except that a `gone` branch whose every commit is on some
+  remote branch (`git rev-list --count <b> --not --remotes` is 0, typically a
+  merged PR's leftover) passes and is listed under `Cleanup:` in the detailed
+  view only (`beads-utils-50m`, the owner's spec). "On some remote" rather
+  than "merged into the default branch", since `origin/HEAD` is often unset.
+  A squash- or rebase-merged branch still fails: its own commits are on no
+  remote. So does a detached HEAD holding commits on no remote: no branch
   holds them, so the per-branch check alone would pass. Behind is fine: the
   remote has more, not less. A branch whose upstream is another *local*
   branch (`git branch -u main feature`, `%(upstream:remotename)` is `.`)
