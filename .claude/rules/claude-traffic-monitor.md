@@ -129,6 +129,13 @@ Below that come the busiest non-Claude processes.
   billed to that session.
   A process born and gone between two `ps` snapshots goes unattributed and
   lands under the other processes.
+- **Names come from `ps`, remembered per pid.** nettop truncates names to
+  15 characters, so `ps`'s full name is preferred. But `ps` shows an exiting
+  process as `(name)` and a zombie as `<defunct>`. Used verbatim, they split
+  one app across two rows (`idrive_ver_001` and `(idrive_ver_001)`; a curl
+  download landed half under `curl`, half under `<defunct>`;
+  beads-utils-mz7). So parentheses are unwrapped, and the last good name is
+  kept for when `ps` has none. nettop's name is the last resort.
 - A session whose pid disappears stays on screen, dimmed, as `(ended)`, so
   the totals never drop.
 - **API%** is the share of a session's bytes whose remote address is one of

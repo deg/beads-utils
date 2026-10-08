@@ -550,6 +550,7 @@ class Monitor:
         self.unseen = Counter()  # bytes from connections nettop never showed
         self.tunnel_ips: set[str] = set()  # refreshed by the caller
         self.owner: dict[int, int] = {}   # sticky pid -> session pid
+        self.names: dict[int, str] = {}   # sticky pid -> last good ps name
         self.started = time.time()
         self.counting_since = self.started  # moves on reset
         self.first_block: float | None = None
@@ -574,8 +575,7 @@ class Monitor:
             if d.unseen:
                 self.unseen.add(d.d_in, d.d_out)
             owner = self._owner_of(d.pid, ps)
-            # nettop truncates names to 15 characters; ps has the full one.
-            name = ps.get(d.pid, (0, ""))[1] or d.name
+            name = self._name_of(d.pid, ps, d.name)
             if owner is None:
                 self.others.setdefault(name, Counter()).add(d.d_in, d.d_out)
                 self.other_total.add(d.d_in, d.d_out)
@@ -683,6 +683,25 @@ class Monitor:
         for pid, s in self.sessions.items():
             if ps and pid not in ps:
                 s.alive = False
+
+    def _name_of(self, pid: int, ps: dict, nettop_name: str) -> str:
+        """A process's display name, stable across its exit.
+
+        nettop truncates names to 15 characters, so ps's is preferred. But ps
+        reports an exiting process as `(name)` and a zombie as `<defunct>`,
+        and the first version used those verbatim: one IDrive helper became
+        two rows, `idrive_ver_001` and `(idrive_ver_001)`, and a curl
+        download split between `curl` and `<defunct>`. So the parentheses
+        are unwrapped, and the last good name is remembered for when ps no
+        longer has one.
+        """
+        name = ps.get(pid, (0, ""))[1]
+        if name.startswith("(") and name.endswith(")"):
+            name = name[1:-1]
+        if name and name != "<defunct>":
+            self.names[pid] = name
+            return name
+        return self.names.get(pid) or nettop_name
 
     def _owner_of(self, pid: int, ps: dict) -> int | None:
         """The live session pid whose process tree `pid` belongs to, if any.

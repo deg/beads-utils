@@ -309,6 +309,25 @@ def test_non_claude_traffic_goes_to_others_under_the_ps_name(mon):
     assert mon.other_total.total == 55
 
 
+def test_an_exiting_process_keeps_its_name(mon):
+    """ps reports an exiting process as '(name)' and a zombie as '<defunct>';
+    used verbatim, one app became two rows and curl's bytes split."""
+    def tick(n):
+        return sample(("idrive_ver_00", OTHER, "8.8.8.8", 0, n))
+    feed(mon, tick(0), tick(100), ps={OTHER: (1, "idrive_ver_001")})
+    mon.ingest(tick(250), {OTHER: (1, "(idrive_ver_001)")}, REG, now=1002.0)
+    mon.ingest(tick(300), {OTHER: (1, "<defunct>")}, REG, now=1003.0)
+    mon.ingest(tick(320), {}, REG, now=1004.0)                 # gone from ps entirely
+    assert list(mon.others) == ["idrive_ver_001"]
+    assert mon.others["idrive_ver_001"].total_out == 320
+
+
+def test_a_process_never_named_by_ps_falls_back_to_nettop(mon):
+    feed(mon, sample(("short", OTHER, "8.8.8.8", 0, 0)),
+         sample(("short", OTHER, "8.8.8.8", 0, 5)), ps={})
+    assert list(mon.others) == ["short"]
+
+
 def test_a_child_that_exits_stays_attributed(mon):
     feed(mon, sample(("node", CHILD, "34.1.1.1", 0, 0)))
     gone = {k: v for k, v in PS.items() if k != CHILD}
