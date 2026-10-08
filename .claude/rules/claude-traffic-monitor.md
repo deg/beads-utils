@@ -136,6 +136,29 @@ Below that come the busiest non-Claude processes.
   download landed half under `curl`, half under `<defunct>`;
   beads-utils-mz7). So parentheses are unwrapped, and the last good name is
   kept for when `ps` has none. nettop's name is the last resort.
+- **Transparent proxies are counted once, under the app**
+  (`ProxyDetector`, beads-utils-7z7). Norton's network extension relays
+  Chrome's traffic, and nettop shows those bytes twice. They appear on
+  Chrome's *process* line, while its connection lines stay near zero, and
+  again on Norton's own connections to the same servers. Over 30 s on
+  2026-10-08, Chrome's process line grew 3.5 MB against 7 KB on its
+  connection lines, and 94% of its endpoints were also Norton's.
+  - **Detection:** an app counts as relayed by process P when at least 80%
+    of its internet endpoints (address:port) are also P's, its connection
+    lines account for under 10% of its growth, and that growth exceeds
+    100 KB.
+  - **Why overlap alone isn't enough:** Claude sessions share the API
+    endpoint with Norton but carry their bytes on their own connection
+    lines.
+  - **Accounting:** the app keeps its bytes. P's internet bytes are reduced
+    by the same amount, carried across blocks until P moves them, so P's row
+    shows only its overhead. A dim line under P's row names the apps it
+    relays.
+  - **Live check, 60 s:** Chrome 8.22 MB, Norton 1.87 MB (overhead plus
+    anything it relays undetected). Totals 10.3 MB, under the interface's
+    11.9 MB. "Too brief to classify" fell from about 1 MB to 0.15 MB.
+  - **Until an app passes 100 KB**, its relayed bytes are briefly counted
+    twice.
 - A session whose pid disappears stays on screen, dimmed, as `(ended)`, so
   the totals never drop.
 - **API%** is the share of a session's bytes whose remote address is one of

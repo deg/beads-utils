@@ -254,6 +254,83 @@ def test_live_connections_are_not_counted_twice():
     assert [(d.d_in, d.d_out) for d in second] == [(500, 50)]
 
 
+# --- transparent proxies ------------------------------------------------------
+
+
+APP, PROXY = 50, 60
+ENDS = ("1.1.1.1", "2.2.2.2", "3.3.3.3")
+
+
+def proxied(app_total, proxy_out, app_conn=0):
+    """One block: an app whose connection lines stay flat while its process
+    line grows, and a proxy holding connections to the same endpoints."""
+    lines = [HEADER, f"Chrome.{APP},{app_total},0,"]
+    lines += [f"tcp4 l:{i}<->{ip}:443,{app_conn},0," for i, ip in enumerate(ENDS)]
+    lines += [f"norton.{PROXY},{proxy_out},0,"]
+    lines += [f"tcp4 l:9{i}<->{ip}:443,{proxy_out // 3},0," for i, ip in enumerate(ENDS)]
+    (b,) = blocks("\n".join(lines))
+    return b
+
+
+PROXY_PS = {APP: (1, "Google Chrome Helper"), PROXY: (1, "norton-extension")}
+
+
+def test_relayed_traffic_is_counted_once_under_the_app(mon):
+    """beads-utils-7z7: Norton relays Chrome, and nettop shows the bytes on
+    Chrome's process line and again on Norton's connections. Live, Chrome's
+    process line grew 3.5 MB in 30 s against 7 KB on its connection lines."""
+    feed(mon, proxied(0, 0), proxied(300_000, 300_000), proxied(600_000, 630_000), ps=PROXY_PS)
+    assert mon.proxies.relayed_by == {APP: PROXY}
+    assert mon.others["Google Chrome Helper"].total_in == 600_000
+    assert mon.others["norton-extension"].total_in == 30_000     # its overhead only
+    assert mon.other_total.total_in == 630_000                     # not 1,230,000
+    assert mon.unseen.total == 0
+    assert mon.relays == {"norton-extension": {"Google Chrome Helper"}}
+
+
+def test_the_proxy_row_says_what_it_relays(mon):
+    feed(mon, proxied(0, 0), proxied(300_000, 330_000), ps=PROXY_PS)  # 10% overhead
+    rows = screen(mon)
+    i = next(n for n, t in enumerate(rows) if t.startswith("norton-extension"))
+    assert rows[i + 1].startswith("  └ relays Google Chrome Helper")
+
+
+def test_sharing_endpoints_alone_does_not_make_a_proxy(mon):
+    """Claude sessions share the API endpoint with Norton but carry their own
+    bytes on their connection lines; that must not be read as relaying."""
+    feed(mon, proxied(0, 0, app_conn=0), proxied(300_000, 300_000, app_conn=100_000),
+         ps=PROXY_PS)
+    assert mon.proxies.relayed_by == {}
+
+
+def test_a_small_app_is_not_judged_yet(mon):
+    feed(mon, proxied(0, 0), proxied(50_000, 50_000), ps=PROXY_PS)
+    assert mon.proxies.relayed_by == {}
+
+
+def test_low_overlap_is_not_a_proxy():
+    det = ctm.ProxyDetector()
+    det.live[APP], det.recovered[APP] = 0, 500_000
+    (b,) = blocks(f"{HEADER}\nChrome.{APP},0,0,\ntcp4 l:1<->1.1.1.1:443,0,0,\n"
+                  f"tcp4 l:2<->2.2.2.2:443,0,0,\ntcp4 l:3<->3.3.3.3:443,0,0,\n"
+                  f"norton.{PROXY},0,0,\ntcp4 l:4<->1.1.1.1:443,0,0,")
+    det._detect(b)
+    assert det.relayed_by == {}    # 1 of 3 endpoints shared
+
+
+def test_owed_bytes_carry_until_the_proxy_moves_them():
+    """The app's and the proxy's bytes need not land in the same sample."""
+    det = ctm.ProxyDetector()
+    det.relayed_by = {APP: PROXY}
+    (b,) = blocks(f"{HEADER}\nChrome.{APP},0,0,\nnorton.{PROXY},0,0,")
+    app = ctm.FlowDelta(APP, "Chrome", "", 1000, 0, recovered=True)
+    det.apply(b, [app])
+    assert det.debt[PROXY] == [1000, 0]
+    later = det.apply(b, [ctm.FlowDelta(PROXY, "norton", "1.1.1.1", 1200, 0)])
+    assert [(d.d_in, d.d_out) for d in later] == [(200, 0)]
+    assert det.debt[PROXY] == [0, 0]
+
+
 # --- attribution --------------------------------------------------------------
 
 

@@ -79,6 +79,7 @@ class Flow:
     bytes_out: int
     local: str = ""    # the local address, port stripped
     local_port: str = ""
+    remote_port: str = ""
 
 
 @dataclass
@@ -146,9 +147,9 @@ class NettopParser:
         label, b_in, b_out = parts[0], _int(parts[1]), _int(parts[2])
         if label[:3] in ("tcp", "udp") and " " in label:
             if self._current:
-                local, lport, remote, _ = endpoints(label)
+                local, lport, remote, rport = endpoints(label)
                 self._current[-1].flows.append(
-                    Flow(label, remote, b_in, b_out, local, lport))
+                    Flow(label, remote, b_in, b_out, local, lport, rport))
             return None
         name, _, pid = label.rpartition(".")  # names contain dots: 2.1.292.70303
         if not pid.isdigit():
@@ -214,6 +215,7 @@ class FlowDelta:
     kind: str = "internet"
     local: str = ""
     unseen: bool = False  # from a connection too brief to ever appear in nettop
+    recovered: bool = False  # from the process line, not a live connection line
 
 
 class FlowTracker:
@@ -304,7 +306,8 @@ class FlowTracker:
             return []
         gone = [v for k, v in prev.items() if k[0] == proc.pid and k not in cur]
         if not gone:
-            return [FlowDelta(proc.pid, proc.name, "", r_in, r_out, "internet", "", unseen=True)]
+            return [FlowDelta(proc.pid, proc.name, "", r_in, r_out, "internet", "",
+                              unseen=True, recovered=True)]
         weights = [b_in + b_out + 1 for b_in, b_out, _ in gone]
         total = sum(weights)
         out, left_in, left_out = [], r_in, r_out
@@ -314,13 +317,90 @@ class FlowTracker:
             s_out = left_out if last else r_out * w // total
             left_in, left_out = left_in - s_in, left_out - s_out
             if s_in or s_out:
-                out.append(_delta(proc, flow, s_in, s_out))
+                d = _delta(proc, flow, s_in, s_out)
+                d.recovered = True
+                out.append(d)
         return out
 
 
 def _delta(proc: ProcSample, flow: Flow, d_in: int, d_out: int) -> FlowDelta:
     return FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out,
                      flow_kind(flow.conn, flow.remote, flow.local_port), flow.local)
+
+
+class ProxyDetector:
+    """Spots apps whose traffic a transparent proxy relays, and counts it once.
+
+    Norton's network extension relays Chrome's traffic. nettop then shows the
+    same bytes twice (verified 2026-10-08, beads-utils-7z7): on Chrome's
+    *process* line, while its connection lines stay near zero, and on the
+    proxy's own connections to the same servers. Over 30 s, Chrome's process
+    line grew 3.5 MB against 7 KB on its connection lines, and 94% of its
+    endpoints were also Norton's.
+
+    An app counts as relayed by process P when, at once:
+    - at least MIN_OVERLAP of its internet endpoints (address:port) also
+      appear in P's connections;
+    - its connection lines account for under MAX_LIVE_SHARE of its growth;
+    - that growth exceeds MIN_BYTES.
+    Overlap alone is not enough: Claude sessions share the API endpoint with
+    Norton but carry their own bytes. Once found, a relationship is kept for
+    as long as both processes are alive.
+
+    The app keeps its bytes, since its row is what the user acts on, and the
+    proxy's internet bytes are reduced by the same amount, so the proxy's row
+    shows only its overhead. Bytes owed by a proxy that has not moved them
+    yet carry to later blocks, since the two sides need not land in the same
+    sample.
+    """
+
+    MIN_OVERLAP = 0.8
+    MAX_LIVE_SHARE = 0.1
+    MIN_BYTES = 100_000
+
+    def __init__(self):
+        self.live: collections.Counter = collections.Counter()
+        self.recovered: collections.Counter = collections.Counter()
+        self.relayed_by: dict[int, int] = {}
+        self.debt: dict[int, list[int]] = {}
+
+    def apply(self, block: list[ProcSample], deltas: list[FlowDelta]) -> list[FlowDelta]:
+        for d in deltas:
+            (self.recovered if d.recovered else self.live)[d.pid] += d.d_in + d.d_out
+        self._detect(block)
+        for d in deltas:
+            proxy = self.relayed_by.get(d.pid)
+            if proxy is not None and d.recovered and d.kind == "internet":
+                owed = self.debt.setdefault(proxy, [0, 0])
+                owed[0] += d.d_in
+                owed[1] += d.d_out
+                d.unseen = False   # accounted for: the proxy carried it
+        for d in deltas:
+            owed = self.debt.get(d.pid)
+            if owed and d.kind == "internet":
+                take_in, take_out = min(d.d_in, owed[0]), min(d.d_out, owed[1])
+                d.d_in, d.d_out = d.d_in - take_in, d.d_out - take_out
+                owed[0], owed[1] = owed[0] - take_in, owed[1] - take_out
+        return [d for d in deltas if d.d_in or d.d_out]
+
+    def _detect(self, block: list[ProcSample]) -> None:
+        ends = {proc.pid: {f"{f.remote}:{f.remote_port}" for f in proc.flows
+                           if f.remote not in ("*", "")
+                           and flow_kind(f.conn, f.remote, f.local_port) == "internet"}
+                for proc in block}
+        alive = set(ends)
+        self.relayed_by = {a: p for a, p in self.relayed_by.items() if a in alive and p in alive}
+        self.debt = {p: v for p, v in self.debt.items() if p in alive}
+        for app, mine in ends.items():
+            grown = self.live[app] + self.recovered[app]
+            if (app in self.relayed_by or not mine or grown < self.MIN_BYTES
+                    or self.live[app] > self.MAX_LIVE_SHARE * grown):
+                continue
+            share, proxy = max(((len(mine & theirs) / len(mine), pid)
+                                for pid, theirs in ends.items() if pid != app and theirs),
+                               default=(0.0, None))
+            if share >= self.MIN_OVERLAP and proxy not in self.relayed_by:
+                self.relayed_by[app] = proxy
 
 
 # --- process tree and session registry ---------------------------------------
@@ -542,6 +622,8 @@ class Monitor:
         self.projects_dir = projects_dir or claudeutils.CLAUDE_PROJECTS
         self.api_ips = set(api_ips or API_FALLBACK_IPS)
         self.tracker = FlowTracker()
+        self.proxies = ProxyDetector()
+        self.relays: dict[str, set[str]] = {}   # proxy name -> names of apps it relays
         self.sessions: dict[int, Session] = {}
         self.others: dict[str, Counter] = {}
         self.other_total = Counter()
@@ -565,7 +647,7 @@ class Monitor:
         for proc in block:
             if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
                 self.sessions[proc.pid] = Session(proc.pid, label=UNREGISTERED)
-        for d in self.tracker.update(block):
+        for d in self.proxies.apply(block, self.tracker.update(block)):
             if d.kind != "internet":
                 continue
             if d.local in self.tunnel_ips:
@@ -588,6 +670,11 @@ class Monitor:
                 s.api_out += d.d_out
             if d.pid != owner:
                 s.children.setdefault(name, Counter()).add(d.d_in, d.d_out)
+        nettop_names = {proc.pid: proc.name for proc in block}
+        self.relays = {}
+        for app, proxy in self.proxies.relayed_by.items():
+            self.relays.setdefault(self._name_of(proxy, ps, nettop_names.get(proxy, "")), set()).add(
+                self._name_of(app, ps, nettop_names.get(app, "")))
         if self.first_block is None:
             self.first_block = now  # the baseline: counting starts here
         elapsed = now - self.last_block if self.last_block else 1.0
@@ -1019,6 +1106,9 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
     hot = sorted(mon.others.items(), key=lambda kv: _sort_key(view, kv[0], kv[1], now, span))
     for name, c in hot[:top]:
         add((traffic_row(name, "", c, now, span), ""))
+        if name in mon.relays:
+            add((f"  └ relays {', '.join(sorted(mon.relays[name]))}: "
+                 "those bytes are counted on their own row, not here", "dim"))
     if len(hot) > top:
         add((f"  … and {len(hot) - top} more", "dim"))
     add((traffic_row("Everything else total", "", mon.other_total, now, span), "bold"))
