@@ -166,6 +166,94 @@ def test_identical_connection_strings_are_tracked_separately():
     assert sorted(d.d_in for d in second) == [5, 10]
 
 
+# --- connections that close between samples ---------------------------------------
+
+
+def test_bytes_of_a_connection_that_closed_are_kept():
+    """beads-utils-8pt: curl's 20 MB download was counted as 9.6 MB, because a
+    closed connection's line vanishes with its last second of bytes. The
+    process line still has them (verified live), so the remainder goes to
+    the connection that disappeared, with its kind."""
+    _, second, third = deltas(
+        f"{HEADER}\ncurl.9,0,0,",
+        f"{HEADER}\ncurl.9,6000,10,\ntcp4 a:1<->8.8.8.8:443,6000,10,",
+        f"{HEADER}\ncurl.9,20000,40,",      # connection closed; process line kept growing
+    )
+    assert [(d.d_in, d.d_out) for d in second] == [(6000, 10)]
+    assert [(d.remote, d.d_in, d.d_out, d.kind, d.unseen) for d in third] == [
+        ("8.8.8.8", 14000, 30, "internet", False)]
+
+
+def test_a_closed_lan_connection_stays_local():
+    """The remainder inherits the vanished connection's kind, so a NAS copy
+    that finishes between samples is not billed as internet."""
+    _, _, third = deltas(
+        f"{HEADER}\nsmbd.9,0,0,",
+        f"{HEADER}\nsmbd.9,100,0,\ntcp4 a:1<->192.168.1.5:445,100,0,",
+        f"{HEADER}\nsmbd.9,900,0,",
+    )
+    assert [(d.kind, d.d_in) for d in third] == [("local", 800)]
+
+
+def test_the_remainder_is_split_among_vanished_connections_by_size():
+    _, _, third = deltas(
+        f"{HEADER}\np.9,0,0,",
+        f"{HEADER}\np.9,300,0,\ntcp4 a:1<->8.8.8.8:443,199,0,\ntcp4 a:2<->9.9.9.9:443,99,0,",
+        f"{HEADER}\np.9,1300,0,",
+    )
+    shares = {d.remote: d.d_in for d in third}
+    # 1000 split 2:1 does not divide evenly; the last share takes the rounding.
+    assert sum(shares.values()) == 1000
+    assert abs(shares["8.8.8.8"] - 2 * shares["9.9.9.9"]) <= 2
+
+
+def test_a_connection_never_seen_is_counted_as_unseen_internet(mon):
+    """Opened and closed between two samples: only the process line knows."""
+    _, second = deltas(f"{HEADER}\np.9,0,0,", f"{HEADER}\np.9,700,70,")
+    assert [(d.remote, d.d_in, d.d_out, d.kind, d.unseen) for d in second] == [
+        ("", 700, 70, "internet", True)]
+    feed(mon, *blocks(f"{HEADER}\nDropbox.{OTHER},0,0,\n{HEADER}\nDropbox.{OTHER},700,70,"))
+    assert mon.unseen.total == 770 and mon.others["Dropbox"].total == 770
+    assert any(t.startswith("Too brief to classify") for t in screen(mon))
+
+
+def test_process_lines_in_the_baseline_are_not_counted():
+    (first,) = deltas(f"{HEADER}\np.9,5000000,5000000,")
+    assert first == []
+
+
+def test_a_new_process_counts_its_whole_line():
+    _, second = deltas(f"{HEADER}\n", f"{HEADER}\nnew.12,300,0,")
+    assert sum(d.d_in for d in second) == 300
+
+
+def test_a_process_missing_from_one_block_is_not_counted_again():
+    """Forgetting an absent process at once would count its whole total again
+    if it came back unchanged; overnight that is hundreds of MB for Chrome."""
+    *_, back = deltas(f"{HEADER}\np.9,0,0,", f"{HEADER}\np.9,4000,0,",
+                      f"{HEADER}\n", f"{HEADER}\np.9,4000,0,")
+    assert back == []
+
+
+def test_a_long_absent_process_is_eventually_forgotten():
+    tracker = ctm.FlowTracker()
+    tracker.FORGET_AFTER = 2
+    for text in (f"{HEADER}\np.9,0,0,", f"{HEADER}\n", f"{HEADER}\n", f"{HEADER}\n"):
+        for b in blocks(text):
+            tracker.update(b)
+    assert 9 not in tracker._prev_proc
+
+
+def test_live_connections_are_not_counted_twice():
+    """When the process line grows by exactly what its connections did,
+    there is no remainder to add."""
+    _, second = deltas(
+        f"{HEADER}\np.9,0,0,\ntcp4 a:1<->8.8.8.8:443,0,0,",
+        f"{HEADER}\np.9,500,50,\ntcp4 a:1<->8.8.8.8:443,500,50,",
+    )
+    assert [(d.d_in, d.d_out) for d in second] == [(500, 50)]
+
+
 # --- attribution --------------------------------------------------------------
 
 

@@ -86,6 +86,8 @@ class ProcSample:
     name: str
     pid: int
     flows: list[Flow] = field(default_factory=list)
+    bytes_in: int = 0    # the process line: grows for as long as nettop runs,
+    bytes_out: int = 0   # including connections that have since closed
 
 
 def _int(s: str) -> int:
@@ -151,7 +153,7 @@ class NettopParser:
         name, _, pid = label.rpartition(".")  # names contain dots: 2.1.292.70303
         if not pid.isdigit():
             return None
-        self._current.append(ProcSample(name, int(pid)))
+        self._current.append(ProcSample(name, int(pid), bytes_in=b_in, bytes_out=b_out))
         return None
 
 
@@ -211,48 +213,114 @@ class FlowDelta:
     d_out: int
     kind: str = "internet"
     local: str = ""
+    unseen: bool = False  # from a connection too brief to ever appear in nettop
 
 
 class FlowTracker:
-    """Per-flow byte deltas between successive blocks.
+    """Byte deltas between successive blocks, classified per connection.
 
-    nettop's counters cover only sockets open *now*: a closed connection's
-    bytes vanish from the next sample. So totals are built from per-flow
-    deltas, never from the process line. Flows in the first block are the
-    baseline (traffic from before the monitor started); a flow first seen
-    later opened since, so its whole count is new. A counter that went
-    backwards means the same connection string was reused by a new socket.
+    A connection's line vanishes from nettop's output once it closes, along
+    with whatever it moved since the previous sample: curl fetching 20 MB in
+    about 2 s was counted as 9.6 MB by connection lines alone. A streaming
+    nettop's *process* line keeps growing for as long as nettop runs,
+    closed connections included (verified 2026-10-08, beads-utils-8pt). So:
+
+    - each connection line's growth is counted, with its kind;
+    - whatever the process line grew beyond that is recovered: the final
+      bytes of connections that closed during
+      the interval. It is split among the connections that disappeared from
+      that process, by their size. If none disappeared, the connection
+      opened and closed between two samples and was never seen, so its kind
+      is unknown: it is counted as internet and marked `unseen`.
+
+    The first block is the baseline (traffic from before the monitor
+    started). A connection or process first seen later is new, so its whole
+    count is. A counter that went backwards means a reused connection string
+    or pid.
     """
 
+    # Blocks an absent process is remembered for. Dropping it at once would,
+    # if it reappeared with its total intact, count its whole history again;
+    # a process that idled 90 s never left nettop's output, but remembering
+    # is safe either way (a counter that restarted lower is new, see above).
+    FORGET_AFTER = 300
+
     def __init__(self):
-        self._prev: dict[tuple, tuple[int, int]] | None = None
+        self._prev: dict[tuple, tuple[int, int, Flow]] | None = None
+        self._prev_proc: dict[int, tuple[int, int]] = {}
+        self._last_seen: dict[int, int] = {}
+        self._blocks = 0
 
     def update(self, block: list[ProcSample]) -> list[FlowDelta]:
-        cur: dict[tuple, tuple[int, int]] = {}
-        out: list[FlowDelta] = []
         first = self._prev is None
+        prev = self._prev or {}
+        cur: dict[tuple, tuple[int, int, Flow]] = {}
+        out: list[FlowDelta] = []
         for proc in block:
-            seen: dict[str, int] = {}
-            for flow in proc.flows:
-                # Identical strings repeat within a process (several
-                # unconnected `udp4 *:*<->*:*` sockets), so number them.
-                n = seen.get(flow.conn, 0)
-                seen[flow.conn] = n + 1
-                key = (proc.pid, flow.conn, n)
-                cur[key] = (flow.bytes_in, flow.bytes_out)
-                if first:
-                    continue
-                p_in, p_out = self._prev.get(key, (0, 0))
-                d_in = flow.bytes_in - p_in
-                d_out = flow.bytes_out - p_out
-                if d_in < 0 or d_out < 0:
-                    d_in, d_out = flow.bytes_in, flow.bytes_out
-                if d_in or d_out:
-                    out.append(FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out,
-                                         flow_kind(flow.conn, flow.remote, flow.local_port),
-                                         flow.local))
+            flows = self._flow_deltas(proc, prev, cur, first)
+            if not first:
+                out.extend(flows)
+                out.extend(self._closed(proc, flows, prev, cur))
+            self._prev_proc[proc.pid] = (proc.bytes_in, proc.bytes_out)
+            self._last_seen[proc.pid] = self._blocks
+        self._blocks += 1
+        for pid in [p for p, b in self._last_seen.items() if self._blocks - b > self.FORGET_AFTER]:
+            del self._last_seen[pid], self._prev_proc[pid]
         self._prev = cur
         return out
+
+    @staticmethod
+    def _flow_deltas(proc: ProcSample, prev: dict, cur: dict, first: bool) -> list[FlowDelta]:
+        out = []
+        seen: dict[str, int] = {}
+        for flow in proc.flows:
+            # Identical strings repeat within a process (several
+            # unconnected `udp4 *:*<->*:*` sockets), so number them.
+            n = seen.get(flow.conn, 0)
+            seen[flow.conn] = n + 1
+            key = (proc.pid, flow.conn, n)
+            cur[key] = (flow.bytes_in, flow.bytes_out, flow)
+            if first:
+                continue
+            p_in, p_out, _ = prev.get(key, (0, 0, flow))
+            d_in, d_out = flow.bytes_in - p_in, flow.bytes_out - p_out
+            if d_in < 0 or d_out < 0:
+                d_in, d_out = flow.bytes_in, flow.bytes_out
+            if d_in or d_out:
+                out.append(_delta(proc, flow, d_in, d_out))
+        return out
+
+    def _closed(self, proc: ProcSample, flows: list[FlowDelta], prev: dict,
+                cur: dict) -> list[FlowDelta]:
+        """The process line's growth not explained by its live connections."""
+        p_in, p_out = self._prev_proc.get(proc.pid, (0, 0))
+        g_in, g_out = proc.bytes_in - p_in, proc.bytes_out - p_out
+        if g_in < 0 or g_out < 0:   # a reused pid: everything on the line is new
+            g_in, g_out = proc.bytes_in, proc.bytes_out
+        r_in = g_in - sum(f.d_in for f in flows)
+        r_out = g_out - sum(f.d_out for f in flows)
+        r_in, r_out = max(r_in, 0), max(r_out, 0)
+        if not (r_in or r_out):
+            return []
+        gone = [v for k, v in prev.items() if k[0] == proc.pid and k not in cur]
+        if not gone:
+            return [FlowDelta(proc.pid, proc.name, "", r_in, r_out, "internet", "", unseen=True)]
+        weights = [b_in + b_out + 1 for b_in, b_out, _ in gone]
+        total = sum(weights)
+        out, left_in, left_out = [], r_in, r_out
+        for i, ((_, _, flow), w) in enumerate(zip(gone, weights)):
+            last = i == len(gone) - 1   # the last share takes the rounding
+            s_in = left_in if last else r_in * w // total
+            s_out = left_out if last else r_out * w // total
+            left_in, left_out = left_in - s_in, left_out - s_out
+            if s_in or s_out:
+                out.append(_delta(proc, flow, s_in, s_out))
+        return out
+
+
+def _delta(proc: ProcSample, flow: Flow, d_in: int, d_out: int) -> FlowDelta:
+    return FlowDelta(proc.pid, proc.name, flow.remote, d_in, d_out,
+                     flow_kind(flow.conn, flow.remote, flow.local_port), flow.local)
 
 
 # --- process tree and session registry ---------------------------------------
@@ -479,6 +547,7 @@ class Monitor:
         self.other_total = Counter()
         self.claude_total = Counter()
         self.tunnelled = Counter()
+        self.unseen = Counter()  # bytes from connections nettop never showed
         self.tunnel_ips: set[str] = set()  # refreshed by the caller
         self.owner: dict[int, int] = {}   # sticky pid -> session pid
         self.started = time.time()
@@ -502,6 +571,8 @@ class Monitor:
                 # Sent from a tunnel interface: the tunnel's own process sends
                 # these bytes again, encrypted, so they appear twice on screen.
                 self.tunnelled.add(d.d_in, d.d_out)
+            if d.unseen:
+                self.unseen.add(d.d_in, d.d_out)
             owner = self._owner_of(d.pid, ps)
             # nettop truncates names to 15 characters; ps has the full one.
             name = ps.get(d.pid, (0, ""))[1] or d.name
@@ -540,7 +611,8 @@ class Monitor:
         # since that block, and dividing them by the milliseconds since `now`
         # would show a spike of tens of MB/s.
         self.first_block = self.last_block or now
-        self.claude_total, self.other_total, self.tunnelled = Counter(), Counter(), Counter()
+        self.claude_total, self.other_total = Counter(), Counter()
+        self.tunnelled, self.unseen = Counter(), Counter()
         self.others = {}
         self.sessions = {pid: s for pid, s in self.sessions.items() if s.alive}
         # An exited child may still map to a dropped session; its last bytes
@@ -581,6 +653,7 @@ class Monitor:
         yield self.other_total
         yield self.claude_total
         yield self.tunnelled
+        yield self.unseen
         yield from self.others.values()
         for s in self.sessions.values():
             yield s.traffic
@@ -935,9 +1008,13 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
 
 
 def _add_tunnel_note(add, mon: Monitor, now: float, span: float) -> None:
+    """Dim notes on the totals above them: what is in them twice, or by guess."""
     if mon.tunnelled.total:
         add((traffic_row("Tunnelled, in rows above", "sent twice",
                          mon.tunnelled, now, span), "dim"))
+    if mon.unseen.total:
+        add((traffic_row("Too brief to classify", "as internet",
+                         mon.unseen, now, span), "dim"))
 
 
 def status_lines(view: View) -> list[tuple[str, str]]:

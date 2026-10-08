@@ -18,18 +18,31 @@ Below that come the busiest non-Claude processes.
 
 ## Data sources, and what was verified
 
-- **nettop counts only sockets that are open now. It does not count a
-  process's lifetime.** This was verified on 2026-10-07: a session that had
-  been running for three days showed 2 KB, because only one idle keep-alive
-  socket was open. A closed connection's bytes drop out of the next sample.
-  So totals are built from **per-flow deltas** and never from nettop's
-  process line:
-  - Flows present in the first block are the baseline.
-  - A flow first seen in a later block counts in full.
-  - A counter that goes backwards means the connection string was reused by
-    a new socket.
-  - Bytes sent in a socket's last interval before it closes are lost. That
-    is why the interval is 1 s.
+- **Totals come from process lines; kinds come from connection lines.**
+  - A **one-shot** nettop (`-L 1`) knows only the connections open at that
+    moment. A session three days old showed 2 KB that way (2026-10-07).
+  - A **streaming** nettop's process line keeps growing for as long as
+    nettop runs, closed connections included. Verified on 2026-10-08
+    (beads-utils-8pt): a process that stayed alive after a 20 MB download
+    kept 20.03 MB on its process line once its connection line was gone.
+  - A **connection line** vanishes when the connection closes, taking its
+    last second of bytes with it. The first version counted only
+    connection lines and recorded curl's 20 MB download as 9.6 MB.
+  - So `FlowTracker` counts each connection line's growth, with its kind,
+    and recovers whatever the process line grew beyond that. The process
+    line is a floor, not a cap: connection growth above it is kept. The
+    recovered remainder belongs to connections that closed during the
+    interval. It is split
+    among the connections that vanished from that process, by size, and
+    inherits their kind (internet, local, API, tunnel).
+  - If none vanished, a connection opened and closed between two samples and
+    was never shown. Its bytes count as internet and also feed the dim "Too
+    brief to classify" line.
+  - Re-measured afterwards: 20.03 MB counted for the 20 MB download.
+  - Baseline rules, for processes and connections alike: the first block is
+    the baseline, anything first seen later counts in full, and a counter
+    that goes backwards means a reused connection string or pid.
+  - `-s` takes whole seconds only: `-s 0.2` produced no samples at all.
 - **Several flows can print the same connection string.** For example, a
   process may have five unconnected `udp4 *:*<->*:*` sockets. So a flow's key
   includes its position among the identical strings in that process's block.
