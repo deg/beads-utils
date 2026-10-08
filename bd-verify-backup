@@ -100,7 +100,7 @@ def branch_problems(path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, 
     rows = [ln.split("\0") for ln in out.splitlines() if ln]
     for name, upstream, track, remote in rows:
         if not upstream:
-            problems.append((name, "no upstream"))
+            problems.append((name, f"no upstream{no_upstream_hint(path, name)}"))
         elif remote == ".":
             # `git branch -u main feature`: tracking a local branch says
             # nothing about any remote, even when that branch is pushed.
@@ -119,6 +119,24 @@ def branch_problems(path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, 
         if n:
             problems.append(("detached HEAD", f"{plural(n, 'commit')} not pushed"))
     return problems, cleanup, len(rows)
+
+
+def no_upstream_hint(path: Path, name: str) -> str:
+    """Tell a branch that only lacks tracking config from one never pushed.
+
+    Both still fail: the verdict stays strict, but the reader learns which
+    case this is, and gets the one-line fix when a remote branch of the same
+    name exists (a deploy running `git push origin gh-pages` leaves one)."""
+    if commits_on_no_remote(path, f"refs/heads/{name}"):
+        return ""
+    # Each remote by name: a `refs/remotes/*/` glob also matches across
+    # slashes, so it would offer origin/foo/main as the upstream of main.
+    remotes = sorted(git(path, "remote").stdout.split(), key=lambda r: r != "origin")
+    for remote in remotes:
+        ref = f"refs/remotes/{remote}/{name}"
+        if git(path, "show-ref", "--verify", "-q", ref).returncode == 0:
+            return f" (every commit is on a remote; fix: git branch -u {remote}/{name} {name})"
+    return " (every commit is on a remote)"
 
 
 def commits_on_no_remote(path: Path, rev: str) -> int:

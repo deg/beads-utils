@@ -94,10 +94,34 @@ def test_every_local_branch_is_checked_not_only_the_current_one(repo, beads_ok):
     sh(repo, "commit", "-q", "--allow-empty", "-m", "one")
     sh(repo, "commit", "-q", "--allow-empty", "-m", "two")
     sh(repo, "checkout", "-q", "never-pushed")
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "only here")
     rep = bvb.check_repo(repo, fetch=False)
     assert sorted(rep.branches) == [("main", "2 commits not pushed"),
                                     ("never-pushed", "no upstream")]
     assert rep.n_branches == 2
+
+
+def test_a_pushed_branch_with_no_upstream_still_fails_but_says_so(repo, beads_ok):
+    """`git push origin gh-pages` with no -u: every commit is on origin, only
+    the tracking config is missing. Still a failure, but the reader is told
+    which case this is and given the fix."""
+    sh(repo, "checkout", "-q", "-b", "gh-pages")
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "deploy")
+    sh(repo, "push", "-q", "origin", "gh-pages")
+    # A remote branch merely ending in the name is not offered as upstream.
+    sh(repo, "push", "-q", "origin", "gh-pages:site/gh-pages")
+    rep = bvb.check_repo(repo, fetch=False)
+    assert rep.branches == [("gh-pages", "no upstream (every commit is on a remote; "
+                                         "fix: git branch -u origin/gh-pages gh-pages)")]
+    assert bvb.branches_cell(rep) == "1 no upstream"
+    assert not rep.ok
+
+
+def test_a_branch_with_no_upstream_or_namesake_whose_commits_are_on_a_remote(repo, beads_ok):
+    sh(repo, "branch", "copy-of-main")
+    rep = bvb.check_repo(repo, fetch=False)
+    assert rep.branches == [("copy-of-main", "no upstream (every commit is on a remote)")]
+    assert not rep.ok
 
 
 def test_a_branch_tracking_a_local_branch_has_no_upstream(repo, beads_ok):

@@ -24,7 +24,11 @@ for one beads repo, or with `-g/--global` for every one on the machine
   A squash- or rebase-merged branch still fails: its own commits are on no
   remote. So does a detached HEAD holding commits on no remote: no branch
   holds them, so the per-branch check alone would pass. Behind is fine: the
-  remote has more, not less. A branch whose upstream is another *local*
+  remote has more, not less. A no-upstream branch whose every commit is
+  on a remote still fails (the owner kept the verdict strict, 2026-10-08),
+  but says so, plus the `git branch -u` fix when a remote branch of the
+  same name exists: degel.com's `gh-pages`, pushed by `make deploy` with
+  no `-u`, read as unpushed work. A branch whose upstream is another *local*
   branch (`git branch -u main feature`, `%(upstream:remotename)` is `.`)
   counts as no upstream: tracking a local branch says nothing about any
   remote. Someone who tracks locally on purpose will see that branch fail
