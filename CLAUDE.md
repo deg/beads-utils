@@ -61,6 +61,12 @@ Current scripts:
   diff between the remote-tracking ref and the local branch. `--base`/`--head`
   diff any two Dolt revisions. Read-only, exits 0 whenever the comparison ran.
   Requires the `dolt` CLI.
+- `bd-verify-backup` — Is everything on GitHub? Per repo: no uncommitted
+  files or stashes, every local branch has an upstream and is not ahead of
+  it, and the beads data is committed and pushed (`bdutils.dolt_sync_state()`,
+  the same computation `bd-dolt-check` renders). `-g/--global` checks every
+  beads repo on the machine in parallel, one line each. Fetches first unless
+  `--no-fetch`. Never runs `bd`. Exits 1 if anything is not backed up.
 - `bd-log` — Git-log-style timeline of bead *and* memory lifecycle events,
   newest first. `--only` picks the verb (create/change/end), `--about` the
   entity (beads/memories); `--status`, `--open`, `--id`, `--children`,
@@ -117,7 +123,7 @@ tests and costs nothing otherwise:
 
 | Rule file | Loads for |
 |---|---|
-| `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-view.md` | that script and its test file |
+| `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md` | that script and its test file |
 | `claude-sessions.md` | `claude-session-*`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |

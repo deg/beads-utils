@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -496,3 +497,22 @@ def test_live_session_pid_skips_unparseable_files(sessions_dir):
 def test_live_session_pid_returns_none_without_a_sessions_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(claudeutils, "CLAUDE_SESSIONS", tmp_path / "absent")
     assert claudeutils.live_session_pid("s1") is None
+
+
+# --- claude_project_paths -------------------------------------------------
+
+
+def test_claude_project_paths_reads_the_projects_keys(tmp_path, monkeypatch):
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"projects": {"/a/b": {}, "/c": {"x": 1}}, "other": 1}))
+    monkeypatch.setattr(claudeutils, "CLAUDE_JSON", cfg)
+    assert claudeutils.claude_project_paths() == [Path("/a/b"), Path("/c")]
+
+
+@pytest.mark.parametrize("content", [None, "not json", "[]", '{"projects": null}'])
+def test_claude_project_paths_is_empty_when_unreadable(tmp_path, monkeypatch, content):
+    cfg = tmp_path / ".claude.json"
+    if content is not None:
+        cfg.write_text(content)
+    monkeypatch.setattr(claudeutils, "CLAUDE_JSON", cfg)
+    assert claudeutils.claude_project_paths() == []

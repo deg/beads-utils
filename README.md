@@ -34,6 +34,7 @@ the clone itself on `PATH`; the scripts run in place either way.
 |---|---|
 | [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review |
 | [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually committed and pushed to its git remote |
+| [`bd-verify-backup`](bd-verify-backup) | Check a repo is fully backed up — nothing uncommitted, every branch pushed, beads pushed; `-g` checks every beads repo on the machine |
 | [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state |
 | [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended (color-coded, auto-paged) |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
@@ -104,7 +105,7 @@ triage meeting, or sharing the list with someone who doesn't live in a
 terminal. `bd-export-csv --sort=-priority,created_at` flattens the whole
 database to a CSV, presorted before the spreadsheet even opens.
 
-The last pair guards against a quiet failure mode. Beads keeps its data
+The last three guard against a quiet failure mode. Beads keeps its data
 in Dolt and pushes it to your git remote under `refs/dolt/data` — a ref
 GitHub's UI never shows, so the repo page looks identical whether or not
 your issues actually made it to the remote. `bd-dolt-check` answers
@@ -115,6 +116,14 @@ exiting non-zero on either (which also makes it a CI gate). `bd-dolt-diff`
 answers the follow-up — what exactly would a `bd dolt push` send? —
 with an issue-level diff: added and removed beads, field-by-field
 changes, dependency and comment edits.
+
+`bd-verify-backup` asks the wider question: if this laptop died now, what
+would be lost? Per repo it checks for uncommitted files and stashes, for
+any local branch with no upstream or commits not pushed to it, and for
+beads data not committed and pushed (the same check as `bd-dolt-check`).
+`bd-verify-backup -g` fetches and checks every beads repo on the machine
+in parallel, one line each, failures first, and exits non-zero if any of
+them would lose something.
 
 ![bd-dolt-check reporting an unpushed repo](docs/img/bd-dolt-check.png)
 

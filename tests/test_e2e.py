@@ -27,7 +27,7 @@ pytestmark = pytest.mark.e2e
 
 SCRIPTS = [
     "bd-complete", "bd-dolt-check", "bd-dolt-diff", "bd-export-csv",
-    "bd-log", "bd-view", "claude-session-find", "claude-session-list",
+    "bd-log", "bd-verify-backup", "bd-view", "claude-session-find", "claude-session-list",
     "claude-session-rename", "claude-session-report", "claude-traffic-monitor",
 ]
 
@@ -1372,7 +1372,8 @@ def test_bd_log_accepts_every_color_mode(mode, colored, run_script, fake_bd):
 
 def test_no_script_prints_a_traceback_for_a_bad_project_path(run_script, tmp_path):
     """The convention: errors are one lowercase line, never a traceback."""
-    for script in ("bd-log", "bd-export-csv", "bd-dolt-check", "bd-dolt-diff"):
+    for script in ("bd-log", "bd-export-csv", "bd-dolt-check", "bd-dolt-diff",
+                   "bd-verify-backup"):
         result = run_script(script, str(tmp_path))
         assert "Traceback" not in result.stderr, script
         assert result.stderr.startswith("error: "), script

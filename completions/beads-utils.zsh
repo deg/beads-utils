@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff claude-session-find claude-session-list claude-session-rename claude-session-report claude-traffic-monitor
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup claude-session-find claude-session-list claude-session-rename claude-session-report claude-traffic-monitor
 #
 # zsh tab completion for beads-utils.
 #
@@ -200,6 +200,15 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '1:project:_files -/'
     ;;
+  bd-verify-backup)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '(-g --global 1)'{-g,--global}'[check every beads repo on this machine]' \
+      '--no-fetch[skip git/dolt fetch; compare against last-fetched refs]' \
+      '--color=[color the verdicts]:when:(auto always never)' \
+      '(-g --global)1:project:_files -/'
+    ;;
   bd-dolt-diff)
     _arguments -s -S \
       '(- *)--version[show version and exit]' \
@@ -244,6 +253,6 @@ _beads_dispatch() {
 }
 
 compdef _beads_dispatch \
-  bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff \
+  bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup \
   claude-session-find claude-session-list claude-session-rename \
   claude-session-report claude-traffic-monitor

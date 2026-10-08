@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Verify that a beads repo is fully backed up: nothing uncommitted, every
+branch pushed, and the beads data pushed.
+
+With -g/--global, check every beads repo on this machine and print one line
+each. Exits 1 if anything anywhere is not backed up.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from bdutils import (
+    GIT_NETWORK_TIMEOUT,
+    add_color_arg,
+    add_version_arg,
+    dolt_sync_state,
+    paint,
+    resolve_project_path,
+    want_color,
+)
+from claudeutils import claude_project_paths
+
+# Beads repos outside anything Claude Code has recorded or the scan below
+# reaches. Listed in the bd-upgrade inventory (2026-09-22) as the three that
+# a `find ~/Documents` missed.
+EXTRA_REPOS = ("~/.emacs.d", "~/bin", "~/core-personal-files")
+
+# Projects live one level down (`degel/<repo>`, `hba/<repo>`). The scan is
+# what catches a repo no Claude session has run in: degel-ai-server, when
+# --global was written.
+SCAN_GLOBS = (("~/Documents", "*/*"),)
+
+# A Dolt status that leaves nothing local unpushed. BEHIND means the remote
+# has more than we do -- everything here is already there.
+BEADS_OK = ("IN SYNC", "BEHIND")
+
+WORKERS = 8
+
+
+@dataclass
+class Report:
+    """What bd-verify-backup found in one repo. `fatal` short-circuits the rest."""
+    path: Path
+    fatal: str = ""
+    dirty: list[str] = field(default_factory=list)
+    stashes: int = 0
+    branches: list[tuple[str, str]] = field(default_factory=list)  # (branch, problem)
+    n_branches: int = 0
+    beads: str = ""
+    beads_ok: bool = False
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return (not self.fatal and not self.dirty and not self.stashes
+                and not self.branches and self.beads_ok)
+
+
+def git(path: Path, *args: str, network: bool = False) -> subprocess.CompletedProcess[str]:
+    """Run git in `path`. A network call never prompts and gives up in time,
+    so one dead remote cannot stall a --global run."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        return subprocess.run(["git", *args], cwd=path, capture_output=True, text=True,
+                              env=env, timeout=GIT_NETWORK_TIMEOUT if network else None)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, "", f"timed out after {GIT_NETWORK_TIMEOUT}s")
+
+
+def last_line(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def branch_problems(path: Path) -> tuple[list[tuple[str, str]], int]:
+    """(branch, problem) for every local branch not safely on its upstream,
+    and how many local branches there are."""
+    out = git(path, "for-each-ref", "--format=%(refname:short)%00%(upstream:short)%00"
+              "%(upstream:track,nobracket)", "refs/heads").stdout
+    problems = []
+    rows = [ln.split("\0") for ln in out.splitlines() if ln]
+    for name, upstream, track in rows:
+        if not upstream:
+            problems.append((name, "no upstream"))
+        elif track == "gone":
+            problems.append((name, f"upstream {upstream} is gone"))
+        elif "ahead" in track:
+            n = track.split("ahead ", 1)[1].split(",")[0]
+            problems.append((name, f"{n} commit{'s' if n != '1' else ''} not pushed"))
+    return problems, len(rows)
+
+
+def beads_verdict(path: Path, fetch: bool) -> tuple[str, bool]:
+    """(cell text, ok) for the beads leg, from bd-dolt-check's own state."""
+    st = dolt_sync_state(path, fetch=fetch)
+    if st.dolt_db_dir is None:
+        return "no Dolt database", False
+    if st.dirty is None:
+        uncommitted = "working set not verifiable"
+    elif st.dirty:
+        uncommitted = f"{st.n_dirty} table{'s' if st.n_dirty != 1 else ''} uncommitted"
+    else:
+        uncommitted = ""
+    word = st.status
+    if st.status == "OUT OF SYNC":
+        word = f"OUT OF SYNC +{st.ahead}"
+    elif st.status == "DIVERGED":
+        word = f"DIVERGED +{st.ahead}/-{st.behind}"
+    elif st.status == "DIFFERS":
+        word = "OUT OF SYNC (heads differ)"
+    elif st.status == "UNREACHABLE":
+        word = f"UNREACHABLE ({st.ls_error})"
+    ok = st.status in BEADS_OK and st.dirty == []
+    return ", ".join(w for w in (word, uncommitted) if w), ok
+
+
+def check_repo(path: Path, fetch: bool) -> Report:
+    rep = Report(path)
+    try:
+        top = git(path, "rev-parse", "--show-toplevel")
+        if top.returncode != 0:
+            rep.fatal = "not a git repository: nothing here is backed up"
+            return rep
+        if not git(path, "remote").stdout.strip():
+            rep.fatal = "no git remote: nothing here is backed up"
+            return rep
+        if fetch:
+            res = git(path, "fetch", "--all", "--prune", "--quiet", network=True)
+            if res.returncode != 0:
+                rep.notes.append(f"git fetch failed ({last_line(res.stderr)}); "
+                                 "compared against the last-fetched refs")
+        rep.dirty = [ln for ln in git(path, "status", "--porcelain").stdout.splitlines() if ln]
+        rep.stashes = len(git(path, "stash", "list").stdout.splitlines())
+        rep.branches, rep.n_branches = branch_problems(path)
+        rep.beads, rep.beads_ok = beads_verdict(path, fetch)
+    except SystemExit as exc:
+        # bdutils.error() exits; in a worker thread that would end the whole
+        # --global run over one unreadable metadata.json.
+        rep.fatal = str(exc.code)
+    return rep
+
+
+def find_beads_repos() -> list[Path]:
+    """Every beads repo on this machine: what Claude Code has run in, a scan
+    of ~/Documents, and EXTRA_REPOS, deduplicated."""
+    candidates = list(claude_project_paths())
+    for root, pattern in SCAN_GLOBS:
+        candidates.extend(Path(root).expanduser().glob(pattern))
+    candidates.extend(Path(p).expanduser() for p in EXTRA_REPOS)
+    seen: dict[Path, None] = {}
+    for c in candidates:
+        if (c / ".beads" / "metadata.json").is_file():
+            seen.setdefault(c.resolve(), None)
+    return sorted(seen)
+
+
+def label(path: Path) -> str:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
+
+
+def tree_cell(rep: Report) -> str:
+    parts = []
+    if rep.dirty:
+        parts.append(f"{len(rep.dirty)} uncommitted")
+    if rep.stashes:
+        parts.append(f"{rep.stashes} stash{'es' if rep.stashes != 1 else ''}")
+    return ", ".join(parts) or "clean"
+
+
+def branches_cell(rep: Report) -> str:
+    if not rep.branches:
+        return "all pushed"
+    unpushed = [f"{name} +{why.split()[0]}" for name, why in rep.branches
+                if why.endswith("not pushed")]
+    no_up = sum(1 for _, why in rep.branches if why == "no upstream")
+    gone = sum(1 for _, why in rep.branches if why.endswith("is gone"))
+    parts = unpushed[:2] + ([f"{len(unpushed) - 2} more ahead"] if len(unpushed) > 2 else [])
+    if no_up:
+        parts.append(f"{no_up} no upstream")
+    if gone:
+        parts.append(f"{gone} gone")
+    return ", ".join(parts)
+
+
+def print_table(reports: list[Report], color: bool) -> None:
+    def tint(text: str, good: bool) -> str:
+        return paint(text, "green" if good else "red", color)
+
+    reports = sorted(reports, key=lambda r: (r.ok, str(r.path)))
+    rows = []
+    for r in reports:
+        if r.fatal:
+            rows.append((r, label(r.path), None))
+            continue
+        rows.append((r, label(r.path), (
+            (tree_cell(r), not r.dirty and not r.stashes),
+            (branches_cell(r), not r.branches),
+            (r.beads, r.beads_ok))))
+    head = ("REPO", "TREE", "BRANCHES", "BEADS")
+    widths = [max([len(head[0])] + [len(lbl) for _, lbl, _ in rows])]
+    for i in range(3):
+        widths.append(max([len(head[i + 1])] + [len(c[i][0]) for _, _, c in rows if c]))
+    print("  ".join(h.ljust(w) for h, w in zip(head, widths)).rstrip())
+    for r, lbl, cells in rows:
+        line = lbl.ljust(widths[0])
+        if cells is None:
+            line += "  " + tint(r.fatal, False)
+        else:
+            for (text, good), w in zip(cells, widths[1:]):
+                # Pad outside the color, so the escape codes don't skew widths.
+                line += "  " + tint(text, good) + " " * (w - len(text))
+        print(line.rstrip())
+        for note in r.notes:
+            print(f"{'':{widths[0]}}  note: {note}")
+    n_ok = sum(r.ok for r in reports)
+    print()
+    print(tint(f"{n_ok} of {len(reports)} repos fully backed up", n_ok == len(reports)))
+
+
+def print_detail(rep: Report, color: bool) -> None:
+    def tint(text: str, good: bool) -> str:
+        return paint(text, "green" if good else "red", color)
+
+    print(f"Repository:  {rep.path}")
+    if rep.fatal:
+        print(f"Status:      {tint('NOT BACKED UP', False)} — {rep.fatal}")
+        return
+    print(f"Tree:        {tint(tree_cell(rep), not rep.dirty and not rep.stashes)}")
+    for ln in rep.dirty:
+        print(f"               {ln}")
+    if rep.stashes:
+        print("               (nothing pushes a stash)")
+    if rep.branches:
+        print(f"Branches:    {tint(f'{len(rep.branches)} of {rep.n_branches} not pushed', False)}")
+        width = max(len(name) for name, _ in rep.branches)
+        for name, why in rep.branches:
+            print(f"               {name:<{width}}  {why}")
+    else:
+        print(f"Branches:    {tint(f'all {rep.n_branches} pushed', True)}")
+    print(f"Beads:       {tint(rep.beads, rep.beads_ok)}")
+    if not rep.beads_ok:
+        print("               (bd-dolt-check gives the detail and the remedy)")
+    for note in rep.notes:
+        print(f"Note:        {note}")
+    print()
+    print(f"Status:      {tint('BACKED UP' if rep.ok else 'NOT BACKED UP', rep.ok)}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=("Verify a beads repo is fully backed up: no uncommitted files, "
+                     "every branch pushed, and the beads data pushed."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  bd-verify-backup             Check the current directory\n"
+            "  bd-verify-backup <path>      Check a specific beads repo\n"
+            "  bd-verify-backup -g          Check every beads repo on this machine\n"
+            "\n"
+            "--global finds repos in ~/.claude.json's projects, in ~/Documents/*/*/,\n"
+            "and in ~/.emacs.d, ~/bin and ~/core-personal-files: any that has\n"
+            ".beads/metadata.json. Exit status is 1 if anything is not backed up.\n"
+        ),
+    )
+    parser.add_argument(
+        "project_path", nargs="?", default=None,
+        help="Path to the beads project (default: current directory)",
+    )
+    parser.add_argument(
+        "-g", "--global", dest="global_", action="store_true",
+        help="Check every beads repo on this machine, one line each",
+    )
+    parser.add_argument(
+        "--no-fetch", action="store_true",
+        help="Compare against the last-fetched remote refs instead of fetching first",
+    )
+    add_color_arg(parser)
+    add_version_arg(parser)
+    args = parser.parse_args()
+    color = want_color(args.color)
+    fetch = not args.no_fetch
+
+    if args.global_:
+        if args.project_path:
+            parser.error("--global takes no project path")
+        repos = find_beads_repos()
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            reports = list(pool.map(lambda p: check_repo(p, fetch), repos))
+        print_table(reports, color)
+        return 0 if all(r.ok for r in reports) else 1
+
+    rep = check_repo(resolve_project_path(args.project_path or "."), fetch)
+    print_detail(rep, color)
+    return 0 if rep.ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

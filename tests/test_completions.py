@@ -38,6 +38,7 @@ COMMANDS = [
     "bd-export-csv",
     "bd-dolt-check",
     "bd-dolt-diff",
+    "bd-verify-backup",
     "claude-session-find",
     "claude-session-list",
     "claude-session-rename",

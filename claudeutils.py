@@ -21,6 +21,21 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 CLAUDE_SESSIONS = Path.home() / ".claude" / "sessions"
 
 
+# Claude Code's user config. Its `projects` keys are the literal absolute
+# paths of every directory a session has been started in -- unlike the
+# names under CLAUDE_PROJECTS, which are sanitized and ambiguous.
+CLAUDE_JSON = Path.home() / ".claude.json"
+
+
+def claude_project_paths() -> list[Path]:
+    """Every directory Claude Code has run a session in, or [] if unreadable."""
+    try:
+        projects = json.loads(CLAUDE_JSON.read_text()).get("projects") or {}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return []
+    return [Path(p) for p in projects]
+
+
 def mangle_cwd(cwd: Path) -> str:
     """Claude encodes a project cwd as the path with '/' and '.' replaced by '-'."""
     return re.sub(r"[/.]", "-", str(cwd))

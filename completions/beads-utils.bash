@@ -218,6 +218,22 @@ _beads_bd_dolt_check() {
   fi
 }
 
+_beads_bd_verify_backup() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  case $prev in
+    --color)
+      COMPREPLY=($(compgen -W "auto always never" -- "$cur"))
+      return 0 ;;
+  esac
+  if [[ $cur == -* ]]; then
+    __beads_flags "-g --global --no-fetch --color --version -h --help"
+  else
+    __beads_dirs
+  fi
+}
+
 _beads_bd_dolt_diff() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
@@ -280,6 +296,7 @@ complete -F _beads_bd_log bd-log
 complete -F _beads_bd_export_csv bd-export-csv
 complete -F _beads_bd_dolt_check bd-dolt-check
 complete -F _beads_bd_dolt_diff bd-dolt-diff
+complete -F _beads_bd_verify_backup bd-verify-backup
 complete -F _beads_claude_session_find claude-session-find
 complete -F _beads_claude_session_rename claude-session-rename
 complete -F _beads_claude_traffic_monitor claude-traffic-monitor

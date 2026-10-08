@@ -26,6 +26,9 @@ Design of the suite, and the traps it exists to survive:
   rule first). Claude session history is synthetic `.jsonl` under `tmp_path`
   with `claudeutils.CLAUDE_PROJECTS` monkeypatched, or a fake `HOME` for
   subprocess runs. Nothing reads a real beads project or the user's sessions.
+  `git` is the exception that runs for real, always in `tmp_path` repos
+  (`bd-verify-backup`'s tests, against a bare local remote, with
+  `GIT_CONFIG_GLOBAL=/dev/null`).
 - `bdutils.error()` calls `sys.exit(str)`; the message is printed by the
   interpreter's top-level handler, which never runs under `pytest.raises`, so
   assert on `excinfo.value.code`. `warn()` writes to stderr directly and *is*
