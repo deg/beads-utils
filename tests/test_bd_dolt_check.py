@@ -252,6 +252,23 @@ def test_main_suggests_a_remote_url_when_none_is_configured(project, monkeypatch
     assert "bd dolt remote add origin git+ssh://git@github.com/owner/repo.git" in out
 
 
+def test_main_suggests_the_sync_remote_not_the_git_origin(project, monkeypatch,
+                                                          tmp_path, capsys):
+    """sync.remote names where beads are meant to go. Suggesting the git
+    origin instead would put a private project's beads in its public code
+    repo -- beads-utils-tj0's situation, in the remedy line."""
+    install_fake_git(tmp_path, monkeypatch, "")
+    (project / ".beads" / "config.yaml").write_text(
+        'sync.remote: "git@github.com:owner/private.git"\n')
+    monkeypatch.setattr(bd_dolt_check, "get_git_remote_url",
+                        lambda p: "git@github.com:owner/public.git")
+    assert run_main(monkeypatch, project) == 1
+    out = capsys.readouterr().out
+    assert "To configure (matching sync.remote):" in out
+    assert "bd dolt remote add origin git+ssh://git@github.com/owner/private.git" in out
+    assert "public" not in out.split("Dolt DB:")[1]
+
+
 def test_main_says_when_it_falls_back_to_the_git_origin(project, monkeypatch,
                                                         tmp_path, capsys):
     """No Dolt remote and no sync.remote: the git origin is only where we look,

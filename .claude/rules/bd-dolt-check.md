@@ -55,6 +55,12 @@ refs/dolt/data on <url>` with git's own last stderr line, exit 1 and no
 remedy, since nothing is known about the remote. It used to read as `NOT
 FOUND` and tell the reader to push. `bdutils.git_ls_remote_ref()` returns
 `(hash, error)` to keep "absent" and "could not ask" apart.
+
+When nothing has been pushed and no Dolt remote exists, the `bd dolt remote
+add` suggestion is built from `sync.remote` if that is where the beads remote
+came from, and from the git origin only otherwise. Deriving it from the git
+origin regardless would tell a project with private beads to push them into
+its public code repo.
 It answers **committed *and* pushed**, on two independent axes. The commit
 comparison above is one; the other is the Dolt **working set**, read from the
 `dolt_status` system table. Without it a repo reads `IN SYNC` / exit 0 while

@@ -55,7 +55,7 @@ def repo(tmp_path):
 @pytest.fixture
 def beads_ok(monkeypatch):
     """The beads leg answers IN SYNC, so a test sees only the git legs."""
-    monkeypatch.setattr(bvb, "beads_verdict", lambda path, fetch: ("IN SYNC", True))
+    monkeypatch.setattr(bvb, "beads_verdict", lambda path, fetch: ("IN SYNC", True, []))
 
 
 def state(status="IN SYNC", dirty=(), db=Path("/db"), **kw):
@@ -98,6 +98,16 @@ def test_every_local_branch_is_checked_not_only_the_current_one(repo, beads_ok):
     assert sorted(rep.branches) == [("main", "2 commits not pushed"),
                                     ("never-pushed", "no upstream")]
     assert rep.n_branches == 2
+
+
+def test_a_branch_tracking_a_local_branch_has_no_upstream(repo, beads_ok):
+    """`git branch -u main feature` gives feature an upstream, so it read as
+    pushed -- yet its commits are on no remote, even with main pushed."""
+    sh(repo, "branch", "feature")
+    sh(repo, "branch", "-q", "-u", "main", "feature")
+    rep = bvb.check_repo(repo, fetch=False)
+    assert rep.branches == [("feature", "no upstream (tracks local main)")]
+    assert bvb.branches_cell(rep) == "1 no upstream"
 
 
 def test_a_branch_whose_upstream_was_deleted_is_gone(repo, beads_ok):
@@ -151,6 +161,28 @@ def test_an_error_inside_one_repo_is_reported_not_raised(repo, monkeypatch):
     assert rep.fatal == "error: could not read metadata.json"
 
 
+def test_any_exception_inside_one_repo_is_its_failure_line(repo, monkeypatch):
+    """A non-UTF-8 config.yaml raises UnicodeDecodeError, which no helper
+    catches; under --global it would surface from pool.map as a traceback and
+    no table would print."""
+    def boom(path, fetch):
+        b"\xff".decode()
+    monkeypatch.setattr(bvb, "beads_verdict", boom)
+    rep = bvb.check_repo(repo, fetch=False)
+    assert rep.fatal.startswith("error: UnicodeDecodeError: ")
+    assert not rep.ok
+
+
+def test_commits_on_a_detached_head_are_not_backed_up(repo, beads_ok):
+    """No branch holds them, so the per-branch check alone would pass."""
+    sh(repo, "checkout", "-q", "--detach")
+    assert bvb.check_repo(repo, fetch=False).branches == []
+    sh(repo, "commit", "-q", "--allow-empty", "-m", "orphaned")
+    rep = bvb.check_repo(repo, fetch=False)
+    assert rep.branches == [("detached HEAD", "1 commit not pushed")]
+    assert not rep.ok
+
+
 # --- beads_verdict ----------------------------------------------------------
 
 
@@ -170,7 +202,22 @@ def test_an_error_inside_one_repo_is_reported_not_raised(repo, monkeypatch):
 ])
 def test_beads_verdict(monkeypatch, st, cell, ok):
     monkeypatch.setattr(bvb, "dolt_sync_state", lambda path, fetch: st)
-    assert bvb.beads_verdict(Path("/x"), fetch=False) == (cell, ok)
+    assert bvb.beads_verdict(Path("/x"), fetch=False) == (cell, ok, [])
+
+
+def test_a_failed_dolt_fetch_is_a_note_not_a_failure(monkeypatch):
+    """IN SYNC against a stale tracking ref is still green, but the reader
+    has to know the comparison is dated -- bd-dolt-check says so too."""
+    monkeypatch.setattr(bvb, "dolt_sync_state",
+                        lambda path, fetch: state(fetch_failed=True, remote_name="origin"))
+    cell, ok, notes = bvb.beads_verdict(Path("/x"), fetch=True)
+    assert (cell, ok) == ("IN SYNC", True)
+    assert notes == ["dolt fetch origin failed; compared against the last-fetched Dolt refs"]
+
+
+def test_check_repo_carries_the_beads_notes(repo, monkeypatch):
+    monkeypatch.setattr(bvb, "beads_verdict", lambda path, fetch: ("IN SYNC", True, ["n"]))
+    assert bvb.check_repo(repo, fetch=False).notes == ["n"]
 
 
 # --- find_beads_repos -------------------------------------------------------

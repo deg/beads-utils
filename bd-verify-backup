@@ -80,27 +80,41 @@ def last_line(text: str) -> str:
 
 def branch_problems(path: Path) -> tuple[list[tuple[str, str]], int]:
     """(branch, problem) for every local branch not safely on its upstream,
-    and how many local branches there are."""
+    and how many local branches there are. A detached HEAD holding commits
+    that no remote has is reported too: no branch holds them, so the
+    per-branch check alone would call the repo backed up."""
     out = git(path, "for-each-ref", "--format=%(refname:short)%00%(upstream:short)%00"
-              "%(upstream:track,nobracket)", "refs/heads").stdout
+              "%(upstream:track,nobracket)%00%(upstream:remotename)", "refs/heads").stdout
     problems = []
     rows = [ln.split("\0") for ln in out.splitlines() if ln]
-    for name, upstream, track in rows:
+    for name, upstream, track, remote in rows:
         if not upstream:
             problems.append((name, "no upstream"))
+        elif remote == ".":
+            # `git branch -u main feature`: tracking a local branch says
+            # nothing about any remote, even when that branch is pushed.
+            problems.append((name, f"no upstream (tracks local {upstream})"))
         elif track == "gone":
             problems.append((name, f"upstream {upstream} is gone"))
         elif "ahead" in track:
             n = track.split("ahead ", 1)[1].split(",")[0]
             problems.append((name, f"{n} commit{'s' if n != '1' else ''} not pushed"))
+    if git(path, "symbolic-ref", "-q", "HEAD").returncode != 0:
+        n = git(path, "rev-list", "--count", "HEAD", "--not", "--remotes").stdout.strip()
+        if n not in ("", "0"):
+            problems.append(("detached HEAD", f"{n} commit{'s' if n != '1' else ''} not pushed"))
     return problems, len(rows)
 
 
-def beads_verdict(path: Path, fetch: bool) -> tuple[str, bool]:
-    """(cell text, ok) for the beads leg, from bd-dolt-check's own state."""
+def beads_verdict(path: Path, fetch: bool) -> tuple[str, bool, list[str]]:
+    """(cell text, ok, notes) for the beads leg, from bd-dolt-check's own state."""
     st = dolt_sync_state(path, fetch=fetch)
     if st.dolt_db_dir is None:
-        return "no Dolt database", False
+        return "no Dolt database", False, []
+    # Same treatment as a failed git fetch: a stale tracking ref can only
+    # raise a false alarm, but the reader should know the verdict is dated.
+    notes = ([f"dolt fetch {st.remote_name} failed; compared against the last-fetched Dolt refs"]
+             if st.fetch_failed else [])
     if st.dirty is None:
         uncommitted = "working set not verifiable"
     elif st.dirty:
@@ -117,7 +131,7 @@ def beads_verdict(path: Path, fetch: bool) -> tuple[str, bool]:
     elif st.status == "UNREACHABLE":
         word = f"UNREACHABLE ({st.ls_error})"
     ok = st.status in BEADS_OK and st.dirty == []
-    return ", ".join(w for w in (word, uncommitted) if w), ok
+    return ", ".join(w for w in (word, uncommitted) if w), ok, notes
 
 
 def check_repo(path: Path, fetch: bool) -> Report:
@@ -138,11 +152,16 @@ def check_repo(path: Path, fetch: bool) -> Report:
         rep.dirty = [ln for ln in git(path, "status", "--porcelain").stdout.splitlines() if ln]
         rep.stashes = len(git(path, "stash", "list").stdout.splitlines())
         rep.branches, rep.n_branches = branch_problems(path)
-        rep.beads, rep.beads_ok = beads_verdict(path, fetch)
+        rep.beads, rep.beads_ok, notes = beads_verdict(path, fetch)
+        rep.notes.extend(notes)
     except SystemExit as exc:
         # bdutils.error() exits; in a worker thread that would end the whole
         # --global run over one unreadable metadata.json.
         rep.fatal = str(exc.code)
+    except Exception as exc:  # noqa: BLE001 -- any one repo's failure is its line, not the run's
+        # A non-UTF-8 config.yaml raises UnicodeDecodeError, which no helper
+        # catches; uncaught, pool.map re-raises it and no table prints at all.
+        rep.fatal = f"error: {type(exc).__name__}: {exc}"
     return rep
 
 
@@ -179,7 +198,7 @@ def branches_cell(rep: Report) -> str:
         return "all pushed"
     unpushed = [f"{name} +{why.split()[0]}" for name, why in rep.branches
                 if why.endswith("not pushed")]
-    no_up = sum(1 for _, why in rep.branches if why == "no upstream")
+    no_up = sum(1 for _, why in rep.branches if why.startswith("no upstream"))
     gone = sum(1 for _, why in rep.branches if why.endswith("is gone"))
     parts = unpushed[:2] + ([f"{len(unpushed) - 2} more ahead"] if len(unpushed) > 2 else [])
     if no_up:

@@ -212,9 +212,16 @@ def main() -> int:
             print("(`bd dolt push` uses remotes registered via `bd dolt remote add`;")
             print(" it does NOT auto-derive from your git `origin`.)")
             print()
-            suggested = derive_dolt_remote_url(remote_url)
+            # sync.remote, when set, is where this project means its beads to
+            # go, and it may deliberately not be the git origin (a public
+            # code repo with private beads, as in beads-utils-tj0).
+            if st.beads_remote and st.beads_remote[1] == "sync.remote":
+                basis, source = st.beads_remote[0], "sync.remote"
+            else:
+                basis, source = remote_url, "your git origin"
+            suggested = derive_dolt_remote_url(basis)
             if suggested:
-                print("To configure (matching your git origin):")
+                print(f"To configure (matching {source}):")
                 print(f"  bd dolt remote add origin {suggested}")
                 print("  bd dolt push")
             else:

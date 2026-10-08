@@ -16,7 +16,13 @@ for one beads repo, or with `-g/--global` for every one on the machine
 
 - **Every local branch counts, not just the current one.** A branch with no
   upstream, one whose upstream is `[gone]`, and one ahead of its upstream
-  all fail. Behind is fine: the remote has more, not less. Stashes fail too,
+  all fail. So does a detached HEAD holding commits on no remote: no branch
+  holds them, so the per-branch check alone would pass. Behind is fine: the
+  remote has more, not less. A branch whose upstream is another *local*
+  branch (`git branch -u main feature`, `%(upstream:remotename)` is `.`)
+  counts as no upstream: tracking a local branch says nothing about any
+  remote. Someone who tracks locally on purpose will see that branch fail
+  every run; the owner chose that over a silent hole. Stashes fail too,
   since nothing pushes a stash. "Pushed" means pushed to the branch's own
   upstream, whatever host; every repo here is on GitHub anyway.
 - **Uncommitted is `git status --porcelain`, untracked included, unfiltered.**
@@ -41,7 +47,8 @@ for one beads repo, or with `-g/--global` for every one on the machine
   fetch`, because "ahead" against a stale ref is a guess; `--prune` is what
   makes a deleted upstream show as `gone`. `--no-fetch` opts out. A failed
   fetch is a note, not a failure: comparing against older refs can raise a
-  false alarm, never a false all-clear. Network git calls get
+  false alarm, never a false all-clear. That holds for a failed `dolt fetch`
+  too, which gets the same note. Network git calls get
   `GIT_TERMINAL_PROMPT=0` and `bdutils.GIT_NETWORK_TIMEOUT`, so one dead
   git remote cannot hang a `--global` run; `dolt fetch` has no such limit.
   `--no-fetch` skips the network entirely, including bd-dolt-check's `git
@@ -51,10 +58,14 @@ for one beads repo, or with `-g/--global` for every one on the machine
 - **`git ls-remote` failing is `UNREACHABLE`, not `NOT FOUND`.** Before this
   script, bd-dolt-check read any ls-remote failure as "never pushed"; across
   20 parallel network calls that misreport would be routine.
-- **Errors inside one repo are caught.** `bdutils.error()` raises
-  `SystemExit`; in a worker thread that would end the whole `--global` run
-  over one bad `metadata.json`, so `check_repo()` turns it into that repo's
-  failure line.
+- **Errors inside one repo are caught**, all of them. `bdutils.error()`
+  raises `SystemExit`, and a non-UTF-8 `config.yaml` raises
+  `UnicodeDecodeError`, which no helper catches; either, uncaught in a worker
+  thread, comes back out of `pool.map` and ends the whole `--global` run with
+  no table. `check_repo()` turns any exception into that repo's failure line.
+  Fixes 1-4 of the post-ship cold review (detached HEAD, dolt fetch note,
+  broad catch, and bd-dolt-check's sync.remote remedy) landed after
+  `40c388a`.
 
 ## The --global inventory
 
