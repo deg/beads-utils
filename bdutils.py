@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -319,6 +320,144 @@ def resolve_beads_remote(project_path: Path, beads_dir: Path,
     if git_url != "(no remote)":
         return git_url, "git origin"
     return None
+
+
+# Long enough for a slow link, short enough that one dead git remote does
+# not stall a --global run of bd-verify-backup. (`dolt fetch` has no timeout.)
+GIT_NETWORK_TIMEOUT = 60
+
+
+def git_ls_remote_ref(project_path: Path, url: str, ref: str) -> tuple[str | None, str | None]:
+    """(hash, error) for `ref` on the git repository at `url`.
+
+    Exactly one is set when git could ask: the hash if the ref exists,
+    neither if it does not. `error` (git's last stderr line) means git could
+    not ask at all -- offline, refused auth, a repository GitHub rejects --
+    which used to read as "never pushed".
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(["git", "ls-remote", url, ref], cwd=project_path,
+                                capture_output=True, text=True, env=env,
+                                timeout=GIT_NETWORK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {GIT_NETWORK_TIMEOUT}s"
+    if result.returncode != 0:
+        lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip()]
+        return None, (lines[-1] if lines else f"git exited {result.returncode}")
+    line = result.stdout.strip()
+    return (line.split()[0] if line else None), None
+
+
+@dataclass
+class DoltSyncState:
+    """Everything bd-dolt-check concludes about one beads repo's Dolt data.
+
+    Computed once by dolt_sync_state() and rendered by each caller:
+    bd-dolt-check verbosely, bd-verify-backup as one cell of a table.
+
+    `status` is one of:
+      NOT FOUND     the remote has no refs/dolt/data (never pushed)
+      UNREACHABLE   git could not ask the remote (`ls_error` says why)
+      UNVERIFIABLE  the remote has data, but the commit delta is unknown
+                    (`detail` says why)
+      IN SYNC / OUT OF SYNC / BEHIND / DIVERGED / DIFFERS
+                    the commit comparison; DIFFERS = heads differ but
+                    neither range counts
+    The working set (`dirty`) is a separate axis: None = could not look,
+    [] = clean.
+    """
+    db_name: str
+    dolt_mode: str
+    dolt_db_dir: Path | None
+    dolt_remotes: dict[str, str]
+    beads_remote: tuple[str, str] | None
+    dirty: list[dict] | None
+    status: str = ""
+    detail: str = ""
+    ls_url: str | None = None
+    remote_ref: str | None = None
+    ls_error: str | None = None
+    branch: str = "main"
+    remote_name: str = "origin"
+    tracking_ref: str = ""
+    fetch_failed: bool = False
+    local_head: str | None = None
+    tracking_head: str | None = None
+    ahead: int = 0
+    behind: int = 0
+
+    @property
+    def n_dirty(self) -> int:
+        return len(self.dirty) if self.dirty else 0
+
+
+def dolt_sync_state(project_path: Path, fetch: bool = True) -> DoltSyncState:
+    """Compare a beads repo's Dolt data with its remote. Never runs `bd`."""
+    beads_dir = project_path / ".beads"
+    db_name, dolt_mode = read_metadata(beads_dir)
+    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
+    dolt_remotes = read_dolt_remotes(dolt_db_dir) if dolt_db_dir else {}
+    st = DoltSyncState(
+        db_name=db_name, dolt_mode=dolt_mode, dolt_db_dir=dolt_db_dir,
+        dolt_remotes=dolt_remotes,
+        beads_remote=resolve_beads_remote(project_path, beads_dir, dolt_remotes),
+        dirty=dolt_status(dolt_db_dir) if dolt_db_dir is not None else None,
+    )
+
+    st.ls_url = git_url_for_dolt_remote(st.beads_remote[0]) if st.beads_remote else None
+    if st.beads_remote is None:
+        st.status = "NOT FOUND"
+        return st
+    # Asking the remote is network, so fetch=False skips it and lets the
+    # last-fetched tracking ref decide; a repo that never had one ends up
+    # UNVERIFIABLE below. A remote that is not a git repository (az://,
+    # DoltHub) has no refs/dolt/data to look for at all.
+    if fetch and st.ls_url:
+        st.remote_ref, st.ls_error = git_ls_remote_ref(project_path, st.ls_url, "refs/dolt/data")
+        if st.ls_error:
+            st.status = "UNREACHABLE"
+            return st
+        if st.remote_ref is None:
+            st.status = "NOT FOUND"
+            return st
+
+    if dolt_db_dir is None or not have_dolt():
+        st.status = "UNVERIFIABLE"
+        st.detail = "run from the project dir with the dolt CLI installed for a full check"
+        return st
+
+    st.branch = get_head_branch(dolt_db_dir)
+    st.remote_name = pick_dolt_remote(dolt_remotes) or "origin"
+    st.tracking_ref = f"remotes/{st.remote_name}/{st.branch}"
+    if fetch:
+        st.fetch_failed = not dolt_fetch(dolt_db_dir, st.remote_name)
+
+    st.local_head = dolt_rev(dolt_db_dir, st.branch)
+    st.tracking_head = dolt_rev(dolt_db_dir, st.tracking_ref)
+    if st.local_head is None:
+        st.status = "UNVERIFIABLE"
+        st.detail = f"could not read local Dolt HEAD for branch '{st.branch}'"
+        return st
+    if st.tracking_head is None:
+        st.status = "UNVERIFIABLE"
+        st.detail = f"no local remote-tracking ref '{st.tracking_ref}'; run 'bd dolt push' once"
+        return st
+    if st.local_head == st.tracking_head:
+        st.status = "IN SYNC"
+        return st
+
+    st.ahead = dolt_count_range(dolt_db_dir, f"{st.tracking_ref}..{st.branch}") or 0
+    st.behind = dolt_count_range(dolt_db_dir, f"{st.branch}..{st.tracking_ref}") or 0
+    if st.ahead and st.behind:
+        st.status = "DIVERGED"
+    elif st.ahead:
+        st.status = "OUT OF SYNC"
+    elif st.behind:
+        st.status = "BEHIND"
+    else:
+        st.status = "DIFFERS"
+    return st
 
 
 def dolt_fetch(dolt_db_dir: Path, remote: str) -> bool:

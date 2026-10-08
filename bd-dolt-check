@@ -20,33 +20,14 @@ from pathlib import Path
 
 from bdutils import (
     add_version_arg,
-    dolt_count_range,
-    dolt_fetch,
-    dolt_rev,
-    dolt_status,
+    dolt_sync_state,
     get_git_remote_url,
-    get_head_branch,
-    git_url_for_dolt_remote,
     have_dolt,
-    locate_dolt_db,
-    pick_dolt_remote,
-    read_dolt_remotes,
-    read_metadata,
-    resolve_beads_remote,
     resolve_project_path,
     run,
     same_repo_url,
     strip_ansi,
 )
-
-
-def get_remote_dolt_ref(project_path: Path, git_url: str) -> str | None:
-    """Hash of refs/dolt/data on `git_url`, or None if it is absent."""
-    result = run(["git", "ls-remote", git_url, "refs/dolt/data"], cwd=project_path)
-    line = result.stdout.strip()
-    if not line:
-        return None
-    return line.split()[0]
 
 
 def derive_dolt_remote_url(git_url: str) -> str | None:
@@ -193,41 +174,37 @@ def main() -> int:
 
     project_path = resolve_project_path(args.project_path)
     beads_dir = project_path / ".beads"
-
-    db_name, dolt_mode = read_metadata(beads_dir)
     remote_url = get_git_remote_url(project_path)
-
-    dolt_db_dir = locate_dolt_db(beads_dir, db_name)
-    dolt_remotes = read_dolt_remotes(dolt_db_dir) if dolt_db_dir else {}
-    beads_remote = resolve_beads_remote(project_path, beads_dir, dolt_remotes)
+    st = dolt_sync_state(project_path)
+    dolt_db_dir, dolt_remotes, n_dirty = st.dolt_db_dir, st.dolt_remotes, st.n_dirty
 
     print(f"Repository:  {project_path}")
     print(f"Git remote:  {remote_url}")
-    if beads_remote is None:
+    if st.beads_remote is None:
         print("Dolt remote: (none)")
-    elif beads_remote[1] == "git origin":
+    elif st.beads_remote[1] == "git origin":
         print("Dolt remote: (none configured; looking on the git origin)")
     else:
-        url, source = beads_remote
+        url, source = st.beads_remote
         # A beads remote other than the git origin is often deliberate (a
         # public code repo whose beads live in a private one), so it is
         # stated rather than warned about.
         differs = "" if same_repo_url(url, remote_url) else "; not the git origin"
         print(f"Dolt remote: {url} (from {source}{differs})")
-    print(f"Dolt DB:     {db_name} (mode: {dolt_mode})")
+    print(f"Dolt DB:     {st.db_name} (mode: {st.dolt_mode})")
     print()
 
-    dirty = dolt_status(dolt_db_dir) if dolt_db_dir is not None else None
-    n_dirty = len(dirty) if dirty else 0
-    print_working_set(dirty, dolt_db_dir, db_name, dolt_mode)
+    print_working_set(st.dirty, dolt_db_dir, st.db_name, st.dolt_mode)
 
-    ls_url = git_url_for_dolt_remote(beads_remote[0]) if beads_remote else None
-    remote_ref = get_remote_dolt_ref(project_path, ls_url) if ls_url else None
-    if beads_remote is not None and ls_url is None:
-        # Not a git repository (az://, DoltHub, ...): there is no
-        # refs/dolt/data to look for, so go straight to Dolt's own comparison.
+    if st.status == "UNREACHABLE":
+        # Not the same as NOT FOUND: nothing is known about the remote, so
+        # telling the reader to push would be a guess.
+        print(f"Remote:  could not check refs/dolt/data on {st.ls_url}")
+        print(f"         (git: {st.ls_error})")
+        return 1
+    if st.beads_remote is not None and st.ls_url is None:
         print("Remote:  not a git remote; refs/dolt/data presence not checked")
-    elif remote_ref is None:
+    elif st.status == "NOT FOUND":
         print("Remote:  refs/dolt/data NOT FOUND")
         print()
         if not dolt_remotes:
@@ -252,9 +229,8 @@ def main() -> int:
             print()
             print("Run 'bd dolt push' to push.")
         return 1
-
     else:
-        print(f"Remote:  refs/dolt/data = {remote_ref[:12]}...")
+        print(f"Remote:  refs/dolt/data = {st.remote_ref[:12]}...")
 
     if dolt_db_dir is not None:
         if dolt_remotes:
@@ -271,43 +247,24 @@ def main() -> int:
     else:
         print()
         print("Warning: Dolt database directory not found")
-        print(f"  Checked: {beads_dir / 'embeddeddolt' / db_name}")
-        print(f"           {beads_dir / 'dolt' / db_name}")
+        print(f"  Checked: {beads_dir / 'embeddeddolt' / st.db_name}")
+        print(f"           {beads_dir / 'dolt' / st.db_name}")
 
     print()
-    if dolt_db_dir is None or not have_dolt():
-        return print_unverifiable(
-            n_dirty,
-            "run from the project dir with the dolt CLI installed for a full check",
-        )
-
-    branch = get_head_branch(dolt_db_dir)
-    remote_name = pick_dolt_remote(dolt_remotes) or "origin"
-    tracking_ref = f"remotes/{remote_name}/{branch}"
-
-    if not dolt_fetch(dolt_db_dir, remote_name):
-        print(f"Note: 'dolt fetch {remote_name}' failed; comparing against the last-known")
+    if st.fetch_failed:
+        print(f"Note: 'dolt fetch {st.remote_name}' failed; comparing against the last-known")
         print("      remote-tracking ref (a remote that moved ahead may be missed).")
         print()
+    if st.status == "UNVERIFIABLE":
+        return print_unverifiable(n_dirty, st.detail)
 
-    local_head = dolt_rev(dolt_db_dir, branch)
-    tracking_head = dolt_rev(dolt_db_dir, tracking_ref)
-
-    if local_head is None:
-        return print_unverifiable(
-            n_dirty, f"could not read local Dolt HEAD for branch '{branch}'")
-    if tracking_head is None:
-        return print_unverifiable(
-            n_dirty,
-            f"no local remote-tracking ref '{tracking_ref}'; run 'bd dolt push' once",
-        )
-
-    if local_head == tracking_head:
+    branch, tracking_ref = st.branch, st.tracking_ref
+    if st.status == "IN SYNC":
         if n_dirty:
             print(f"Status:  UNCOMMITTED — commits in sync, "
                   f"{tables_phrase(n_dirty)} not committed")
             return 1
-        if dirty is None:
+        if st.dirty is None:
             # The commit axis checks out, but the working set could not be
             # read. Saying a flat "IN SYNC" would be the same silence-reads-as-
             # fine failure this whole check exists to end.
@@ -317,29 +274,27 @@ def main() -> int:
         print(f"Status:  IN SYNC (local {branch} matches {tracking_ref})")
         return 0
 
-    ahead = dolt_count_range(dolt_db_dir, f"{tracking_ref}..{branch}") or 0
-    behind = dolt_count_range(dolt_db_dir, f"{branch}..{tracking_ref}") or 0
-
+    ahead, behind = st.ahead, st.behind
     # The two failures are independent, so a dirty working set rides along as a
     # clause rather than replacing the commit verdict. Its remedy was printed
     # with the working-set section above and is not repeated here — except on
-    # the pull actions, via commit_before_pull().
+    # the pull actions, via commit_first().
     also = f"; {tables_phrase(n_dirty)} uncommitted" if n_dirty else ""
-    if ahead and behind:
+    if st.status == "DIVERGED":
         print(f"Status:  DIVERGED — {ahead} local commit(s) unpushed, {behind} remote commit(s) unpulled{also}")
         action = "Run 'bd dolt pull' then 'bd dolt push' to reconcile."
-    elif ahead:
+    elif st.status == "OUT OF SYNC":
         print(f"Status:  OUT OF SYNC — {ahead} local commit(s) not pushed{also}")
         action = "Run 'bd dolt push' to sync."
-    elif behind:
+    elif st.status == "BEHIND":
         print(f"Status:  BEHIND — {behind} remote commit(s) not pulled{also}")
         action = "Run 'bd dolt pull' to update local."
     else:
         print(f"Status:  OUT OF SYNC — local and remote-tracking heads differ (delta not countable){also}")
         action = "Run 'bd dolt pull' / 'bd dolt push' to reconcile."
     action = commit_first(action, n_dirty)
-    print(f"  local ({branch}):           {local_head}")
-    print(f"  remote ({tracking_ref}): {tracking_head}")
+    print(f"  local ({branch}):           {st.local_head}")
+    print(f"  remote ({tracking_ref}): {st.tracking_head}")
     print()
     print(action)
     return 1

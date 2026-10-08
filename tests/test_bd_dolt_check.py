@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 
 import pytest
 
@@ -47,30 +46,63 @@ def test_derive_dolt_remote_url_declines_to_guess(git_url):
     assert bd_dolt_check.derive_dolt_remote_url(git_url) is None
 
 
-# --- get_remote_dolt_ref --------------------------------------------------
+# --- git_ls_remote_ref ----------------------------------------------------
 
 
-def make_git_repo(path):
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    return path
+def fake_git_script(tmp_path, monkeypatch, body):
+    bindir = tmp_path / "gitbin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "git").write_text("#!/bin/sh\n" + body)
+    (bindir / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
 
 
-def test_get_remote_dolt_ref_returns_the_hash_from_ls_remote(project, monkeypatch, tmp_path):
-    fake = tmp_path / "gitbin"
-    fake.mkdir()
-    script = fake / "git"
-    script.write_text(
-        "#!/bin/sh\n"
-        "echo 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/dolt/data'\n"
-    )
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake}:{__import__('os').environ['PATH']}")
-    assert bd_dolt_check.get_remote_dolt_ref(project, "origin") == "deadbeef" * 5
+def test_git_ls_remote_ref_returns_the_hash(project, monkeypatch, tmp_path):
+    fake_git_script(tmp_path, monkeypatch,
+                    "echo 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/dolt/data'\n")
+    assert bdutils.git_ls_remote_ref(project, "u", "refs/dolt/data") == ("deadbeef" * 5, None)
 
 
-def test_get_remote_dolt_ref_returns_none_when_the_ref_is_absent(project, tmp_path):
-    make_git_repo(project)
-    assert bd_dolt_check.get_remote_dolt_ref(project, "origin") is None
+def test_git_ls_remote_ref_reports_an_absent_ref_as_neither(project, monkeypatch, tmp_path):
+    fake_git_script(tmp_path, monkeypatch, "exit 0\n")
+    assert bdutils.git_ls_remote_ref(project, "u", "refs/dolt/data") == (None, None)
+
+
+def test_git_ls_remote_ref_reports_a_failure_as_an_error(project, monkeypatch, tmp_path):
+    """Offline or refused is not "never pushed" -- the two used to read alike."""
+    fake_git_script(tmp_path, monkeypatch,
+                    "echo 'fatal: Could not read from remote repository.' >&2\nexit 128\n")
+    assert bdutils.git_ls_remote_ref(project, "u", "refs/dolt/data") == (
+        None, "fatal: Could not read from remote repository.")
+
+
+def test_dolt_sync_state_without_fetch_stays_off_the_network(
+        dolt_project, monkeypatch, tmp_path, fake_dolt):
+    """bd-verify-backup --no-fetch: no ls-remote and no dolt fetch, so an
+    offline run compares against the last-fetched refs instead of calling
+    every remote UNREACHABLE."""
+    fake_git_script(tmp_path, monkeypatch,
+                    '[ "$1" = ls-remote ] || exit 0\n'
+                    "echo 'ssh: Could not resolve hostname github.com' >&2\nexit 128\n")
+    working_set(fake_dolt)
+    fake_dolt.default(stdout="samehash a commit\n")
+    st = bdutils.dolt_sync_state(dolt_project, fetch=False)
+    assert st.status == "IN SYNC"
+    assert not any(argv[0] == "fetch" for argv in fake_dolt.calls)
+
+
+def test_main_says_could_not_check_when_the_remote_is_unreachable(
+        dolt_project, monkeypatch, tmp_path, fake_dolt, capsys):
+    fake_git_script(tmp_path, monkeypatch,
+                    '[ "$1" = ls-remote ] || exit 0\n'
+                    "echo 'ssh: Could not resolve hostname github.com' >&2\nexit 128\n")
+    working_set(fake_dolt)
+    assert run_main(monkeypatch, dolt_project) == 1
+    out = capsys.readouterr().out
+    assert "Remote:  could not check refs/dolt/data on ssh://git@github.com/o/r" in out
+    assert "(git: ssh: Could not resolve hostname github.com)" in out
+    assert "NOT FOUND" not in out
+    assert "bd dolt push" not in out
 
 
 # --- get_recent_dolt_log --------------------------------------------------

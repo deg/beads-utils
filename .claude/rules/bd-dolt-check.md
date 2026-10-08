@@ -45,9 +45,16 @@ all 19 repos here rather than by the suite:
   remote nor `sync.remote` (vuagain23), the header says `none configured;
   looking on the git origin` rather than presenting the origin as one.
 
-`git ls-remote` failing (offline, auth) still reads as `NOT FOUND`, as it
-always has: `get_remote_dolt_ref()` does not tell "absent" from "could not
-ask".
+**The computation lives in `bdutils.dolt_sync_state()`**, returning a
+`DoltSyncState`; `main()` only renders it, so `bd-verify-backup` reads the same
+verdict rather than a reimplementation. The lift was checked by diffing the
+pre-lift script's full output and exit code against the new one on all 19
+repos: identical. One behavior did change with it: `git ls-remote` failing
+(offline, refused auth) is now `UNREACHABLE`, printed as `could not check
+refs/dolt/data on <url>` with git's own last stderr line, exit 1 and no
+remedy, since nothing is known about the remote. It used to read as `NOT
+FOUND` and tell the reader to push. `bdutils.git_ls_remote_ref()` returns
+`(hash, error)` to keep "absent" and "could not ask" apart.
 It answers **committed *and* pushed**, on two independent axes. The commit
 comparison above is one; the other is the Dolt **working set**, read from the
 `dolt_status` system table. Without it a repo reads `IN SYNC` / exit 0 while
