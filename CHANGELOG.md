@@ -16,6 +16,7 @@
 * [fix] `bd-dolt-check` looks for pushed beads on the repo's Dolt remote rather than its git origin, so a project whose beads live in a separate repository no longer reads as never pushed
 * [fix] `bd-dolt-check` says it could not check the remote when `git ls-remote` fails (offline, refused), instead of reporting the beads as never pushed
 * [fix] Stop telling server-mode users that `bd dolt commit` commits nothing — bd 1.3.0 fixed that, so `bd-dolt-check` now gives both modes the same remedy and keeps the `bd dolt stop` workaround as a note for older bd
+* [cleanup] Bring the README, `CLAUDE.md` and the PR template up to date with the scripts added since v0.4.0
 
 ## v0.4.0 (22Sep26)
 

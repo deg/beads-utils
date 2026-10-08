@@ -130,6 +130,9 @@ no `--color`: one line of output.
 ## claudeutils.py
 
 `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
+`CLAUDE_JSON` + `claude_project_paths()` (the `projects` keys of
+`~/.claude.json`, or `[]` if unreadable; `bd-verify-backup -g` uses it to find
+repos),
 `CLAUDE_SESSIONS` + `read_registry()` + `live_session_pid()` (the
 running-process registry; `read_registry()` returns every record unvetted,
 and each caller decides liveness its own way), `transcripts_for()` (the
@@ -144,7 +147,7 @@ titles, cwd, first/last timestamps, `human_prompts` count using
 dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
 and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
 `claude-session-report`, `claude-session-list`, `claude-session-find`,
-`claude-session-rename`, `claude-traffic-monitor`, and `bd-complete` — `claude-session-find`
+`claude-session-rename`, `claude-traffic-monitor`, `bd-verify-backup`, and `bd-complete` — `claude-session-find`
 predated this module and carried its own copies until beads-utils-8ju
 folded them in. Also stdlib-only.
 

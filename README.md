@@ -55,7 +55,8 @@ Run any script with `--help` for full usage. Conventions live in
 The scripts fall into two families: tools for looking at your beads, and
 tools for looking at your Claude Code sessions. Either way the theme is
 the same — the data is already on your disk; these make it pleasant to
-read.
+read. The exception is `claude-traffic-monitor`, which watches the network
+live.
 
 ### Looking at beads
 
@@ -161,6 +162,16 @@ a loop, without resuming each one. It writes exactly what `/rename` would,
 and refuses a session that is currently running, where `/rename` itself is
 the right tool.
 
+The last one watches sessions that are running right now. On a metered or slow
+link, the question becomes what Claude is costing you in bytes.
+`claude-traffic-monitor` is a live, `top`-like screen of each running session's
+upload and download: rates over 5 s, 1 min and 15 min, totals since the monitor
+started, the share that goes to the API, and the context size and images that
+drive it, with an estimate of what the next message will upload. Below that
+come the busiest other processes on the link, so you can tell when Claude isn't
+the one using it. Press `?` for its keys. It reads macOS's `nettop`, so it runs
+on macOS only.
+
 ## Tests and tooling
 
 There's still no package and no build step — but there is a `Makefile`, so you
@@ -188,7 +199,8 @@ project or your session history.
 
 Tab completion for zsh and bash lives in [`completions/`](completions).
 `bd-view` completes bead ids (with titles shown in zsh),
-`claude-session-report` completes session uuids/titles, the project-path
+`claude-session-report` and `claude-session-rename` complete session
+uuids/titles, the project-path
 scripts complete directories, and every script completes its flags.
 Options that take a value complete in either spelling (`--id beads-1` or
 `--id=beads-1`), and the comma-separated ones with a known vocabulary

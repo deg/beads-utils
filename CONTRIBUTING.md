@@ -98,7 +98,8 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
   expanduser/resolve/`.beads/`-validation dance.
 
 If you add behavior or flags, update `README.md`, `CLAUDE.md` and the script's
-design notes under `.claude/rules/` to match.
+design notes under `.claude/rules/` to match, plus both files in
+`completions/` for a flag (`tests/test_completions.py` fails if they drift).
 
 ## Releases
 

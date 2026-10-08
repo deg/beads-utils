@@ -98,15 +98,19 @@ Shared helpers, both stdlib-only:
 
 - `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
   `format_ts()`, `format_priority()`, `paged_output()`, and color
-  (`add_color_arg()`, `want_color()`, `paint()`).
+  (`add_color_arg()`, `want_color()`, `paint()`), plus the git/Dolt plumbing
+  (`dolt_sync_state()` and the `dolt_*` readers) that `bd-dolt-check`,
+  `bd-dolt-diff` and `bd-verify-backup` share.
 - `claudeutils.py` — Claude session enumeration and resolution (path, UUID or
-  title substring), shared by the `claude-session-*` scripts and
-  `bd-complete`.
+  title substring), shared by the `claude-session-*` scripts,
+  `claude-traffic-monitor`, `bd-complete`, and `bd-verify-backup` (which reads
+  the project list in `~/.claude.json`).
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
 Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
-auto-discovery from the current directory); `claude-session-report` takes a
+auto-discovery from the current directory); `claude-session-find` takes a search
+query; `claude-session-report` takes a
 Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
 takes no positional args (current project unless `-g/--global`);
 `claude-session-rename` takes a session and a title; `claude-traffic-monitor`
@@ -169,6 +173,7 @@ make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
 make screenshots                              # regenerate the README's terminal images
+make completions                              # the rc-file line for tab completion
 make outdated                                 # newer releases of the pinned tools
 ```
 
@@ -200,8 +205,14 @@ renders in full, and nothing is said unless `--about` asked for memories.
 `bd-view` requires `uv` on `PATH` — its shebang
 is `#!/usr/bin/env -S uv run --script` and PEP 723 inline metadata declares the
 `rich` + `markdown-it-py` deps, which uv resolves into a per-script cached venv
-(no global Python install touched). All other scripts require only Python 3 stdlib
-and `bd` on `PATH`.
+(no global Python install touched). All other scripts are Python 3 stdlib only.
+`bd` itself is needed only by `bd-export-csv`, `bd-log`, `bd-view` and
+`bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt and
+`.beads/` files directly. `bd-verify-backup` never runs `bd` and does need `dolt`:
+without it the beads check is `UNVERIFIABLE`, which fails there, though
+`bd-dolt-check` exits 0 on it. The `claude-session-*` scripts need neither.
+`claude-traffic-monitor` is macOS-only: it reads macOS's `nettop` and draws with
+`curses`, so it needs a terminal.
 
 ## Conventions
 
