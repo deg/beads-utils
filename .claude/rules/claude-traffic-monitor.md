@@ -252,7 +252,7 @@ David approved:
 - **Rate sort uses the 1-minute average.** The 5 s figure would reshuffle
   the rows every second. Live sessions always stay above ended ones.
 - **A status bar is pinned to the bottom row** in reverse video, as in `top`.
-  It shows the sort mode, whether children and others are hidden, PAUSED,
+  It shows the sort mode, the child mode, whether others are hidden, PAUSED,
   and the `? keys` / `q quit` hints. `?` adds the key list above it. David
   asked for this; the state first lived in the title line, where it was easy
   to miss.
@@ -268,6 +268,8 @@ David approved:
   - Rows are keyed by name, so "exited" means no live pid of that name is
     in the session's tree (`Session.live_children`, rebuilt each tick from
     the same `ps` walk that assigns owners).
+    An empty table is a failed `ps`, so the set is kept, as `_sync_sessions`
+    keeps sessions alive.
   - A live but idle child (an MCP server) stays: it is still running, and
     its row says so. David agreed.
   - A dim `└ N exited, idle 15m+` line explains why the visible

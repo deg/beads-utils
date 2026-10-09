@@ -653,8 +653,9 @@ class Monitor:
             owner = self._owner_of(pid, ps)
             if owner is not None and pid != owner:
                 live.setdefault(owner, set()).add(self._name_of(pid, ps, ""))
-        for s in self.sessions.values():
-            s.live_children = live.get(s.pid, set())
+        if ps:  # an empty table is a failed ps, not every child gone
+            for s in self.sessions.values():
+                s.live_children = live.get(s.pid, set())
         for proc in block:
             if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
                 self.sessions[proc.pid] = Session(proc.pid, label=UNREGISTERED)

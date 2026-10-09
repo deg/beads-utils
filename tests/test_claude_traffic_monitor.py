@@ -833,6 +833,17 @@ def test_a_live_idle_child_stays(mon):
     assert not any("exited" in t for t in rows)
 
 
+def test_a_failed_ps_does_not_hide_live_idle_children(mon):
+    """process_table() returns {} when ps fails or times out. Read as "no
+    child is alive", that hid every idle MCP server for a tick and showed a
+    spurious "exited" note."""
+    idle_child(mon, child_alive=True)
+    mon.ingest(sample(), {}, REG, now=1903.0)
+    rows = screen(mon, now=1903.0)
+    assert any("└ node" in t for t in rows)
+    assert not any("exited" in t for t in rows)
+
+
 def test_an_exited_child_stays_until_it_has_idled_through_the_longest_window(mon):
     busy(mon)
     gone = {k: v for k, v in PS.items() if k != CHILD}
