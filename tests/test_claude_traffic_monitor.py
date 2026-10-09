@@ -765,8 +765,16 @@ def test_keys_that_the_loop_acts_on(key, action):
     assert ctm.handle_key(ctm.View(), key) == action
 
 
-@pytest.mark.parametrize("key,attr", [("c", "children"), ("o", "others"),
-                                      ("p", "paused"), ("?", "help")])
+def test_c_cycles_the_children_through_every_mode():
+    view = ctm.View()
+    seen = [view.children]
+    for _ in ctm.CHILD_MODES:
+        assert ctm.handle_key(view, "c") == "redraw"
+        seen.append(view.children)
+    assert seen == ["active", "all", "none", "active"]
+
+
+@pytest.mark.parametrize("key,attr", [("o", "others"), ("p", "paused"), ("?", "help")])
 def test_toggle_keys_flip_their_setting_and_back(key, attr):
     view = ctm.View()
     before = getattr(view, attr)
@@ -786,10 +794,50 @@ def test_sorting_by_name_reorders_other_processes(mon):
 
 def test_hiding_children_keeps_their_bytes_in_the_session_row(mon):
     busy(mon)
-    rows = screen(mon, ctm.View(children=False))
+    rows = screen(mon, ctm.View(children="none"))
     assert not any("└ node" in t for t in rows)
     session = next(t for t in rows if t.startswith("my session"))
     assert "4.0 KB" in session  # 3000 own + 1000 from the hidden child
+
+
+def idle_child(mon, child_alive):
+    """A child that moved 1000 bytes, then 901 s of silence: past the longest
+    rate window, so all its rate cells read zero."""
+    busy(mon)
+    ps = PS if child_alive else {k: v for k, v in PS.items() if k != CHILD}
+    mon.ingest(sample(), ps, REG, now=1902.0)
+    return screen(mon, now=1902.0)
+
+
+def test_an_exited_idle_child_is_hidden_and_counted_in_a_note(mon):
+    rows = idle_child(mon, child_alive=False)
+    assert not any("└ node" in t for t in rows)
+    assert "  └ 1 exited, idle 15m+ (c shows)" in rows
+    session = next(t for t in rows if t.startswith("my session"))
+    assert "4.0 KB" in session  # its bytes stay in the session row
+
+
+def test_all_shows_an_exited_idle_child_again(mon):
+    idle_child(mon, child_alive=False)
+    rows = screen(mon, ctm.View(children="all"), now=1902.0)
+    assert any("└ node" in t for t in rows)
+    assert not any("exited" in t for t in rows)
+
+
+def test_a_live_idle_child_stays(mon):
+    """An idle MCP server is still running; its row says so."""
+    rows = idle_child(mon, child_alive=True)
+    assert any("└ node" in t for t in rows)
+    assert not any("exited" in t for t in rows)
+
+
+def test_an_exited_child_stays_until_it_has_idled_through_the_longest_window(mon):
+    busy(mon)
+    gone = {k: v for k, v in PS.items() if k != CHILD}
+    mon.ingest(sample(), gone, REG, now=1890.0)  # bytes at 1001: 889 s ago
+    rows = screen(mon, now=1890.0)
+    assert any("└ node" in t for t in rows)
+    assert not any("exited" in t for t in rows)
 
 
 def test_hiding_others_collapses_them_to_one_aligned_row(mon):
@@ -814,10 +862,10 @@ def test_peak_column_names_its_window():
 
 
 def test_status_line_shows_the_state_and_how_to_get_help():
-    (status,) = ctm.status_lines(ctm.View(sort="rate", children=False, paused=True))
+    (status,) = ctm.status_lines(ctm.View(sort="rate", children="none", paused=True))
     text, style = status
     assert style == "status"
-    for part in ("sort: rate", "children: hidden", "others: shown", "PAUSED", "? keys", "q quit"):
+    for part in ("sort: rate", "children: none", "others: shown", "PAUSED", "? keys", "q quit"):
         assert part in text
 
 
@@ -829,7 +877,7 @@ def test_status_line_does_not_shift_when_a_mode_changes():
         return text.index("? keys")
     base = hint_column(ctm.View())
     for view in (ctm.View(sort="rate"), ctm.View(sort="name"),
-                 ctm.View(children=False), ctm.View(others=False), ctm.View(paused=True)):
+                 ctm.View(children="all"), ctm.View(children="none"), ctm.View(others=False), ctm.View(paused=True)):
         assert hint_column(view) == base
 
 

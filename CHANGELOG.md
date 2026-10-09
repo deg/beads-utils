@@ -9,6 +9,7 @@
   * Rates over 5 s, 1 min and 15 min, plus the peak second of the last minute, so a single request's burst stays visible
   * An estimate of what each session's next message will upload, with the live-measured bytes per token beside it
   * `top`-style keys (sort, hide child or other processes, reset the totals, pause), with a status bar showing the current mode
+  * Child processes that have exited and sat idle for 15 minutes drop off the screen (their bytes stay in the session's total); `c` shows them again
   * Count traffic from apps that send without a fixed destination, such as Tailscale and many VPNs and calls, and flag tunnelled traffic that appears on screen twice
   * Count traffic a security proxy relays (Norton for Chrome) once, under the app that made it, and the last second of every closed connection
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised

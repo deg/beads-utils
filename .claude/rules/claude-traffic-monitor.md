@@ -240,7 +240,7 @@ David approved:
 | Key | Action |
 |---|---|
 | `s` | cycle the sort: total, then 1-minute rate, then name |
-| `c` | hide or show child-process rows |
+| `c` | cycle the child rows: active, then all, then none |
 | `o` | hide or show the list of other processes |
 | `r` | reset the totals |
 | `p` | pause the display |
@@ -257,6 +257,21 @@ David approved:
   asked for this; the state first lived in the title line, where it was easy
   to miss.
 - **Hiding children (`c`) keeps their bytes in the session's row.**
+- **`active`, the default, hides a child row once it has exited and idled
+  for 15 minutes** (beads-utils-1z7). After a day's run each session listed
+  every child that ever moved a byte (curl, ssh, gh, uv...), 6-7 rows of
+  zeros apiece.
+  - The idle threshold is the longest rate window, `max(RATE_WINDOWS)`: by
+    then every rate cell reads zero, so hiding the row loses only its total,
+    which is still in the session's row. `Counter.idle` is just "no ticks
+    kept", since ticks are pruned past that window.
+  - Rows are keyed by name, so "exited" means no live pid of that name is
+    in the session's tree (`Session.live_children`, rebuilt each tick from
+    the same `ps` walk that assigns owners).
+  - A live but idle child (an MCP server) stays: it is still running, and
+    its row says so. David agreed.
+  - A dim `└ N exited, idle 15m+ (c shows)` line explains why the visible
+    children no longer add up to the session's total.
 - **Hiding others (`o`) collapses the whole section into one row**:
   `Other processes`, `N hidden`, and their totals, aligned with the session
   columns above it. The first version kept the section header and an

@@ -590,6 +590,11 @@ class Counter:
     def total(self) -> int:
         return self.total_in + self.total_out
 
+    @property
+    def idle(self) -> bool:
+        """No bytes within the longest window, so every rate reads zero."""
+        return not (self._ticks or self._tick_in or self._tick_out)
+
 
 @dataclass
 class Session:
@@ -602,6 +607,7 @@ class Session:
     api_bytes: int = 0
     api_out: int = 0
     children: dict[str, Counter] = field(default_factory=dict)
+    live_children: set[str] = field(default_factory=set)  # names with a live pid
     watcher: TranscriptWatcher | None = None
 
     @property
@@ -642,8 +648,13 @@ class Monitor:
     def ingest(self, block: list[ProcSample], ps: dict[int, tuple[int, str]],
                registry: dict[int, dict], now: float) -> None:
         self._sync_sessions(registry, ps)
+        live: dict[int, set[str]] = {}
         for pid in ps:  # learn owners while children are alive (sticky)
-            self._owner_of(pid, ps)
+            owner = self._owner_of(pid, ps)
+            if owner is not None and pid != owner:
+                live.setdefault(owner, set()).add(self._name_of(pid, ps, ""))
+        for s in self.sessions.values():
+            s.live_children = live.get(s.pid, set())
         for proc in block:
             if (VERSION_NAME_RE.match(proc.name) and proc.pid not in self.sessions):
                 self.sessions[proc.pid] = Session(proc.pid, label=UNREGISTERED)
@@ -1010,7 +1021,11 @@ def header_rows(first: str) -> list[tuple[str, str]]:
 
 
 SORTS = ("total", "rate", "name")
-KEY_HELP = (" keys:  s sort (total / 1m rate / name)   c child processes   "
+# Child rows: 'active' hides those that have exited and idled through the
+# longest rate window, by which time the row reads zero everywhere but its
+# total -- and that total is still in the session's row.
+CHILD_MODES = ("active", "all", "none")
+KEY_HELP = (" keys:  s sort (total / 1m rate / name)   c children (active / all / none)   "
             "o other processes   r reset totals   p pause   ? hide keys   q quit")
 
 
@@ -1018,7 +1033,7 @@ KEY_HELP = (" keys:  s sort (total / 1m rate / name)   c child processes   "
 class View:
     """What the keys control. Display only: none of it changes the counting."""
     sort: str = "total"
-    children: bool = True
+    children: str = "active"
     others: bool = True
     paused: bool = False
     help: bool = False
@@ -1038,7 +1053,7 @@ def handle_key(view: View, ch: str) -> str | None:
     if ch == "s":
         view.sort = SORTS[(SORTS.index(view.sort) + 1) % len(SORTS)]
     elif ch == "c":
-        view.children = not view.children
+        view.children = CHILD_MODES[(CHILD_MODES.index(view.children) + 1) % len(CHILD_MODES)]
     elif ch == "o":
         view.others = not view.others
     elif ch == "p":
@@ -1085,10 +1100,18 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
                  "-" if nxt is None else short(nxt))
         title = s.title if s.alive else f"{s.title} (ended)"
         add((traffic_row(title, s.project, t, now, span, extra), "" if s.alive else "dim"))
-        if not view.children:
+        if view.children == "none":
             continue  # their bytes stay in the session's row
+        shown, gone = [], 0
         for name, c in sorted(s.children.items(), key=lambda kv: -kv[1].total):
+            if view.children == "active" and name not in s.live_children and c.idle:
+                gone += 1
+            else:
+                shown.append((name, c))
+        for name, c in shown:
             add((traffic_row(f"  └ {name}", "", c, now, span), "dim"))
+        if gone:
+            add((f"  └ {gone} exited, idle {_tier_label(max(RATE_WINDOWS))}+ (c shows)", "dim"))
     add((traffic_row("Claude total", "", mon.claude_total, now, span), "bold"))
     measured = mon.measured_bytes_per_token()
     if measured:
@@ -1132,7 +1155,7 @@ def status_lines(view: View) -> list[tuple[str, str]]:
     # shift everything after it along the bar.
     sort_w = max(map(len, SORTS))
     state = [f"sort: {view.sort:<{sort_w}}",
-             f"children: {'shown' if view.children else 'hidden':<6}",
+             f"children: {view.children:<{max(map(len, CHILD_MODES))}}",
              f"others: {'shown' if view.others else 'hidden':<6}"]
     state.append("? hides keys" if view.help else "? keys")
     state.append("q quit")
