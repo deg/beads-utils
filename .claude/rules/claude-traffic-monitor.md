@@ -270,7 +270,7 @@ David approved:
     the same `ps` walk that assigns owners).
   - A live but idle child (an MCP server) stays: it is still running, and
     its row says so. David agreed.
-  - A dim `└ N exited, idle 15m+ (c shows)` line explains why the visible
+  - A dim `└ N exited, idle 15m+` line explains why the visible
     children no longer add up to the session's total.
 - **Hiding others (`o`) collapses the whole section into one row**:
   `Other processes`, `N hidden`, and their totals, aligned with the session

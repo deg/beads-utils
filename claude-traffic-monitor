@@ -1111,7 +1111,7 @@ def render(mon: Monitor, meter: InterfaceMeter, now: float, top: int,
         for name, c in shown:
             add((traffic_row(f"  └ {name}", "", c, now, span), "dim"))
         if gone:
-            add((f"  └ {gone} exited, idle {_tier_label(max(RATE_WINDOWS))}+ (c shows)", "dim"))
+            add((f"  └ {gone} exited, idle {_tier_label(max(RATE_WINDOWS))}+", "dim"))
     add((traffic_row("Claude total", "", mon.claude_total, now, span), "bold"))
     measured = mon.measured_bytes_per_token()
     if measured:

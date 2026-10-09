@@ -812,7 +812,9 @@ def idle_child(mon, child_alive):
 def test_an_exited_idle_child_is_hidden_and_counted_in_a_note(mon):
     rows = idle_child(mon, child_alive=False)
     assert not any("└ node" in t for t in rows)
-    assert "  └ 1 exited, idle 15m+ (c shows)" in rows
+    assert "  └ 1 exited, idle 15m+" in rows
+    note = next(t for t in rows if "exited" in t)
+    assert len(note) <= ctm.NAME_W  # wider, it ran into the rate columns
     session = next(t for t in rows if t.startswith("my session"))
     assert "4.0 KB" in session  # its bytes stay in the session row
 
