@@ -85,6 +85,10 @@ Current scripts:
 - `claude-session-rename` — Retitles a session from the shell exactly as
   `/rename` would, by appending the same two records. Refuses a running
   session.
+- `claude-sessions-review` — Recurring tool failures across sessions: each
+  failed tool result reduced to a signature, grouped, ranked by distinct
+  sessions. `--kind` picks failures, denials or outages; `--json` feeds
+  `/dream` (beads-utils-c1k). Current project by default, `-g` for all.
 - `claude-traffic-monitor` — Live `top`-style screen (curses) of internet
   traffic per running Claude Code session since the monitor started:
   5 s / 1 min / 15 min rates plus a 1-minute peak, totals, API share,
@@ -103,8 +107,8 @@ Shared helpers, both stdlib-only:
   `bd-dolt-diff` and `bd-verify-backup` share.
 - `claudeutils.py` — Claude session enumeration and resolution (path, UUID or
   title substring), shared by the `claude-session-*` scripts,
-  `claude-traffic-monitor`, `bd-complete`, and `bd-verify-backup` (which reads
-  the project list in `~/.claude.json`).
+  `claude-sessions-review`, `claude-traffic-monitor`, `bd-complete`, and
+  `bd-verify-backup` (which reads the project list in `~/.claude.json`).
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
@@ -112,7 +116,8 @@ Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
 auto-discovery from the current directory); `claude-session-find` takes a search
 query; `claude-session-report` takes a
 Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
-takes no positional args (current project unless `-g/--global`);
+and `claude-sessions-review` take no positional args (current project
+unless `-g/--global`);
 `claude-session-rename` takes a session and a title; `claude-traffic-monitor`
 takes none (it watches the whole machine); `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
@@ -128,7 +133,7 @@ tests and costs nothing otherwise:
 | Rule file | Loads for |
 |---|---|
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md` | that script and its test file |
-| `claude-sessions.md` | `claude-session-*`, `claudeutils.py`, their tests |
+| `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
 | `bdutils.md` | `bdutils.py` and its tests |
@@ -210,7 +215,8 @@ is `#!/usr/bin/env -S uv run --script` and PEP 723 inline metadata declares the
 `bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt and
 `.beads/` files directly. `bd-verify-backup` never runs `bd` and does need `dolt`:
 without it the beads check is `UNVERIFIABLE`, which fails there, though
-`bd-dolt-check` exits 0 on it. The `claude-session-*` scripts need neither.
+`bd-dolt-check` exits 0 on it. The `claude-session-*` scripts and
+`claude-sessions-review` need neither.
 `claude-traffic-monitor` is macOS-only: it reads macOS's `nettop` and draws with
 `curses`, so it needs a terminal.
 

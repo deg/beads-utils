@@ -44,6 +44,7 @@ COMMANDS = [
     "claude-session-rename",
     "claude-traffic-monitor",
     "claude-session-report",
+    "claude-sessions-review",
 ]
 
 ZSH_FILE = ROOT / "completions" / "beads-utils.zsh"

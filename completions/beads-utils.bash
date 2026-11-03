@@ -159,6 +159,23 @@ _beads_claude_session_list() {
   # no positional args.
 }
 
+_beads_claude_sessions_review() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  case $prev in
+    --kind)
+      COMPREPLY=($(compgen -W "failure denied unavailable all" -- "$cur"))
+      return 0 ;;
+    --since|--min-sessions|-n|--limit) return ;;
+  esac
+  if [[ $cur == -* ]]; then
+    __beads_flags "-g --global --since --kind --min-sessions -n --limit \
+      --json --no-pager --version -h --help"
+  fi
+  # no positional args.
+}
+
 _beads_bd_log() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
@@ -292,6 +309,7 @@ _beads_claude_session_rename() {
 complete -F _beads_bd_view bd-view
 complete -F _beads_claude_session_report claude-session-report
 complete -F _beads_claude_session_list claude-session-list
+complete -F _beads_claude_sessions_review claude-sessions-review
 complete -F _beads_bd_log bd-log
 complete -F _beads_bd_export_csv bd-export-csv
 complete -F _beads_bd_dolt_check bd-dolt-check

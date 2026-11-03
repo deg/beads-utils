@@ -1,6 +1,7 @@
 ---
 paths:
   - "claude-session-*"
+  - "claude-sessions-*"
   - "claudeutils.py"
   - "tests/test_claude*.py"
 ---
@@ -127,6 +128,87 @@ No `--force` (a simple refusal was the owner's call), no show mode, no
 line. Prints `<uuid>: <old title> -> <new title>`. Does not page and takes
 no `--color`: one line of output.
 
+## claude-sessions-review
+
+`claude-sessions-review` — Recurring tool failures across sessions
+(beads-utils-t29). The plural name says it looks across many sessions, where
+`claude-session-report` renders one; it is why the `paths:` above carry a
+second glob. The idea comes from an Anthropic talk on agent memory: a
+session can't see patterns that span sessions, so an out-of-band pass over
+transcripts finds them. This is that pass's deterministic half. `/dream`
+(beads-utils-c1k) is meant to be the half that proposes rules.
+
+The design came from a survey of the real transcripts (526 sessions plus
+1,475 subagent files, 2026-04-21 to 2026-11-03, 1,641 errors among 76k tool
+results), not from guesses about the format:
+
+- **Scan the whole error text, not its first line.** In a compound Bash
+  command the line that matters sits mid-output. A first-line match missed
+  every one of zsh's `no matches found` failures.
+- **Rank by distinct sessions, not hits.** One session looped 57 times on
+  `command not found`, and the bar `--min-sessions 2` (the default) exists
+  for the same reason. Hidden one-offs are counted on stderr.
+- **Group by message, keep the argument as a variant.** `cd: no such file or
+  directory` is only actionable once you see `backend` x55 under it.
+  `normalize()` abstracts quoted strings, paths, uuids, hex ids (only runs
+  with a digit, so all-letter words survive) and numbers. `first_variant()`
+  keeps the first thing it abstracted. A `'` with a letter beside it is an
+  apostrophe: pairing the one in `can't` with a later quote swallowed the
+  text between, and two contractions leaked a real argument into the key.
+- **zsh's `=word` expansion names the word in the message** (`===== not
+  found`), so without `_ZSH_EQUALS_RE` every separator length was its own
+  group. Folded together, it is the most common failure of all.
+
+`classify()` tries extractors in a fixed order, first match wins:
+- denials and classifier outages, recognized by their fixed wording on any tool
+- harness `<tool_use_error>`, only at the start of the result, since a
+  failed `grep` over transcripts can print one
+- zsh `(eval):N:` (`(eval):cd:N:` names the builtin)
+- the last exception line of a Python traceback
+- `Command timed out`
+- MCP `Error running <tool>:`
+- the first error-looking line, as a fallback
+
+A non-zero exit whose output has no error-looking line is labelled
+`exit N, first line: ...`, so stray stdout isn't presented as the error.
+
+Kinds:
+- `failure`: harness guards like Edit before Read count, since a rule can
+  fix them.
+- `denied`: your rejections, the auto-mode classifier, permission rules. These
+  are your decisions, not failures, but what keeps being refused is a
+  preference signal.
+- `unavailable`: the classifier couldn't run.
+
+Text output defaults to `failure`, and `--json` to every kind (so `/dream`
+gets the denials).
+
+Other behavior:
+- A subagent transcript (`<project>/<parent-uuid>/subagents/agent-*.jsonl`)
+  counts under its parent session.
+- `--since` drops entries dated before the cutoff (one with no timestamp is
+  kept), and skips unread any file last written before it. An empty
+  `--since ''` counts as absent, as in `bd-log`.
+- A renamed project can leave the same session file under two project dirs
+  (`cpemu` and `CPeMulator`). Session counts are sets and survived that, but
+  hits, tools and variants counted twice, 119 of 1,995 in the real data, so
+  `scan()` skips a `(session, tool_use_id)` already seen. beads-utils-72o is
+  the same duplication, hitting `resolve_session()`.
+- Titles are read only for the sessions shown as examples (`Titles`), so a
+  `-g` run does not read every transcript twice. It takes about 15 s over
+  everything.
+- Parsing stays in the script until `/dream` needs more than the `--json`.
+
+The tests' guards were each mutation-checked:
+- `classify()`: the whole-text scan, the `=word` fold, the error-line
+  preference, the anchored harness error and outages
+- `normalize()`: the hex digit rule, the apostrophe guard
+- `scan()`: session ranking, subagent attribution, the duplicate-file dedupe,
+  both `--since` paths, `is_error`, one example per session
+- local midnight, which runs under a non-UTC zone, since the suite pins UTC
+- end-to-end: the `--min-sessions` default, the `--json` kind default and its
+  `totals`, `-n`'s summary, `--since`, and the zero bar
+
 ## claudeutils.py
 
 `claudeutils.py` — Claude session enumeration/resolution: `CLAUDE_PROJECTS`,
@@ -147,7 +229,8 @@ titles, cwd, first/last timestamps, `human_prompts` count using
 dataclass with an `is_empty` property), `iter_sessions()`, `list_sessions()`,
 and `resolve_session()` (UUID-or-title-or-path → `.jsonl` path). Used by
 `claude-session-report`, `claude-session-list`, `claude-session-find`,
-`claude-session-rename`, `claude-traffic-monitor`, `bd-verify-backup`, and `bd-complete` — `claude-session-find`
+`claude-session-rename`, `claude-sessions-review`, `claude-traffic-monitor`,
+`bd-verify-backup`, and `bd-complete` — `claude-session-find`
 predated this module and carried its own copies until beads-utils-8ju
 folded them in. Also stdlib-only.
 
@@ -168,4 +251,8 @@ folded them in. Also stdlib-only.
 ./claude-session-list -q | head -1                     # Newest UUID (for `claude --resume`)
 ./claude-session-rename <uuid> 'Pager design'          # /rename without starting the session
 ./claude-session-rename 'old title' 'new title'        # Resolve by title substring
+./claude-sessions-review                               # Recurring failures, this project
+./claude-sessions-review -g --since 2w                 # Every project, last two weeks
+./claude-sessions-review -g --kind denied              # What gets rejected or denied
+./claude-sessions-review -g --json | head -40          # What /dream would read
 ```

@@ -1,0 +1,597 @@
+#!/usr/bin/env python3
+"""Find tool calls that fail the same way across many Claude Code sessions.
+
+A single session cannot see that its mistake is the same one other sessions
+keep making. This scans transcripts for failed tool results, reduces each error
+to a signature (paths, numbers, ids and quoted strings abstracted away), and
+groups them, ranked by how many *sessions* hit each pattern rather than by raw
+hits, so one looping session cannot outrank a habit. The output is raw material
+for new rules and memories; --json feeds /dream.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import claudeutils
+from bdutils import add_version_arg, error, paged_output
+from claudeutils import find_project_dir, project_label, read_session_meta
+
+KINDS = ("failure", "denied", "unavailable")
+
+# Examples per pattern: the text view stays readable; JSON gives /dream more.
+TEXT_EXAMPLES = 3
+JSON_EXAMPLES = 5
+JSON_VARIANTS = 10
+TEXT_VARIANTS = 4
+MESSAGE_MAX = 110
+INPUT_MAX = 100
+HOME = str(Path.home())
+
+
+# --- Turning an error into a signature ------------------------------------
+
+
+@dataclass(frozen=True)
+class Signature:
+    """What one failed tool result reduces to.
+
+    `message` is the grouping key (with `kind`). `variant` is the concrete
+    argument normalization abstracted away -- the `backend` in `cd: no such
+    file or directory: backend` -- kept so a group can say which values recur.
+    `detail` is the raw line the signature came from, for examples.
+    """
+    kind: str
+    message: str
+    variant: str | None = None
+    detail: str = ""
+
+
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+# Hex runs of 7+ that contain a digit: commit hashes, agent ids. Requiring a
+# digit spares all-letter words that happen to be hex, like "defaced".
+_HEX_RE = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b", re.I)
+# A ' with a letter beside it is an apostrophe (`can't`), not a quote: pairing
+# it with a later quote would swallow the text between into one "string".
+_QUOTED_RE = re.compile(r"(?<!\w)'[^'\n]*'(?!\w)|\"[^\"\n]*\"")
+_PATH_RE = re.compile(r"(?<![\w<])(?:~|\.{1,2})?/[^\s:'\",)]*|\b[\w.-]+/[\w./-]+")
+_NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
+
+
+def normalize(text: str) -> str:
+    """Abstract the parts of an error message that differ between occurrences."""
+    s = _UUID_RE.sub("<id>", text)
+    s = _QUOTED_RE.sub("'…'", s)
+    s = _PATH_RE.sub("<path>", s)
+    s = _HEX_RE.sub("<id>", s)
+    s = _NUM_RE.sub("<n>", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return clip(s, MESSAGE_MAX)
+
+
+def clip(s: str, n: int) -> str:
+    """One line of at most n characters, with the home directory shown as ~."""
+    s = re.sub(r"\s+", " ", s).strip().replace(HOME, "~")
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def first_variant(text: str) -> str | None:
+    """The first quoted string or path in `text` -- what normalize() hid first."""
+    m = _QUOTED_RE.search(text)
+    if m:
+        return clip(m.group(0)[1:-1], 60) or None
+    m = _PATH_RE.search(text)
+    return clip(m.group(0), 60) if m else None
+
+
+def first_sentence(line: str) -> str:
+    return re.split(r"(?<=[.!?])\s", line.strip(), maxsplit=1)[0]
+
+
+# Denials and outages are recognized by their fixed wording, whatever the tool.
+_DENIALS = (
+    (re.compile(r"^The user doesn't want to (?:proceed|take this action)"),
+     "rejected by the user", re.compile(r"the user said:\s*\n(.+)")),
+    (re.compile(r"^Permission for this action was denied by the Claude Code auto mode classifier"),
+     "denied by the auto-mode classifier", re.compile(r"Reason: (.+?)(?:\.\.|\.\s|$)")),
+    (re.compile(r"^Permission (?:to use .{0,80}?|for this action) (?:has been|was) denied"),
+     "denied by a permission rule", None),
+    (re.compile(r"^\[Request interrupted by user"),
+     "interrupted by the user", None),
+)
+_OUTAGES = (
+    # Anchored, like the denials: a failed command whose OUTPUT quotes this
+    # wording (a grep over transcripts) is a failure, not an outage.
+    (re.compile(r"^\S+ is temporarily unavailable(?: \([^)]*\))?, so auto mode cannot"),
+     "auto-mode classifier model unavailable"),
+    (re.compile(r"^The server-side auto mode classifier gave no verdict"),
+     "auto-mode classifier gave no verdict"),
+)
+
+_EXIT_RE = re.compile(r"^Exit code (\d+)[ \t]*\n?")
+# Anchored (matched at the start of the body): a failed grep over transcripts
+# can PRINT a <tool_use_error>, and that is the grep's failure, not the harness's.
+_TOOL_USE_ERROR_RE = re.compile(r"<tool_use_error>(.*?)(?:</tool_use_error>|\Z)", re.S)
+# zsh reports as `(eval):1: msg` under the Bash tool, `(eval):cd:1: msg` when
+# a builtin is to blame, and `zsh:1: msg` when run directly.
+_ZSH_RE = re.compile(r"^(?:\(eval\)|zsh):(?:([\w.-]+):)?\d+: (.+)$", re.M)
+_ZSH_EQUALS_RE = re.compile(r"^(=\S*) not found$")
+_EXC_RE = re.compile(
+    r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning|Failure))(?::\s*(.*))?$")
+_TIMEOUT_RE = re.compile(r"Command timed out after ([^\n]+?)\s*(?:\n|$)")
+_MCP_RE = re.compile(r"^Error (?:running|executing) [\w-]+: (.+)")
+_ERRORISH_RE = re.compile(
+    r"\b(?:error|fatal|failed|failure|cannot|can't|unable|not found|no such|"
+    r"denied|refus\w*|invalid|unknown|missing)\b", re.I)
+
+
+def classify(text: str) -> Signature:
+    """Reduce one failed tool result's text to a Signature.
+
+    Extractors run in a fixed order and the first that matches wins. They scan
+    the WHOLE text: in a compound Bash command the line that matters (zsh's
+    `no matches found`, say) is often in the middle of the output.
+    """
+    stripped = text.strip()
+    for pat, message, detail_re in _DENIALS:
+        if pat.search(stripped):
+            detail = ""
+            if detail_re and (m := detail_re.search(stripped)):
+                detail = clip(m.group(1), 160)
+            return Signature("denied", message, None, detail)
+    for pat, message in _OUTAGES:
+        if pat.search(stripped):
+            return Signature("unavailable", message, None, clip(stripped, 160))
+
+    exit_m = _EXIT_RE.match(stripped)
+    body = stripped[exit_m.end():] if exit_m else stripped
+
+    if m := _TOOL_USE_ERROR_RE.match(body):
+        inner = m.group(1).strip().splitlines()
+        line = inner[0] if inner else ""
+        sentence = first_sentence(line)
+        return Signature("failure", normalize(sentence), first_variant(sentence), clip(line, 160))
+
+    if m := _ZSH_RE.search(body):
+        builtin, rest = m.group(1), m.group(2).strip()
+        if eq := _ZSH_EQUALS_RE.match(rest):
+            # `=word` expansion names the word in the message itself
+            # (`===== not found`); fold every word into one pattern.
+            msg, arg = "=word not found", eq.group(1)
+        else:
+            msg, _, arg = rest.partition(": ")
+        prefix = f"zsh: {builtin}: " if builtin else "zsh: "
+        return Signature("failure", prefix + normalize(msg), clip(arg, 60) or None,
+                         clip(m.group(0), 160))
+
+    if "Traceback (most recent call last):" in body:
+        tail = body.rsplit("Traceback (most recent call last):", 1)[1]
+        for line in reversed([ln.strip() for ln in tail.splitlines() if ln.strip()]):
+            if em := _EXC_RE.match(line):
+                exc = em.group(1).rsplit(".", 1)[-1]
+                msg = em.group(2) or ""
+                message = f"python: {exc}: {normalize(msg)}" if msg else f"python: {exc}"
+                return Signature("failure", message, first_variant(msg), clip(line, 160))
+
+    if m := _TIMEOUT_RE.search(body):
+        return Signature("failure", "command timed out", clip(m.group(1), 30), clip(m.group(0), 160))
+
+    if m := _MCP_RE.match(body):
+        line = m.group(1).splitlines()[0]
+        return Signature("failure", normalize(line), first_variant(line), clip(m.group(0), 160))
+
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if not lines:
+        message = f"exit {exit_m.group(1)}, no output" if exit_m else "error with no text"
+        return Signature("failure", message)
+    line = next((ln for ln in lines if _ERRORISH_RE.search(ln)), None)
+    if line is None:
+        # Nothing reads as an error (a pipeline whose last grep matched
+        # nothing, say): say so, rather than present stray output as one.
+        line = lines[0]
+        sentence = first_sentence(line)
+        message = normalize(sentence)
+        if exit_m:
+            message = f"exit {exit_m.group(1)}, first line: {message}"
+        return Signature("failure", message, first_variant(sentence), clip(line, 160))
+    sentence = first_sentence(line)
+    return Signature("failure", normalize(sentence), first_variant(sentence), clip(line, 160))
+
+
+# --- Reading transcripts --------------------------------------------------
+
+
+def result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b["text"] for b in content
+                         if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def summarize_input(tool_input) -> str:
+    """One line saying what the failing call tried: its command, path or url."""
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("command", "file_path", "path", "url", "pattern", "query", "prompt"):
+        v = tool_input.get(key)
+        if isinstance(v, str) and v.strip():
+            return clip(v, INPUT_MAX)
+    return clip(json.dumps(tool_input, ensure_ascii=False), INPUT_MAX)
+
+
+@dataclass
+class Occurrence:
+    session: str
+    project_dir: Path
+    ts: str
+    tool: str
+    input: str
+    detail: str
+
+
+@dataclass
+class Group:
+    kind: str
+    message: str
+    occurrences: list[Occurrence] = field(default_factory=list)
+    variants: Counter = field(default_factory=Counter)
+    tools: Counter = field(default_factory=Counter)
+
+    @property
+    def sessions(self) -> set[str]:
+        return {o.session for o in self.occurrences}
+
+    @property
+    def first_seen(self) -> str:
+        return min((o.ts for o in self.occurrences if o.ts), default="")
+
+    @property
+    def last_seen(self) -> str:
+        return max((o.ts for o in self.occurrences if o.ts), default="")
+
+    def examples(self, n: int) -> list[Occurrence]:
+        """The newest occurrence from each of the n most recent sessions."""
+        newest: dict[str, Occurrence] = {}
+        for o in sorted(self.occurrences, key=lambda o: o.ts, reverse=True):
+            newest.setdefault(o.session, o)
+        return list(newest.values())[:n]
+
+
+def transcripts(project_dirs: list[Path], cutoff: datetime | None):
+    """(path, owning session id, project dir) for every transcript, subagents included.
+
+    A subagent's transcript lives at <project>/<parent-uuid>/subagents/
+    agent-*.jsonl and is counted under the parent session. A file last written
+    before the cutoff cannot hold a later entry, so it is skipped unread.
+    """
+    for pdir in project_dirs:
+        found = [(p, p.stem) for p in pdir.glob("*.jsonl")]
+        found += [(p, p.parent.parent.name) for p in pdir.glob("*/subagents/*.jsonl")]
+        for path, session in found:
+            if cutoff is not None:
+                try:
+                    mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                except OSError:
+                    continue
+                if mtime < cutoff:
+                    continue
+            yield path, session, pdir
+
+
+def scan(project_dirs: list[Path], cutoff: datetime | None) -> dict[tuple[str, str], Group]:
+    """Group every failed tool result under project_dirs by (kind, message)."""
+    groups: dict[tuple[str, str], Group] = {}
+    # A renamed project can leave the same session's file under two project
+    # dirs. Session counts survive that (they are sets), but every hit, tool
+    # and variant would count twice, so a result already seen is skipped.
+    seen: set[tuple[str, str]] = set()
+    for path, session, pdir in transcripts(project_dirs, cutoff):
+        uses: dict[str, tuple[str, object]] = {}
+        try:
+            f = path.open("r", encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with f:
+            for line in f:
+                # Cheap prefilter: only tool calls and tool results matter.
+                if "tool_use" not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = obj.get("message") if isinstance(obj, dict) else None
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "tool_use":
+                        uses[block.get("id")] = (block.get("name") or "?", block.get("input"))
+                    elif btype == "tool_result" and block.get("is_error") is True:
+                        tool_use_id = block.get("tool_use_id")
+                        if tool_use_id:
+                            if (session, tool_use_id) in seen:
+                                continue
+                            seen.add((session, tool_use_id))
+                        ts = obj.get("timestamp")
+                        ts = ts if isinstance(ts, str) else ""
+                        when = _parse_iso(ts)
+                        if cutoff is not None and when is not None and when < cutoff:
+                            continue
+                        name, tool_input = uses.get(tool_use_id, ("?", None))
+                        sig = classify(result_text(block))
+                        g = groups.setdefault((sig.kind, sig.message), Group(sig.kind, sig.message))
+                        g.occurrences.append(Occurrence(
+                            session=session, project_dir=pdir, ts=ts, tool=name,
+                            input=summarize_input(tool_input), detail=sig.detail))
+                        g.tools[name] += 1
+                        if sig.variant:
+                            g.variants[sig.variant] += 1
+    return groups
+
+
+# --- Arguments ------------------------------------------------------------
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.astimezone()
+
+
+def parse_since(spec: str, now: datetime) -> datetime:
+    """'12h' / '3d' / '2w' back from now, or a YYYY-MM-DD date (local midnight)."""
+    m = re.fullmatch(r"(\d+)([hdw])", spec.strip())
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return now - {"h": timedelta(hours=n), "d": timedelta(days=n),
+                      "w": timedelta(weeks=n)}[unit]
+    try:
+        day = datetime.strptime(spec.strip(), "%Y-%m-%d")
+    except ValueError:
+        error(f"--since: expected Nh, Nd, Nw or YYYY-MM-DD, got {spec!r}")
+    return day.astimezone()
+
+
+def select(wanted: list[Group], min_sessions: int) -> tuple[list[Group], int]:
+    """The groups seen in >= min_sessions, best-spread first.
+
+    Returns the kept groups and how many fell below the bar.
+    """
+    kept = [g for g in wanted if len(g.sessions) >= min_sessions]
+    kept.sort(key=lambda g: (-len(g.sessions), -len(g.occurrences), g.message))
+    return kept, len(wanted) - len(kept)
+
+
+# --- Rendering ------------------------------------------------------------
+
+
+class Titles:
+    """Session id -> (title, project label), read only for sessions shown."""
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[Path, str], tuple[str, str]] = {}
+
+    def get(self, project_dir: Path, session: str) -> tuple[str, str]:
+        key = (project_dir, session)
+        if key not in self._cache:
+            jsonl = project_dir / f"{session}.jsonl"
+            if jsonl.is_file():
+                meta = read_session_meta(jsonl)
+                self._cache[key] = (meta.title, project_label(jsonl, meta.cwd))
+            else:
+                self._cache[key] = ("(untitled)", project_dir.name)
+        return self._cache[key]
+
+
+def _day(ts: str) -> str:
+    dt = _parse_iso(ts)
+    return dt.astimezone().strftime("%Y-%m-%d") if dt else "????-??-??"
+
+
+def _counts(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def render_group(g: Group, titles: Titles, show_project: bool, show_kind: bool) -> list[str]:
+    head = f"[{g.kind}] {g.message}" if show_kind else g.message
+    tools = ", ".join(t if len(g.tools) == 1 else f"{t} {n}" for t, n in g.tools.most_common(4))
+    span = _day(g.first_seen)
+    if _day(g.last_seen) != span:
+        span += f" → {_day(g.last_seen)}"
+    lines = [
+        head,
+        f"  {_counts(len(g.occurrences), 'time')} in {_counts(len(g.sessions), 'session')}"
+        f" · {span} · {tools}",
+    ]
+    if g.variants:
+        top = " · ".join(f"{v} ({n})" for v, n in g.variants.most_common(TEXT_VARIANTS))
+        more = len(g.variants) - TEXT_VARIANTS
+        lines.append(f"  variants: {top}" + (f" · +{more} more" if more > 0 else ""))
+    for o in g.examples(TEXT_EXAMPLES):
+        title, label = titles.get(o.project_dir, o.session)
+        where = f"  {label}" if show_project else ""
+        lines.append(f"  {_day(o.ts)}  {o.session[:8]}{where}  {title}")
+        if o.input:
+            lines.append(f"      {o.tool}: {o.input}")
+        if o.detail:
+            lines.append(f"      -> {o.detail}")
+    return lines
+
+
+def to_json(kept: list[Group], titles: Titles, *, scope: str, since: datetime | None,
+            kinds: tuple[str, ...], min_sessions: int, totals: dict) -> dict:
+    patterns = []
+    for g in kept:
+        examples = []
+        for o in g.examples(JSON_EXAMPLES):
+            title, label = titles.get(o.project_dir, o.session)
+            examples.append({
+                "session": o.session, "title": title, "project": label,
+                "timestamp": o.ts, "tool": o.tool, "input": o.input, "detail": o.detail,
+            })
+        patterns.append({
+            "kind": g.kind, "message": g.message,
+            "occurrences": len(g.occurrences), "sessions": len(g.sessions),
+            "first_seen": g.first_seen, "last_seen": g.last_seen,
+            "tools": dict(g.tools.most_common()),
+            "variants": dict(g.variants.most_common(JSON_VARIANTS)),
+            "examples": examples,
+        })
+    return {
+        "scope": scope,
+        "since": since.isoformat() if since else None,
+        "kinds": list(kinds),
+        "min_sessions": min_sessions,
+        "totals": totals,
+        "patterns": patterns,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Recurring tool failures across Claude Code sessions: "
+                    "raw material for new rules and memories.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-sessions-review                  This project, every recurring failure\n"
+            "  claude-sessions-review -g --since 2w    Every project, last two weeks\n"
+            "  claude-sessions-review --kind denied    What gets rejected or denied\n"
+            "  claude-sessions-review --min-sessions 1 Include one-off failures too\n"
+            "  claude-sessions-review -g --json        Machine-readable, every kind (for /dream)\n"
+            "\n"
+            "Each failed tool result is reduced to a signature -- paths, numbers, ids\n"
+            "and quoted strings abstracted -- and grouped. Patterns are ranked by how\n"
+            "many SESSIONS hit them, not raw hits, so one looping session cannot\n"
+            "outrank a habit. 'variants' are the concrete values abstracted away.\n"
+            "First/last seen dates show whether a rule added in between stopped it.\n"
+            "\n"
+            "Kinds: failure (the tool or command failed), denied (rejected by you,\n"
+            "or by the auto-mode classifier or a permission rule), unavailable (the\n"
+            "classifier could not run). Text output defaults to failure; --json\n"
+            "defaults to all. Subagent transcripts count under their parent session.\n"
+        ),
+    )
+    parser.add_argument(
+        "-g", "--global", dest="global_", action="store_true",
+        help="Review sessions across all projects (default: cwd's project only)",
+    )
+    parser.add_argument(
+        "--since", default=None, metavar="WHEN",
+        help="Only failures since WHEN: Nh, Nd, Nw (e.g. 2w) or YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--kind", choices=(*KINDS, "all"), default=None,
+        help="Which kind of error to report "
+             "(default: failure for text, all for --json)",
+    )
+    parser.add_argument(
+        "--min-sessions", type=int, default=2, metavar="N",
+        help="Only patterns seen in at least N distinct sessions (default: 2)",
+    )
+    parser.add_argument(
+        "-n", "--limit", type=int, default=0,
+        help="Maximum patterns to show (default: 0 = unlimited)",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Print the patterns as JSON (never paged)",
+    )
+    parser.add_argument(
+        "--no-pager", action="store_true",
+        help="Write directly to stdout; skip the pager ($PAGER or less -FRX)",
+    )
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    if args.min_sessions < 1:
+        error("--min-sessions must be >= 1")
+    if args.limit < 0:
+        error("--limit must be >= 0 (0 means unlimited)")
+    if not claudeutils.CLAUDE_PROJECTS.is_dir():
+        error(f"no such directory: {claudeutils.CLAUDE_PROJECTS}")
+
+    now = datetime.now(timezone.utc)
+    cutoff = parse_since(args.since, now) if args.since else None
+    kind = args.kind or ("all" if args.json else "failure")
+    kinds = KINDS if kind == "all" else (kind,)
+
+    if args.global_:
+        project_dirs = [p for p in claudeutils.CLAUDE_PROJECTS.iterdir() if p.is_dir()]
+        scope = "global"
+    else:
+        cwd = Path.cwd().resolve()
+        pdir = find_project_dir(cwd)
+        if pdir is None:
+            error(f"no Claude sessions recorded for {cwd} (try --global)")
+        project_dirs = [pdir]
+        scope = str(cwd)
+
+    groups = scan(project_dirs, cutoff)
+    wanted = [g for g in groups.values() if g.kind in kinds]
+    total_occ = sum(len(g.occurrences) for g in wanted)
+    total_sessions = len(set().union(*(g.sessions for g in wanted))) if wanted else 0
+    kept, hidden = select(wanted, args.min_sessions)
+    qualifying = len(kept)
+    if args.limit:
+        kept = kept[:args.limit]
+    titles = Titles()
+
+    if args.json:
+        # The same counts as the text summary, so a consumer can tell when -n
+        # cut the list or --min-sessions hid patterns.
+        totals = {"occurrences": total_occ, "sessions": total_sessions,
+                  "patterns": qualifying, "hidden_patterns": hidden}
+        json.dump(to_json(kept, titles, scope=scope, since=cutoff, kinds=kinds,
+                          min_sessions=args.min_sessions, totals=totals),
+                  sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    noun = {"failure": "failure", "denied": "denial", "unavailable": "outage",
+            "all": "error"}[kind]
+    summary = (f"{_counts(total_occ, noun)} in {_counts(total_sessions, 'session')}; "
+               f"{_counts(qualifying, 'pattern')} seen in {args.min_sessions}+ sessions")
+    if len(kept) < qualifying:
+        summary += f" (showing {len(kept)})"
+    if not kept:
+        print(summary)
+    else:
+        with paged_output(no_pager=args.no_pager) as out:
+            print(summary, file=out)
+            for g in kept:
+                print(file=out)
+                for line in render_group(g, titles, show_project=args.global_,
+                                         show_kind=kind == "all"):
+                    print(line, file=out)
+            out.flush()
+
+    if hidden:
+        word = "pattern" if hidden == 1 else "patterns"
+        sys.stderr.write(
+            f"({hidden} {word} seen in fewer than {args.min_sessions} sessions hidden; "
+            "use --min-sessions 1 to show)\n"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

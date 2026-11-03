@@ -12,6 +12,9 @@
   * Child processes that have exited and sat idle for 15 minutes drop off the screen (their bytes stay in the session's total); `c` shows them again
   * Count traffic from apps that send without a fixed destination, such as Tailscale and many VPNs and calls, and flag tunnelled traffic that appears on screen twice
   * Count traffic a security proxy relays (Norton for Chrome) once, under the app that made it, and the last second of every closed connection
+* [feature] Add `claude-sessions-review`, which finds tool calls that fail the same way across many Claude Code sessions: raw material for new rules and memories
+  * Ranked by how many sessions hit a pattern, not raw hits, with first and last dates seen and the values that recur
+  * `--kind denied` shows what gets rejected or denied instead; `--json` carries every kind for scripts
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`

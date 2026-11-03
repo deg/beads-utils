@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup claude-session-find claude-session-list claude-session-rename claude-session-report claude-traffic-monitor
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup claude-session-find claude-session-list claude-session-rename claude-session-report claude-sessions-review claude-traffic-monitor
 #
 # zsh tab completion for beads-utils.
 #
@@ -160,6 +160,19 @@ _beads_dispatch() {
       '(--oneline -q --quiet)'{-q,--quiet}'[print only session UUIDs]' \
       '--no-pager[write directly to stdout; skip the pager]'
     ;;
+  claude-sessions-review)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '(-g --global)'{-g,--global}'[review sessions across all projects]' \
+      '--since=[only failures since WHEN (Nh, Nd, Nw or YYYY-MM-DD)]:when' \
+      '--kind=[which kind of error to report]:kind:(failure denied unavailable all)' \
+      '--min-sessions=[only patterns seen in at least N sessions]:count' \
+      '(-n --limit)-n+[max patterns to show (0 = unlimited)]:count' \
+      '(-n --limit)--limit=[max patterns to show (0 = unlimited)]:count' \
+      '--json[print the patterns as JSON]' \
+      '--no-pager[write directly to stdout; skip the pager]'
+    ;;
   bd-log)
     _arguments -s -S \
       '(- *)--version[show version and exit]' \
@@ -255,4 +268,4 @@ _beads_dispatch() {
 compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup \
   claude-session-find claude-session-list claude-session-rename \
-  claude-session-report claude-traffic-monitor
+  claude-session-report claude-sessions-review claude-traffic-monitor

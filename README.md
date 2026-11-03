@@ -42,6 +42,7 @@ the clone itself on `PATH`; the scripts run in place either way.
 | [`claude-session-rename`](claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
+| [`claude-sessions-review`](claude-sessions-review) | Find tool calls that fail the same way across many Claude Code sessions, ranked by how many sessions hit them |
 | [`claude-traffic-monitor`](claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
@@ -163,6 +164,17 @@ so an old session can be labelled after the fact, or a batch of them from
 a loop, without resuming each one. It writes exactly what `/rename` would,
 and refuses a session that is currently running, where `/rename` itself is
 the right tool.
+
+A single session can't see that its mistake is one other sessions keep making.
+`claude-sessions-review` looks across them: it reduces every failed tool call to
+a signature (`zsh: no matches found`, `File has not been read yet.`,
+`python: ModuleNotFoundError: ...`) and ranks the patterns by how many sessions
+hit them, so one session stuck in a loop can't outrank a habit. Each pattern
+shows its first and last date seen, which says whether a rule you added in
+between actually stopped it, plus the values that recur (the same missing
+directory, the same unquoted glob) and recent examples with the failing command. That is the raw material for a new
+`CLAUDE.md` rule or memory. `--kind denied` shows what you or the auto-mode
+classifier keep refusing instead, and `--json` hands all of it to a script.
 
 The last one watches sessions that are running right now. On a metered or slow
 link, the question becomes what Claude is costing you in bytes.

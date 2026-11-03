@@ -28,7 +28,8 @@ pytestmark = pytest.mark.e2e
 SCRIPTS = [
     "bd-complete", "bd-dolt-check", "bd-dolt-diff", "bd-export-csv",
     "bd-log", "bd-verify-backup", "bd-view", "claude-session-find", "claude-session-list",
-    "claude-session-rename", "claude-session-report", "claude-traffic-monitor",
+    "claude-session-rename", "claude-session-report", "claude-sessions-review",
+    "claude-traffic-monitor",
 ]
 
 
@@ -1399,3 +1400,97 @@ def test_claude_session_rename_refuses_a_running_session(run_script, fake_home):
                         env={"HOME": str(fake_home)})
     assert result.returncode == 1
     assert f"is running (pid {os.getpid()})" in result.stderr
+
+
+# --- claude-sessions-review -----------------------------------------------
+
+
+@pytest.fixture
+def failing_home(tmp_path, project):
+    """A HOME whose project has the same zsh failure in two sessions, plus a
+    one-off timeout and a user rejection."""
+    home = tmp_path / "home"
+    pdir = home / ".claude" / "projects" / str(project).replace("/", "-").replace(".", "-")
+
+    def failure(tid, text, ts="2026-10-01T10:00:00Z"):
+        return [
+            {"type": "assistant", "cwd": str(project), "timestamp": ts,
+             "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "id": tid, "name": "Bash",
+                  "input": {"command": "grep -r x --include=*.py"}}]}},
+            {"type": "user", "timestamp": ts, "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": tid, "is_error": True,
+                 "content": text}]}},
+        ]
+
+    glob = "Exit code 1\n(eval):1: no matches found: --include=*.py"
+    write_session(pdir, "aaaa1111-0000", [
+        {"type": "custom-title", "customTitle": "First session"},
+        *failure("t1", glob),
+        *failure("t2", "Exit code 143\nCommand timed out after 2m 0s"),
+        *failure("t3", "The user doesn't want to proceed with this tool use."),
+    ])
+    write_session(pdir, "bbbb2222-0000", failure("t1", glob, "2026-10-20T10:00:00Z"))
+    return home
+
+
+def test_claude_sessions_review_reports_the_recurring_failure(run_script, failing_home):
+    result = run_script("claude-sessions-review", env={"HOME": str(failing_home)})
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0] == "3 failures in 2 sessions; 1 pattern seen in 2+ sessions"
+    assert lines[2] == "zsh: no matches found"
+    assert "First session" in result.stdout
+    assert "timed out" not in result.stdout          # a one-off, hidden...
+    assert "1 pattern seen in fewer than 2 sessions hidden" in result.stderr  # ...and said so
+
+
+def test_claude_sessions_review_json_carries_every_kind(run_script, failing_home):
+    result = run_script("claude-sessions-review", "--json", "--min-sessions", "1",
+                        env={"HOME": str(failing_home)})
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert {p["kind"] for p in doc["patterns"]} == {"failure", "denied"}
+    assert doc["totals"] == {"occurrences": 4, "sessions": 2,
+                             "patterns": 3, "hidden_patterns": 0}
+    assert doc["patterns"][0]["message"] == "zsh: no matches found"
+
+
+def test_claude_sessions_review_since_narrows_the_window(run_script, failing_home):
+    result = run_script("claude-sessions-review", "--since", "2026-10-15",
+                        env={"HOME": str(failing_home)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("1 failure in 1 session; 0 patterns")
+
+
+def test_claude_sessions_review_rejects_a_zero_bar(run_script, failing_home):
+    result = run_script("claude-sessions-review", "--min-sessions", "0",
+                        env={"HOME": str(failing_home)})
+    assert result.returncode == 1
+    assert "error: --min-sessions must be >= 1" in result.stderr
+
+
+def test_claude_sessions_review_limit_still_counts_every_pattern(run_script, failing_home):
+    """-n caps what is printed, not what the summary says qualified."""
+    result = run_script("claude-sessions-review", "--min-sessions", "1", "-n", "1",
+                        env={"HOME": str(failing_home)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[0] == (
+        "3 failures in 2 sessions; 2 patterns seen in 1+ sessions (showing 1)")
+    assert "timed out" not in result.stdout
+
+
+def test_claude_sessions_review_json_totals_survive_a_limit(run_script, failing_home):
+    """/dream reads `totals` to know the list it got was cut, so -n must not
+    shrink the pattern count, and the hidden count must be the real one."""
+    result = run_script("claude-sessions-review", "--json", "-n", "1",
+                        env={"HOME": str(failing_home)})
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert len(doc["patterns"]) == 1
+    assert doc["totals"]["patterns"] == 1      # only the glob reaches 2 sessions
+    assert doc["totals"]["hidden_patterns"] == 2
+    cut = json.loads(run_script("claude-sessions-review", "--json", "-n", "1",
+                                "--min-sessions", "1",
+                                env={"HOME": str(failing_home)}).stdout)
+    assert (len(cut["patterns"]), cut["totals"]["patterns"]) == (1, 3)
