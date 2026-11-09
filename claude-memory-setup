@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Give Claude Code's auto-memory files git history, in a repo of their own.
+
+Claude Code writes memories under ~/.claude/projects/<project>/memory/*.md,
+next to session transcripts and tool output, and versions none of it. This
+sets up a git repository whose WORK TREE is ~/.claude/projects but whose
+.git lives elsewhere (default ~/claude-memories.git; $CLAUDE_MEMORIES_GIT or
+--git-dir override it), so the only thing added under ~/.claude/projects is
+one .gitignore. That file is an ALLOWLIST: ignore everything, then
+re-include exactly */memory/*.md. A missed pattern can only hide a memory,
+never leak a transcript, and a transcript holds everything ever pasted into
+a session.
+
+Two shapes:
+
+  claude-memory-setup                 a fresh, local-only repo; the first
+                                      commit holds the allowlist and whatever
+                                      memories exist
+  claude-memory-setup --remote URL    an existing memories repo: clone it onto
+                                      this machine and track it. An EMPTY
+                                      remote (a repo just created to hold them)
+                                      gets the first commit pushed to it
+
+With --remote, the memory files are written out only when the repo has no
+index yet, and only the ones missing from the work tree, so a memory Claude
+Code already wrote here is left alone and a later run never resurrects a
+memory deleted since. Every other step is safe to repeat: a rerun repairs a
+setup that died halfway, including one that died right after the clone.
+
+From then on the SessionEnd hook commit-memories.sh commits at the end of
+every session, and pushes when the branch has an upstream;
+check-memories-pushed.sh warns at SessionStart when commits are not reaching
+the remote. `make install-claude` links both into ~/.claude/hooks. They need
+`jq`, so this refuses to set up a repo the hooks could not then serve.
+
+One writer at a time: the hooks push but never fetch or merge. Two machines
+that both commit before pulling diverge, and every push from the second is
+rejected; the SessionStart hook reports that at once, and the fix is by hand
+(`git -C ~/.claude/projects --git-dir=~/claude-memories.git pull --rebase`).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import claudeutils
+from bdutils import add_version_arg, error, warn
+
+DEFAULT_GIT_DIR = Path(os.environ.get("CLAUDE_MEMORIES_GIT") or Path.home() / "claude-memories.git")
+BRANCH = "main"
+
+# Written to the top of the work tree. Only *.md, not the whole memory
+# directory: editor backups (MEMORY.md~, #MEMORY.md#) and .DS_Store would
+# otherwise be visible, and commit-memories.sh refuses to commit while any
+# non-memory path is. The slug is a wildcard, so a new project's memories are
+# tracked from their first write with nothing to register.
+ALLOWLIST = """\
+# Work tree of the Claude Code memories repo (see claude-memory-setup). Claude Code
+# keeps per-project state here: session transcripts (*.jsonl), tool output, subagent
+# task dirs, and the auto-memory directory. Only the memory files are meant to have
+# git history. Everything else contains whatever was ever pasted into a session, so
+# this is an ALLOWLIST: ignore everything, then re-include exactly <slug>/memory/*.md.
+# A missed pattern can only hide a memory, never leak a transcript.
+*
+!*/
+!/*/memory/*.md
+!/.gitignore
+"""
+
+
+def run_git(args: list[str], cwd: Path | None = None, env: dict | None = None,
+            check: bool = True, what: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run git; a missing binary or a failed command is an error(), never a traceback."""
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        error("'git' not found on PATH")
+    if check and result.returncode != 0:
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        error(what or f"git {args[0]} failed (exit {result.returncode})")
+    return result
+
+
+class Repo:
+    """The memories repo: every command gets --git-dir, and runs in the work tree.
+
+    The work tree is set through core.worktree rather than by placing .git in
+    it, so commands that need one (status, add, commit, checkout) must run
+    from inside it; a plain `git --git-dir=X status` from elsewhere scans
+    the current directory instead.
+    """
+
+    def __init__(self, git_dir: Path, work_tree: Path):
+        self.git_dir = git_dir
+        self.work_tree = work_tree
+
+    def run(self, *args: str, check: bool = True, env: dict | None = None):
+        return run_git([f"--git-dir={self.git_dir}", *args], cwd=self.work_tree, env=env, check=check)
+
+    def out(self, *args: str) -> str:
+        return self.run(*args).stdout.strip()
+
+    def config(self, key: str, value: str) -> None:
+        self.run("config", key, value)
+
+    def has(self, *args: str) -> bool:
+        return self.run(*args, check=False).returncode == 0
+
+    def has_index(self) -> bool:
+        """Whether a checkout has ever built the index.
+
+        This, not the git dir's existence, says whether the first checkout
+        has happened: a --remote run that died right after the clone leaves
+        a git dir and no index, and skipping the checkout then would present
+        every tracked memory to the SessionEnd hook as deleted.
+        """
+        return (self.git_dir / "index").exists()
+
+    def hint(self, *args: str) -> str:
+        """A command the user can paste: -C makes it work from anywhere."""
+        return f"git -C {self.work_tree} --git-dir={self.git_dir} {' '.join(args)}"
+
+
+def rules(gitignore: str) -> list[str]:
+    """The pattern lines of a .gitignore, without comments and blanks."""
+    return [line for line in gitignore.splitlines() if line.strip() and not line.startswith("#")]
+
+
+def ensure_allowlist(work_tree: Path) -> None:
+    """Write the allowlist if absent; never overwrite one that is there.
+
+    An existing .gitignore is the user's: it may carry a project they chose
+    to exclude. One whose *rules* differ is only reported, since the hook's
+    guard will say if it exposes too much; a comment-only difference, which
+    is what a clone of an older allowlist shows, is not worth a word.
+    """
+    path = work_tree / ".gitignore"
+    try:
+        if not path.exists():
+            path.write_text(ALLOWLIST)
+            print(f"Wrote the allowlist {path}")
+        elif rules(path.read_text()) != rules(ALLOWLIST):
+            warn(f"{path} differs from the allowlist this tool writes; left as is")
+    except OSError as exc:
+        error(f"could not write {path}: {exc}")
+
+
+def make_dir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        error(f"could not create {path}: {exc}")
+
+
+def clone(repo: Repo, remote: str) -> None:
+    make_dir(repo.git_dir.parent)
+    run_git(["clone", "-q", "--bare", remote, str(repo.git_dir)], what=f"could not clone {remote}")
+    print(f"Cloned {remote} into {repo.git_dir}")
+
+
+def init(repo: Repo) -> None:
+    make_dir(repo.git_dir.parent)
+    run_git(["init", "-q", "--bare", f"--initial-branch={BRANCH}", str(repo.git_dir)],
+            what=f"could not create {repo.git_dir}")
+    print(f"Created {repo.git_dir}")
+
+
+def first_checkout(repo: Repo) -> int:
+    """Write out only the tracked files missing from the work tree.
+
+    A fresh bare clone has no index. Build it from HEAD, then check out just
+    the paths `ls-files --deleted` reports: a memory Claude Code has already
+    written here shows as modified, not deleted, and is left alone. The paths
+    are literal, so a name holding `*` or `[` is not read as a pattern.
+    """
+    repo.run("reset", "-q")
+    missing = [p for p in repo.out("ls-files", "-z", "--deleted").split("\0") if p]
+    if missing:
+        repo.run("checkout", "--", *missing, env={**os.environ, "GIT_LITERAL_PATHSPECS": "1"})
+    return len(missing)
+
+
+def pin_head(repo: Repo) -> None:
+    """Make HEAD the memories branch, creating it from origin's if needed.
+
+    A clone's HEAD copies the remote's, which may name a branch that does not
+    exist there (a bare remote made by `git init` points at master). An
+    unborn HEAD makes `reset` empty the index and check out nothing, so HEAD
+    is pinned before the first checkout.
+    """
+    if not repo.has("rev-parse", "-q", "--verify", f"refs/heads/{BRANCH}"):
+        if repo.has("rev-parse", "-q", "--verify", f"refs/remotes/origin/{BRANCH}"):
+            repo.run("branch", "-q", BRANCH, f"origin/{BRANCH}")
+    repo.run("symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
+
+
+def first_commit(repo: Repo) -> None:
+    """Commit the allowlist and whatever memories already exist, once."""
+    if repo.has("rev-parse", "-q", "--verify", "HEAD"):
+        return
+    repo.run("add", "-A")
+    repo.run("commit", "-q", "-m", "Start versioning Claude Code memories")
+    print("Made the first commit")
+
+
+def connect_remote(repo: Repo, remote: str) -> None:
+    """Point origin at `remote`, fetch, and end up tracking origin/main.
+
+    A bare clone sets neither a fetch refspec nor an upstream, and both hooks
+    read @{upstream} to know what is unpushed, so these are set explicitly
+    and on every run.
+    """
+    current = repo.run("remote", "get-url", "origin", check=False)
+    if current.returncode != 0:
+        repo.run("remote", "add", "origin", remote)
+    elif current.stdout.strip() != remote:
+        warn(f"origin is {current.stdout.strip()}, not {remote}; left as is")
+    repo.config("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    repo.run("fetch", "-q", "origin")
+
+    if repo.has("rev-parse", "-q", "--verify", f"refs/remotes/origin/{BRANCH}"):
+        pin_head(repo)
+        repo.run("branch", "-q", "-u", f"origin/{BRANCH}", BRANCH)
+        if not repo.has_index():
+            n = first_checkout(repo)
+            print(f"Checked out {n} file(s) that were not here yet")
+        # After the checkout, so an allowlist the old machine customised
+        # wins over the default one.
+        ensure_allowlist(repo.work_tree)
+    else:
+        # A repo created to hold the memories, with nothing in it yet. Leaving
+        # it empty would leave the hook committing with nowhere to push.
+        print(f"{remote} is empty; making the first commit and pushing it")
+        pin_head(repo)
+        ensure_allowlist(repo.work_tree)
+        first_commit(repo)
+        repo.run("push", "-q", "-u", "origin", BRANCH)
+
+
+def summary(repo: Repo) -> None:
+    tracked = [p for p in repo.out("ls-files").splitlines() if p.endswith(".md")]
+    print(f"Tracking {len(tracked)} memory file(s) in {repo.git_dir} (work tree {repo.work_tree})")
+    if repo.has("rev-parse", "-q", "--verify", "@{upstream}"):
+        print(f"Upstream: {repo.out('rev-parse', '--abbrev-ref', '@{upstream}')}")
+    else:
+        print("No upstream: the SessionEnd hook will commit but has nowhere to push.")
+    if repo.out("status", "--porcelain"):
+        warn(f"{repo.work_tree} differs from the repo; review with: {repo.hint('status')}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Give Claude Code's memory files git history, in a repo of their own.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-memory-setup                                   A fresh repo at ~/claude-memories.git\n"
+            "  claude-memory-setup --remote git@github.com:me/claude-memories.git\n"
+            "                                                        Clone an existing one, or push the\n"
+            "                                                        first commit to an empty one\n"
+            "\n"
+            "Rerunnable. Then `make install-claude` and wire hooks/commit-memories.sh\n"
+            "(SessionEnd) and hooks/check-memories-pushed.sh (SessionStart) into\n"
+            "settings.json; the README has the snippet. Needs git and jq.\n"
+        ),
+    )
+    parser.add_argument(
+        "--remote", metavar="URL",
+        help="an existing memories repo to clone and push to (default: start a fresh one)",
+    )
+    parser.add_argument(
+        "--git-dir", metavar="PATH", type=Path, default=DEFAULT_GIT_DIR,
+        help="where the repo's .git lives (default: $CLAUDE_MEMORIES_GIT or ~/claude-memories.git)",
+    )
+    parser.add_argument(
+        "--projects", metavar="PATH", type=Path, default=None,
+        help="the work tree: Claude Code's projects directory (default: ~/.claude/projects)",
+    )
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    if shutil.which("jq") is None:
+        error("jq is required by the memory hooks; install it first")
+
+    git_dir = args.git_dir.expanduser().resolve()
+    work_tree = (args.projects or claudeutils.CLAUDE_PROJECTS).expanduser().resolve()
+    repo = Repo(git_dir, work_tree)
+
+    # Before core.worktree points at it: git refuses a missing work tree.
+    make_dir(work_tree)
+
+    if not git_dir.exists():
+        if args.remote:
+            clone(repo, args.remote)
+        else:
+            init(repo)
+    repo.config("core.bare", "false")
+    repo.config("core.worktree", str(work_tree))
+
+    if args.remote:
+        connect_remote(repo, args.remote)
+    else:
+        ensure_allowlist(work_tree)
+        first_commit(repo)
+    summary(repo)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

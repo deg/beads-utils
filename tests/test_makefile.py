@@ -41,7 +41,7 @@ pytestmark = [
     pytest.mark.skipif(not HAVE_MAKE, reason="make not installed"),
 ]
 
-SCRIPT_COUNT = 15
+SCRIPT_COUNT = 16
 
 
 def run_make(*args: str, expect_ok: bool = True) -> subprocess.CompletedProcess:
@@ -278,3 +278,43 @@ def test_lint_targets_cover_every_python_file():
             or str(rel) in named
         )
         assert covered, f"{rel} is not covered by LINT_TARGETS"
+
+
+# --------------------------------------------------------------------------
+# install-claude / uninstall-claude -- the hooks, into CLAUDE_HOME
+# --------------------------------------------------------------------------
+
+HOOK_COUNT = 2
+
+
+def test_install_claude_links_every_hook(tmp_path):
+    """Into CLAUDE_HOME/hooks, as symlinks back at this checkout's hooks/."""
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
+    links = sorted(p for p in (tmp_path / "hooks").iterdir() if p.is_symlink())
+    assert len(links) == HOOK_COUNT
+    assert all(Path(os.readlink(p)).parent == ROOT / "hooks" for p in links)
+
+
+def test_install_claude_refuses_to_replace_a_real_file(tmp_path):
+    """A hook script someone wrote by hand in ~/.claude/hooks is not ours."""
+    (tmp_path / "hooks").mkdir()
+    (tmp_path / "hooks" / "commit-memories.sh").write_text("precious\n")
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", expect_ok=False)
+    assert done.returncode != 0
+    assert "refusing to replace non-symlink" in done.stdout
+    assert (tmp_path / "hooks" / "commit-memories.sh").read_text() == "precious\n"
+    assert [p for p in (tmp_path / "hooks").iterdir() if p.is_symlink()] == []
+
+
+def test_uninstall_claude_removes_only_our_links(tmp_path):
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
+    (tmp_path / "hooks" / "theirs.sh").write_text("mine\n")
+    (tmp_path / "hooks" / "foreign-link").symlink_to("/bin/echo")
+    done = run_make("uninstall-claude", f"CLAUDE_HOME={tmp_path}")
+    assert f"Removed {HOOK_COUNT} symlink(s)" in done.stdout
+    assert sorted(p.name for p in (tmp_path / "hooks").iterdir()) == ["foreign-link", "theirs.sh"]
+
+
+def test_install_claude_refuses_a_tilde_home(tmp_path):
+    done = run_make("install-claude", "CLAUDE_HOME=~/nope", expect_ok=False)
+    assert "cannot expand" in done.stdout

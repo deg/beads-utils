@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup bd-find-live claude-session-find claude-session-list claude-session-rename claude-session-report claude-sessions-review claude-traffic-monitor claude-memory-check
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup bd-find-live claude-session-find claude-session-list claude-session-rename claude-session-report claude-sessions-review claude-traffic-monitor claude-memory-check claude-memory-setup
 #
 # zsh tab completion for beads-utils.
 #
@@ -275,6 +275,14 @@ _beads_dispatch() {
       '(- *)'{-h,--help}'[show help and exit]' \
       '*:memory-dir:_files -/'
     ;;
+  claude-memory-setup)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '--remote=[an existing memories repo to clone and push to]:url' \
+      '--git-dir=[where the repo'"'"'s .git lives]:dir:_files -/' \
+      '--projects=[the work tree: Claude Code'"'"'s projects directory]:dir:_files -/'
+    ;;
   esac
 }
 
@@ -282,4 +290,4 @@ compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup \
   bd-find-live claude-session-find claude-session-list claude-session-rename \
   claude-session-report claude-sessions-review claude-traffic-monitor \
-  claude-memory-check
+  claude-memory-check claude-memory-setup

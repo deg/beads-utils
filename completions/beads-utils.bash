@@ -316,6 +316,20 @@ _beads_claude_memory_check() {
   fi
 }
 
+_beads_claude_memory_setup() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  case $prev in
+    --remote) return ;;
+    --git-dir|--projects) __beads_dirs; return ;;
+  esac
+  if [[ $cur == -* ]]; then
+    __beads_flags "--remote --git-dir --projects --version -h --help"
+  fi
+  # no positional args.
+}
+
 _beads_claude_session_rename() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
@@ -342,3 +356,4 @@ complete -F _beads_claude_session_rename claude-session-rename
 complete -F _beads_claude_traffic_monitor claude-traffic-monitor
 complete -F _beads_bd_find_live bd-find-live
 complete -F _beads_claude_memory_check claude-memory-check
+complete -F _beads_claude_memory_setup claude-memory-setup

@@ -192,6 +192,64 @@ screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 
 
 ################################################################
+## Claude Code integration
+##
+## The hooks (and, from a later change, the skills) that make Claude Code
+## follow the beads workflow. Symlinked into CLAUDE_HOME (default ~/.claude)
+## exactly as `install` links scripts into PREFIX, with the same refusal to
+## replace anything that is not already a symlink. A separate target so that
+## someone who only wants the scripts never has ~/.claude touched. The hooks
+## still have to be wired into settings.json by hand; the README has the
+## snippet.
+
+CLAUDE_HOME ?= $(HOME)/.claude
+HOOKS := $(wildcard hooks/*.sh)
+
+check-claude-home:
+	@case "$(CLAUDE_HOME)" in \
+	    "") echo "error: CLAUDE_HOME is empty"; exit 1;; \
+	    "~"*) echo "error: cannot expand '$(CLAUDE_HOME)' — pass an absolute path"; exit 1;; \
+	esac
+
+install-claude: check-claude-home ## Symlink the Claude Code hooks into CLAUDE_HOME/hooks (default ~/.claude/hooks)
+	@for h in $(HOOKS); do \
+	    target="$(CLAUDE_HOME)/$$h"; \
+	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
+	        echo "refusing to replace non-symlink: $$target"; exit 1; \
+	    fi; \
+	done
+	@mkdir -p "$(CLAUDE_HOME)/hooks"
+	@for h in $(HOOKS); do \
+	    ln -sfn "$(CURDIR)/$$h" "$(CLAUDE_HOME)/$$h" || exit 1; \
+	done
+	@echo "Linked $(words $(HOOKS)) hooks into $(CLAUDE_HOME)/hooks"
+	@echo "note: hooks run only once wired into settings.json; see README, Keeping Claude Code memories"
+
+# unlink, not rm: it takes exactly one path and cannot recurse, which is all
+# removing a symlink needs.
+uninstall-claude: check-claude-home ## Remove the links that 'make install-claude' created
+	@removed=0; failed=0; \
+	for target in "$(CLAUDE_HOME)"/hooks/*; do \
+	    [ -L "$$target" ] || continue; \
+	    case "$$(readlink "$$target")" in \
+	        "$(CURDIR)/hooks/"*) ;; \
+	        *) continue;; \
+	    esac; \
+	    if unlink "$$target"; then \
+	        removed=$$((removed + 1)); \
+	    else \
+	        failed=$$((failed + 1)); \
+	    fi; \
+	done; \
+	echo "Removed $$removed symlink(s) from $(CLAUDE_HOME)/hooks"; \
+	if [ "$$failed" -ne 0 ]; then \
+	    echo "error: $$failed symlink(s) could not be removed"; exit 1; \
+	fi
+
+.PHONY: install-claude uninstall-claude check-claude-home
+
+
+################################################################
 ## Installation
 ##
 ## Symlinks, not copies: the script still runs from this tree, so an edit

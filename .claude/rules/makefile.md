@@ -30,4 +30,7 @@ variable-expansion bug that produced `f066e16` — a `PREFIX=~/bin` that built a
 directory literally named `~`. Two rules for anything added there: never
 invoke `make test` or `make ci` (that recurses), and always pass an explicit
 `PREFIX` under `tmp_path`, or the suite installs into the developer's real
-`~/.local/bin`.
+`~/.local/bin`. The same goes for `CLAUDE_HOME` and the `install-claude` tests,
+which would otherwise link into the real `~/.claude/hooks`. `uninstall-claude`
+removes with `unlink` rather than `rm -f`: one path, no recursion, which is all a
+symlink needs.

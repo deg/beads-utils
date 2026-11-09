@@ -39,7 +39,8 @@ Pushing (`git push` / `bd dolt push`) is the user's call, not the agent's. Commi
 ## What This Is
 
 A small collection of Python utility scripts that augment the **beads** (`bd`) issue
-tracker and its Dolt-backed storage. Each script sits at the repo root alongside a
+tracker and its Dolt-backed storage, plus the Claude Code hooks under `hooks/` that
+plug into the agent itself. Each script sits at the repo root alongside a
 shared `bdutils.py` helper module — no package, no build step. Scripts run from the
 repo directory (Python's default `sys.path[0]` resolves the sibling `bdutils`
 import), or from anywhere via the symlinks `make install` puts in `PREFIX`, since
@@ -103,6 +104,10 @@ Current scripts:
   project's by default): broken `[[links]]` that were meant to resolve, bad or
   duplicate `name:` slugs, and a `MEMORY.md` out of step with its directory are
   errors (exit 1); links to memories not written yet are listed as pending.
+- `claude-memory-setup` — Gives Claude Code's memory files a git repo of their
+  own: `.git` at `~/claude-memories.git` (or `$CLAUDE_MEMORIES_GIT`), work tree
+  `~/.claude/projects`, an allowlist `.gitignore` exposing only `*/memory/*.md`.
+  Fresh, or `--remote URL` to clone onto a new machine. Rerunnable.
 - `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
   `sessions`); the single front door behind `completions/`.
 
@@ -119,6 +124,16 @@ Shared helpers, both stdlib-only:
   `claude-sessions-review`, `claude-traffic-monitor`, `bd-complete`, and
   `bd-verify-backup` (which reads the project list in `~/.claude.json`).
 
+Claude Code hooks, bash, under `hooks/` (a subdirectory, so shebang discovery
+does not sweep them into ruff and the `--version` smoke test), installed by
+`make install-claude` into `~/.claude/hooks` and wired into `settings.json` by
+hand:
+
+- `commit-memories.sh` (SessionEnd) — commits the memories repo, pushes if it
+  has an upstream; fails closed when any non-memory path is visible.
+- `check-memories-pushed.sh` (SessionStart) — a `systemMessage` when a refusal
+  is recorded, there is no upstream, or commits sat unpushed for a day.
+
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
 Exceptions: `bd-view` takes an issue id (and relies on `bd`'s own `.beads/`
@@ -129,7 +144,8 @@ and `claude-sessions-review` take no positional args (current project
 unless `-g/--global`);
 `claude-session-rename` takes a session and a title; `claude-traffic-monitor`
 takes none (it watches the whole machine); `claude-memory-check` takes memory
-directories (default: every project's); `bd-complete`
+directories (default: every project's); `claude-memory-setup` takes none (flags
+only); `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
 
 ## Design notes live in `.claude/rules/`
@@ -143,7 +159,7 @@ tests and costs nothing otherwise:
 | Rule file | Loads for |
 |---|---|
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md`, `bd-find-live.md` | that script and its test file |
-| `claude-memory.md` | `claude-memory-check` and its test file |
+| `claude-memory.md` | `claude-memory-check`, `claude-memory-setup`, the two memory hooks, their tests |
 | `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
@@ -188,6 +204,7 @@ make ci                                       # exactly what CI runs
 make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
+make install-claude / uninstall-claude        # symlink hooks/ into ~/.claude (CLAUDE_HOME=)
 make screenshots                              # regenerate the README's terminal images
 make completions                              # the rc-file line for tab completion
 make outdated                                 # newer releases of the pinned tools
@@ -227,7 +244,8 @@ and `bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt
 `.beads/` files directly. `bd-verify-backup` never runs `bd` and does need `dolt`:
 without it the beads check is `UNVERIFIABLE`, which fails there, though
 `bd-dolt-check` exits 0 on it. The `claude-session-*` scripts,
-`claude-sessions-review` and `claude-memory-check` need neither.
+`claude-sessions-review` and `claude-memory-check` need neither; `claude-memory-setup`
+and the two memory hooks need `git` and `jq` (the setup refuses to run without `jq`).
 `claude-traffic-monitor` is macOS-only: it reads macOS's `nettop` and draws with
 `curses`, so it needs a terminal.
 
@@ -268,6 +286,8 @@ without it the beads check is `UNVERIFIABLE`, which fails there, though
 - **Subprocess**: pass `cwd=project_path` rather than `os.chdir`. Use `check=True` only
   for calls that must succeed; tolerate empty/missing output where it's a valid state.
 - **No config files, no state** beyond what `bd` / Dolt already manage under `.beads/`.
+  The one exception is the memories repo `claude-memory-setup` creates at the user's
+  explicit request, outside any project.
 
 ## Releases
 

@@ -30,6 +30,7 @@ SCRIPTS = [
     "bd-log", "bd-verify-backup", "bd-view", "claude-session-find", "claude-session-list",
     "claude-session-rename", "claude-session-report", "claude-sessions-review",
     "claude-traffic-monitor", "bd-find-live", "claude-memory-check",
+    "claude-memory-setup",
 ]
 
 

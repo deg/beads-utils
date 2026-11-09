@@ -28,6 +28,11 @@ your `PATH` (it says so if it isn't), and it won't set up tab completion —
 run `make completions` for that line. Or skip installing entirely and just put
 the clone itself on `PATH`; the scripts run in place either way.
 
+`make install-claude` is separate: it links the Claude Code hooks under
+`hooks/` into `~/.claude/hooks` (or `CLAUDE_HOME=...`), for the pieces that
+plug into Claude Code itself rather than run from a shell. See
+[Keeping Claude Code memories](#keeping-claude-code-memories).
+
 ## Scripts
 
 | Script | What it does |
@@ -45,6 +50,7 @@ the clone itself on `PATH`; the scripts run in place either way.
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 | [`claude-sessions-review`](claude-sessions-review) | Find tool calls that fail the same way across many Claude Code sessions, ranked by how many sessions hit them |
 | [`claude-memory-check`](claude-memory-check) | Find broken `[[links]]`, bad slugs and a stale `MEMORY.md` index in Claude Code's memory directories |
+| [`claude-memory-setup`](claude-memory-setup) | Give Claude Code's memory files a git repo of their own, fresh or cloned from another machine; two hooks then commit and push them at every session end |
 | [`claude-traffic-monitor`](claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
@@ -208,6 +214,52 @@ on macOS only.
 
 ![claude-traffic-monitor with sample sessions and traffic](docs/img/claude-traffic-monitor.png)
 
+### Keeping Claude Code memories
+
+Claude Code's auto-memory is a directory of Markdown files per project under
+`~/.claude/projects/`, next to the session transcripts, and nothing versions
+it: a memory that goes false and gets rewritten, or deleted by mistake, is
+simply gone. `claude-memory-setup` gives those files a git repository of
+their own. The repo's `.git` lives outside (`~/claude-memories.git` by
+default, or `$CLAUDE_MEMORIES_GIT`) and its work tree *is* the projects
+directory, so the only thing added there is one `.gitignore`. That file is
+an allowlist — ignore everything, then re-include exactly `*/memory/*.md` —
+so a missed pattern can only hide a memory, never leak a transcript, which
+holds everything ever pasted into a session.
+
+```bash
+claude-memory-setup                                  # a fresh repo; first commit = allowlist + current memories
+claude-memory-setup --remote git@github.com:me/claude-memories.git   # a new machine: clone and track
+make install-claude                                  # link hooks/*.sh into ~/.claude/hooks
+```
+
+Two hooks keep it current, once wired into `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/check-memories-pushed.sh\""}]}],
+  "SessionEnd":   [{"matcher": "", "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/commit-memories.sh\""}]}]
+}
+```
+
+`commit-memories.sh` commits whatever changed at the end of every session,
+naming the session and directory in the message, and pushes if the branch has
+an upstream. It fails closed: if anything but a memory file is visible to git
+(the allowlist edited, a transcript showing through) it refuses the whole
+commit and records why, because it pushes, and a transcript pushed is a
+transcript published. It also refuses to commit more than twenty deletions at
+once. `check-memories-pushed.sh` is the backstop at session start: it shows a
+recorded refusal, a missing upstream, or commits that have sat unpushed for a
+day, as a message to you rather than context for the agent. Recover a deleted
+memory with `git -C ~/.claude/projects --git-dir=$HOME/claude-memories.git log
+-- <project>/memory/<file>.md`.
+
+The hooks need `jq`, and `claude-memory-setup` refuses to run without it. One
+machine writes at a time: the hooks push but never fetch or merge, so if two
+machines commit before pulling, every push from the second is rejected. The
+SessionStart hook says so as soon as it happens, and the fix is by hand:
+`git -C ~/.claude/projects --git-dir=$HOME/claude-memories.git pull --rebase`.
+
 ## Tests and tooling
 
 There's still no package and no build step — but there is a `Makefile`, so you
@@ -220,6 +272,7 @@ make ci          # everything CI runs
 make dolt-check  # verify this repo's own beads data is pushed
 make screenshots # regenerate the terminal images above
 make install     # symlink the scripts onto your PATH
+make install-claude  # symlink the Claude Code hooks into ~/.claude/hooks
 ```
 
 Dependencies resolve through `uv` into a throwaway environment, so nothing is

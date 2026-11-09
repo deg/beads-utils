@@ -96,6 +96,11 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
   `error: …`) and `bdutils.warn(msg)`. Never surface a raw traceback.
 - **Project path**: `bdutils.resolve_project_path(arg)` for the
   expanduser/resolve/`.beads/`-validation dance.
+- **Claude Code hooks**: bash, under `hooks/` rather than the repo root (shebang
+  discovery would otherwise put them through ruff and the `--version` smoke
+  test), installed by `make install-claude`, and tested as subprocesses with the
+  hook JSON on stdin against repos built under `tmp_path`. They may depend on
+  `jq`; their tests skip without it.
 
 If you add behavior or flags, update `README.md`, `CLAUDE.md` and the script's
 design notes under `.claude/rules/` to match, plus both files in
