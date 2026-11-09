@@ -284,7 +284,7 @@ def test_lint_targets_cover_every_python_file():
 # install-claude / uninstall-claude -- the hooks, into CLAUDE_HOME
 # --------------------------------------------------------------------------
 
-HOOK_COUNT = 2
+HOOK_COUNT = 4
 
 
 def test_install_claude_links_every_hook(tmp_path):
@@ -318,3 +318,13 @@ def test_uninstall_claude_removes_only_our_links(tmp_path):
 def test_install_claude_refuses_a_tilde_home(tmp_path):
     done = run_make("install-claude", "CLAUDE_HOME=~/nope", expect_ok=False)
     assert "cannot expand" in done.stdout
+
+
+def test_install_claude_refuses_without_jq(tmp_path):
+    """Hooks that cannot run are not installed; nothing is installed to fix that."""
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", f"PATH={empty}", expect_ok=False)
+    assert done.returncode != 0
+    assert "need jq" in done.stdout
+    assert not (tmp_path / "hooks").exists()

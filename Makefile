@@ -211,7 +211,14 @@ check-claude-home:
 	    "~"*) echo "error: cannot expand '$(CLAUDE_HOME)' — pass an absolute path"; exit 1;; \
 	esac
 
+# The hooks need jq, and claim-guard needs GNU timeout (gtimeout from Homebrew's
+# coreutils will do). Refuse to install hooks that could not run, as
+# claude-memory-setup refuses without jq; nothing is installed here, only checked.
 install-claude: check-claude-home ## Symlink the Claude Code hooks into CLAUDE_HOME/hooks (default ~/.claude/hooks)
+	@command -v jq >/dev/null 2>&1 || { \
+	    echo "error: the hooks need jq; install it first (brew install jq)"; exit 1; }
+	@{ command -v timeout || command -v gtimeout; } >/dev/null 2>&1 || { \
+	    echo "error: the hooks need timeout (GNU coreutils); install it first (brew install coreutils)"; exit 1; }
 	@for h in $(HOOKS); do \
 	    target="$(CLAUDE_HOME)/$$h"; \
 	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
@@ -223,7 +230,8 @@ install-claude: check-claude-home ## Symlink the Claude Code hooks into CLAUDE_H
 	    ln -sfn "$(CURDIR)/$$h" "$(CLAUDE_HOME)/$$h" || exit 1; \
 	done
 	@echo "Linked $(words $(HOOKS)) hooks into $(CLAUDE_HOME)/hooks"
-	@echo "note: hooks run only once wired into settings.json; see README, Keeping Claude Code memories"
+	@echo "note: hooks run only once wired into settings.json; see the README sections"
+	@echo "      'Guarding the beads workflow' and 'Keeping Claude Code memories'"
 
 # unlink, not rm: it takes exactly one path and cannot recurse, which is all
 # removing a symlink needs.

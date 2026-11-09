@@ -31,6 +31,7 @@ the clone itself on `PATH`; the scripts run in place either way.
 `make install-claude` is separate: it links the Claude Code hooks under
 `hooks/` into `~/.claude/hooks` (or `CLAUDE_HOME=...`), for the pieces that
 plug into Claude Code itself rather than run from a shell. See
+[Guarding the beads workflow](#guarding-the-beads-workflow) and
 [Keeping Claude Code memories](#keeping-claude-code-memories).
 
 ## Scripts
@@ -213,6 +214,28 @@ the one using it. Press `?` for its keys. It reads macOS's `nettop`, so it runs
 on macOS only.
 
 ![claude-traffic-monitor with sample sessions and traffic](docs/img/claude-traffic-monitor.png)
+
+### Guarding the beads workflow
+
+Two hooks hold the line the workflow depends on. `claim-guard.sh` runs
+before every Bash command: when the command claims a bead (`bd update <id>
+--claim`) while the git tree holds uncommitted work, it turns the claim into
+a permission prompt naming the dirty paths and the beads in progress. The
+rule is one bead, one commit, at the boundary, and claiming the next bead is
+the one deterministic step an agent takes on the way to breaking it. It
+asks rather than denies, because a dirty tree may be another agent's work.
+`defer-hint.sh` runs on every prompt and, when you ask to park a bead in
+your own words ("shelve that ticket"), injects a single line pointing the
+agent at `/defer`, because the failure mode is an agent that parks with `bd
+close` and loses the bead. Neither prints anything otherwise. Both need
+`jq`; install them with `make install-claude` and wire them in:
+
+```json
+"hooks": {
+  "PreToolUse":       [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/claim-guard.sh\""}]}],
+  "UserPromptSubmit": [{"matcher": "",     "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/defer-hint.sh\""}]}]
+}
+```
 
 ### Keeping Claude Code memories
 

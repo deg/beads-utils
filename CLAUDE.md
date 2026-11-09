@@ -129,10 +129,16 @@ does not sweep them into ruff and the `--version` smoke test), installed by
 `make install-claude` into `~/.claude/hooks` and wired into `settings.json` by
 hand:
 
+- `claim-guard.sh` (PreToolUse, matcher Bash) — a `bd update <id> --claim` on
+  a dirty git tree becomes a permission ask: one bead, one commit, at the
+  boundary. `.beads/` does not count as dirt.
+- `defer-hint.sh` (UserPromptSubmit) — one injected line pointing at `/defer`
+  when the prompt has both a park-ish verb and a task-ish noun.
 - `commit-memories.sh` (SessionEnd) — commits the memories repo, pushes if it
   has an upstream; fails closed when any non-memory path is visible.
 - `check-memories-pushed.sh` (SessionStart) — a `systemMessage` when a refusal
-  is recorded, there is no upstream, or commits sat unpushed for a day.
+  is recorded, a push was rejected, there is no upstream, or commits sat
+  unpushed for a day.
 
 Most scripts accept an optional project path argument (default: cwd) and print a
 user-facing summary to stdout / errors to stderr with non-zero exit on failure.
@@ -160,6 +166,7 @@ tests and costs nothing otherwise:
 |---|---|
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md`, `bd-find-live.md` | that script and its test file |
 | `claude-memory.md` | `claude-memory-check`, `claude-memory-setup`, the two memory hooks, their tests |
+| `hooks.md` | `hooks/claim-guard.sh`, `hooks/defer-hint.sh`, `tests/test_workflow_hooks.py` |
 | `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
@@ -245,7 +252,8 @@ and `bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt
 without it the beads check is `UNVERIFIABLE`, which fails there, though
 `bd-dolt-check` exits 0 on it. The `claude-session-*` scripts,
 `claude-sessions-review` and `claude-memory-check` need neither; `claude-memory-setup`
-and the two memory hooks need `git` and `jq` (the setup refuses to run without `jq`).
+and the hooks under `hooks/` need `git` and `jq` (the setup refuses to run without `jq`;
+`claim-guard.sh` also runs `bd`, and skips that part when `bd` or `timeout` is absent).
 `claude-traffic-monitor` is macOS-only: it reads macOS's `nettop` and draws with
 `curses`, so it needs a terminal.
 
