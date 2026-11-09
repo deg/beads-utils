@@ -101,6 +101,10 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
   test), installed by `make install-claude`, and tested as subprocesses with the
   hook JSON on stdin against repos built under `tmp_path`. They may depend on
   `jq`; their tests skip without it.
+- **Claude Code skills**: one directory each under `skills/<name>/SKILL.md`, with
+  frontmatter `name:` matching the directory and a `description:` Claude can
+  pick the skill by. Nothing personal: no home paths, no names, no client
+  projects. `tests/test_skills.py` checks the shape and the generic markers.
 
 If you add behavior or flags, update `README.md`, `CLAUDE.md` and the script's
 design notes under `.claude/rules/` to match, plus both files in

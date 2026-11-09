@@ -194,16 +194,18 @@ screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 ################################################################
 ## Claude Code integration
 ##
-## The hooks (and, from a later change, the skills) that make Claude Code
-## follow the beads workflow. Symlinked into CLAUDE_HOME (default ~/.claude)
-## exactly as `install` links scripts into PREFIX, with the same refusal to
-## replace anything that is not already a symlink. A separate target so that
-## someone who only wants the scripts never has ~/.claude touched. The hooks
-## still have to be wired into settings.json by hand; the README has the
-## snippet.
+## The skills and hooks that make Claude Code follow the beads workflow.
+## Symlinked into CLAUDE_HOME (default ~/.claude) exactly as `install` links
+## scripts into PREFIX, with the same refusal to replace anything that is not
+## already a symlink. A separate target so that someone who only wants the
+## scripts never has ~/.claude touched. The hooks still have to be wired into
+## settings.json by hand; the README has the snippet.
 
 CLAUDE_HOME ?= $(HOME)/.claude
 HOOKS := $(wildcard hooks/*.sh)
+# Each skill is a directory holding SKILL.md; the directory is what gets linked,
+# as ~/.claude/skills/<name>, so the skill answers to /<name> with no prefix.
+SKILLS := $(patsubst %/SKILL.md,%,$(wildcard skills/*/SKILL.md))
 
 check-claude-home:
 	@case "$(CLAUDE_HOME)" in \
@@ -214,22 +216,22 @@ check-claude-home:
 # The hooks need jq, and claim-guard needs GNU timeout (gtimeout from Homebrew's
 # coreutils will do). Refuse to install hooks that could not run, as
 # claude-memory-setup refuses without jq; nothing is installed here, only checked.
-install-claude: check-claude-home ## Symlink the Claude Code hooks into CLAUDE_HOME/hooks (default ~/.claude/hooks)
+install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HOME (default ~/.claude)
 	@command -v jq >/dev/null 2>&1 || { \
 	    echo "error: the hooks need jq; install it first (brew install jq)"; exit 1; }
 	@{ command -v timeout || command -v gtimeout; } >/dev/null 2>&1 || { \
 	    echo "error: the hooks need timeout (GNU coreutils); install it first (brew install coreutils)"; exit 1; }
-	@for h in $(HOOKS); do \
+	@for h in $(HOOKS) $(SKILLS); do \
 	    target="$(CLAUDE_HOME)/$$h"; \
 	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \
 	        echo "refusing to replace non-symlink: $$target"; exit 1; \
 	    fi; \
 	done
-	@mkdir -p "$(CLAUDE_HOME)/hooks"
-	@for h in $(HOOKS); do \
+	@mkdir -p "$(CLAUDE_HOME)/hooks" "$(CLAUDE_HOME)/skills"
+	@for h in $(HOOKS) $(SKILLS); do \
 	    ln -sfn "$(CURDIR)/$$h" "$(CLAUDE_HOME)/$$h" || exit 1; \
 	done
-	@echo "Linked $(words $(HOOKS)) hooks into $(CLAUDE_HOME)/hooks"
+	@echo "Linked $(words $(SKILLS)) skills and $(words $(HOOKS)) hooks into $(CLAUDE_HOME)"
 	@echo "note: hooks run only once wired into settings.json; see the README sections"
 	@echo "      'Guarding the beads workflow' and 'Keeping Claude Code memories'"
 
@@ -237,10 +239,10 @@ install-claude: check-claude-home ## Symlink the Claude Code hooks into CLAUDE_H
 # removing a symlink needs.
 uninstall-claude: check-claude-home ## Remove the links that 'make install-claude' created
 	@removed=0; failed=0; \
-	for target in "$(CLAUDE_HOME)"/hooks/*; do \
+	for target in "$(CLAUDE_HOME)"/hooks/* "$(CLAUDE_HOME)"/skills/*; do \
 	    [ -L "$$target" ] || continue; \
 	    case "$$(readlink "$$target")" in \
-	        "$(CURDIR)/hooks/"*) ;; \
+	        "$(CURDIR)/hooks/"*|"$(CURDIR)/skills/"*) ;; \
 	        *) continue;; \
 	    esac; \
 	    if unlink "$$target"; then \
@@ -249,7 +251,7 @@ uninstall-claude: check-claude-home ## Remove the links that 'make install-claud
 	        failed=$$((failed + 1)); \
 	    fi; \
 	done; \
-	echo "Removed $$removed symlink(s) from $(CLAUDE_HOME)/hooks"; \
+	echo "Removed $$removed symlink(s) from $(CLAUDE_HOME)"; \
 	if [ "$$failed" -ne 0 ]; then \
 	    echo "error: $$failed symlink(s) could not be removed"; exit 1; \
 	fi

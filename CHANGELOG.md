@@ -17,6 +17,8 @@
   * `--kind denied` shows what gets rejected or denied instead; `--json` carries every kind for scripts
 * [feature] Add `bd-find-live`, which lists the beads that are live work: open or in progress, minus those parked behind a deferred bead, naming what it left out
 * [feature] Add `claude-memory-check`, which finds broken `[[links]]`, bad or duplicate slugs and a stale `MEMORY.md` index in Claude Code memory directories
+* [feature] Add six Claude Code skills that carry a beads way of working, `/start-task`, `/finalize`, `/close-shop`, `/defer`, `/status` and `/changelog`, linked into `~/.claude/skills` by `make install-claude` so they answer to their bare names
+  * Each reads an optional extension file from `~/.claude/skill-extensions/` and then the project's `.claude/skill-extensions/`, user first, so standing permissions and project steps live outside the public skill
 * [feature] Add two Claude Code hooks for the beads workflow, installed by `make install-claude`: `claim-guard` turns a bead claim on a dirty git tree into a permission prompt (one bead, one commit), and `defer-hint` points the agent at `/defer` when you ask to park a bead in your own words
 * [feature] Version Claude Code's memory files in a git repo of their own: `claude-memory-setup` creates one or clones it onto a new machine, and two hooks commit at every session end and warn when commits are not reaching the remote
   * An allowlist `.gitignore` exposes only the memory files, and the commit hook refuses to commit if anything else becomes visible or more than twenty memories vanish at once

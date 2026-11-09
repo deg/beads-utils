@@ -39,8 +39,8 @@ Pushing (`git push` / `bd dolt push`) is the user's call, not the agent's. Commi
 ## What This Is
 
 A small collection of Python utility scripts that augment the **beads** (`bd`) issue
-tracker and its Dolt-backed storage, plus the Claude Code hooks under `hooks/` that
-plug into the agent itself. Each script sits at the repo root alongside a
+tracker and its Dolt-backed storage, plus the Claude Code skills under `skills/` and
+hooks under `hooks/` that plug into the agent itself. Each script sits at the repo root alongside a
 shared `bdutils.py` helper module — no package, no build step. Scripts run from the
 repo directory (Python's default `sys.path[0]` resolves the sibling `bdutils`
 import), or from anywhere via the symlinks `make install` puts in `PREFIX`, since
@@ -124,6 +124,14 @@ Shared helpers, both stdlib-only:
   `claude-sessions-review`, `claude-traffic-monitor`, `bd-complete`, and
   `bd-verify-backup` (which reads the project list in `~/.claude.json`).
 
+Claude Code skills, one directory each under `skills/<name>/SKILL.md`, linked
+by `make install-claude` into `~/.claude/skills/<name>` so each answers to
+`/<name>`: `start-task`, `finalize`, `close-shop`, `defer`, `status`,
+`changelog`. The first four read `~/.claude/skill-extensions/<name>.md` and
+then the project's `.claude/skill-extensions/<name>.md`. Why skills and not a
+plugin, and what was scrubbed from the dotfiles originals, is in
+`.claude/rules/skills.md`.
+
 Claude Code hooks, bash, under `hooks/` (a subdirectory, so shebang discovery
 does not sweep them into ruff and the `--version` smoke test), installed by
 `make install-claude` into `~/.claude/hooks` and wired into `settings.json` by
@@ -167,6 +175,7 @@ tests and costs nothing otherwise:
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md`, `bd-find-live.md` | that script and its test file |
 | `claude-memory.md` | `claude-memory-check`, `claude-memory-setup`, the two memory hooks, their tests |
 | `hooks.md` | `hooks/claim-guard.sh`, `hooks/defer-hint.sh`, `tests/test_workflow_hooks.py` |
+| `skills.md` | `skills/`, `tests/test_skills.py` |
 | `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
@@ -211,7 +220,7 @@ make ci                                       # exactly what CI runs
 make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
-make install-claude / uninstall-claude        # symlink hooks/ into ~/.claude (CLAUDE_HOME=)
+make install-claude / uninstall-claude        # symlink skills/ and hooks/ into ~/.claude (CLAUDE_HOME=)
 make screenshots                              # regenerate the README's terminal images
 make completions                              # the rc-file line for tab completion
 make outdated                                 # newer releases of the pinned tools

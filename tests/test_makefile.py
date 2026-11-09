@@ -281,18 +281,34 @@ def test_lint_targets_cover_every_python_file():
 
 
 # --------------------------------------------------------------------------
-# install-claude / uninstall-claude -- the hooks, into CLAUDE_HOME
+# install-claude / uninstall-claude -- the skills and hooks, into CLAUDE_HOME
 # --------------------------------------------------------------------------
 
 HOOK_COUNT = 4
+SKILL_COUNT = 6
 
 
-def test_install_claude_links_every_hook(tmp_path):
-    """Into CLAUDE_HOME/hooks, as symlinks back at this checkout's hooks/."""
+def test_install_claude_links_every_hook_and_skill(tmp_path):
+    """Hooks into CLAUDE_HOME/hooks, skill directories into CLAUDE_HOME/skills."""
     run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
-    links = sorted(p for p in (tmp_path / "hooks").iterdir() if p.is_symlink())
-    assert len(links) == HOOK_COUNT
-    assert all(Path(os.readlink(p)).parent == ROOT / "hooks" for p in links)
+    hooks = sorted(p for p in (tmp_path / "hooks").iterdir() if p.is_symlink())
+    skills = sorted(p for p in (tmp_path / "skills").iterdir() if p.is_symlink())
+    assert len(hooks) == HOOK_COUNT
+    assert len(skills) == SKILL_COUNT
+    assert all(Path(os.readlink(p)).parent == ROOT / "hooks" for p in hooks)
+    assert all(Path(os.readlink(p)).parent == ROOT / "skills" for p in skills)
+    assert all((p / "SKILL.md").is_file() for p in skills)  # the link resolves to the skill
+
+
+def test_install_claude_refuses_to_replace_a_real_skill(tmp_path):
+    """A hand-written ~/.claude/skills/finalize is the user's, not ours to replace."""
+    (tmp_path / "skills" / "finalize").mkdir(parents=True)
+    (tmp_path / "skills" / "finalize" / "SKILL.md").write_text("precious\n")
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", expect_ok=False)
+    assert done.returncode != 0
+    assert "refusing to replace non-symlink" in done.stdout
+    assert (tmp_path / "skills" / "finalize" / "SKILL.md").read_text() == "precious\n"
+    assert not (tmp_path / "hooks").exists()  # nothing linked at all
 
 
 def test_install_claude_refuses_to_replace_a_real_file(tmp_path):
@@ -310,9 +326,11 @@ def test_uninstall_claude_removes_only_our_links(tmp_path):
     run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
     (tmp_path / "hooks" / "theirs.sh").write_text("mine\n")
     (tmp_path / "hooks" / "foreign-link").symlink_to("/bin/echo")
+    (tmp_path / "skills" / "theirs").mkdir()
     done = run_make("uninstall-claude", f"CLAUDE_HOME={tmp_path}")
-    assert f"Removed {HOOK_COUNT} symlink(s)" in done.stdout
+    assert f"Removed {HOOK_COUNT + SKILL_COUNT} symlink(s)" in done.stdout
     assert sorted(p.name for p in (tmp_path / "hooks").iterdir()) == ["foreign-link", "theirs.sh"]
+    assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == ["theirs"]
 
 
 def test_install_claude_refuses_a_tilde_home(tmp_path):

@@ -28,9 +28,11 @@ your `PATH` (it says so if it isn't), and it won't set up tab completion —
 run `make completions` for that line. Or skip installing entirely and just put
 the clone itself on `PATH`; the scripts run in place either way.
 
-`make install-claude` is separate: it links the Claude Code hooks under
-`hooks/` into `~/.claude/hooks` (or `CLAUDE_HOME=...`), for the pieces that
-plug into Claude Code itself rather than run from a shell. See
+`make install-claude` is separate: it links the skills under `skills/` into
+`~/.claude/skills` and the hooks under `hooks/` into `~/.claude/hooks` (or
+under `CLAUDE_HOME=...`), for the pieces that plug into Claude Code itself
+rather than run from a shell. See
+[Running the beads workflow](#running-the-beads-workflow),
 [Guarding the beads workflow](#guarding-the-beads-workflow) and
 [Keeping Claude Code memories](#keeping-claude-code-memories).
 
@@ -215,6 +217,35 @@ on macOS only.
 
 ![claude-traffic-monitor with sample sessions and traffic](docs/img/claude-traffic-monitor.png)
 
+### Running the beads workflow
+
+Six Claude Code skills carry a way of working with beads that an agent
+otherwise has to be told every session. Once `make install-claude` has linked
+them into `~/.claude/skills`, they answer to their bare names:
+
+| Skill | Scope | When |
+|---|---|---|
+| `/start-task` | one task | Before any code: load the beads context, interview, create and claim a bead, read the affected files, propose a plan, wait for a go-ahead |
+| `/finalize` | one task | When a bead's work is done: self-review, tests, lint and test until clean, a senior review, a commit you approve, then `bd close`. Once per bead |
+| `/close-shop` | the session | Once, at the end: audit every standing memory and every open bead against what the session changed, correct what rotted, and only then record what was learned |
+| `/defer` | one bead | Park a bead without closing it, recording the gate for revisiting; never `bd close` to park |
+| `/status` | the project | A twenty-line orientation |
+| `/changelog` | the repo | A changelog entry for everything since the last tag, in the file's own style |
+
+If you already have commands of the same names under `~/.claude/commands/`,
+remove them: both would load. The one that is easy to skip and expensive to
+skip is `/close-shop`. Memories
+go false when your own work invalidates them, and nothing else ever re-reads
+them. Its audit uses `claude-memory-check` and `bd-find-live` from this repo.
+
+Four of the skills (`/start-task`, `/finalize`, `/defer`, `/close-shop`) read
+an **extension** file and follow it, from two places in order: your own
+`~/.claude/skill-extensions/<name>.md`, for conventions and standing
+permissions that hold in every project, then the project's
+`.claude/skill-extensions/<name>.md`, for its own steps (regenerate API types,
+always check a particular document). The skills themselves grant nothing:
+`/close-shop` asks before pushing unless your extension says it may.
+
 ### Guarding the beads workflow
 
 Two hooks hold the line the workflow depends on. `claim-guard.sh` runs
@@ -295,7 +326,7 @@ make ci          # everything CI runs
 make dolt-check  # verify this repo's own beads data is pushed
 make screenshots # regenerate the terminal images above
 make install     # symlink the scripts onto your PATH
-make install-claude  # symlink the Claude Code hooks into ~/.claude/hooks
+make install-claude  # symlink the skills and hooks into ~/.claude
 ```
 
 Dependencies resolve through `uv` into a throwaway environment, so nothing is
