@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""List the beads that are live work: open or in progress, and not parked.
+
+A bead is parked when its chain of blockers reaches a deferred bead. That is
+how a batch gate parks a group: each member is blocked on a deferred gate
+bead, or on a parent that is, and keeps status `open`. `bd list
+--status=open,in_progress` filters on status alone, so without this step
+every gated member looks like live work. A bead waiting on live work (an
+open or in_progress blocker) is not parked and stays in.
+
+Prints the live beads on stdout as a JSON array of `bd list --json` records,
+so `| wc -c` gives the open payload. `--lean` drops each bead's `notes` log
+and adds `notes_len` in its place: the listing an end-of-session audit hands
+its reviewer. The parked beads left out are named on stderr, so the
+exclusion is never silent.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from bdutils import add_version_arg, resolve_project_path, run_bd_json
+
+
+def bead_id(bead: dict) -> str:
+    """Id of a bead, normalized to '' when absent so it can't match anything."""
+    return bead.get("id") or ""
+
+
+def fetch(project_path: Path) -> tuple[list[dict], set[str], dict[str, list[str]]]:
+    """The candidate beads, the deferred ids, and each blocked bead's blockers.
+
+    Both `bd list` calls pass `--limit 0`, as bd-log and bd-complete do.
+    `bd list --help` documents a default limit of 50; its JSON output
+    ignored that in bd 1.3.2 (184 rows came back unasked), but nothing
+    promises it will keep doing so, and an audit must see every bead.
+    """
+    beads = run_bd_json(
+        project_path,
+        ["bd", "list", "--status=open,in_progress", "--limit", "0", "--json"],
+    )
+    deferred = run_bd_json(
+        project_path, ["bd", "list", "--status=deferred", "--limit", "0", "--json"],
+    )
+    blocked = run_bd_json(project_path, ["bd", "blocked", "--json"])
+    return (
+        beads,
+        {bead_id(b) for b in deferred},
+        {bead_id(b): list(b.get("blocked_by") or []) for b in blocked},
+    )
+
+
+def parked_ids(ids, deferred: set[str], blocked_by: dict[str, list[str]]) -> set[str]:
+    """The ids whose chain of blockers reaches a deferred bead.
+
+    A blocker that is itself blocked is followed, so a member gated through
+    its parent is parked too. A blocker that is merely open stops the walk:
+    waiting on live work is not parked.
+    """
+    # The memo assumes the graph is acyclic, which bd enforces (`bd dep add`
+    # refuses a cycle). On a cycle a verdict computed with part of the graph
+    # cut off would be cached as final; the `path` check only keeps the walk
+    # finite.
+    memo: dict[str, bool] = {}
+
+    def is_parked(bid: str, path: frozenset[str]) -> bool:
+        if bid not in memo:
+            memo[bid] = any(
+                blocker in deferred
+                or (blocker not in path and is_parked(blocker, path | {bid}))
+                for blocker in blocked_by.get(bid, [])
+            )
+        return memo[bid]
+
+    return {bid for bid in ids if is_parked(bid, frozenset())}
+
+
+def lean(bead: dict) -> dict:
+    """The bead without its notes log, carrying the log's length instead."""
+    notes = bead.get("notes") or ""
+    return {**{k: v for k, v in bead.items() if k != "notes"}, "notes_len": len(notes)}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="List the beads that are live work: open or in progress, and not parked.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  bd-find-live                     Live beads of the current project, as JSON\n"
+            "  bd-find-live --lean              The same without each bead's notes log\n"
+            "  bd-find-live | wc -c             The open payload, in bytes\n"
+            "\n"
+            "A bead is parked when its chain of blockers reaches a deferred bead; parked\n"
+            "beads are left out and named on stderr. Needs `bd` on PATH.\n"
+        ),
+    )
+    parser.add_argument(
+        "project", nargs="?", default=".",
+        help="path to a beads project (default: current directory)",
+    )
+    parser.add_argument(
+        "--lean", action="store_true",
+        help="drop each bead's notes log and add notes_len in its place",
+    )
+    add_version_arg(parser)
+    args = parser.parse_args()
+    project_path = resolve_project_path(args.project)
+
+    beads, deferred, blocked_by = fetch(project_path)
+    parked = parked_ids([bead_id(b) for b in beads], deferred, blocked_by)
+    live = [b for b in beads if bead_id(b) not in parked]
+    left_out = [b for b in beads if bead_id(b) in parked]
+    if args.lean:
+        live = [lean(b) for b in live]
+    json.dump(live, sys.stdout, indent=2, ensure_ascii=False)
+    print()
+
+    if left_out:
+        # Rendered as stdout renders a bead, so the two figures add up.
+        size = sum(len(json.dumps(b, indent=2, ensure_ascii=False).encode()) for b in left_out)
+        ids = " ".join(sorted(bead_id(b) for b in left_out))
+        print(
+            f"bd-find-live: left out {len(left_out)} parked beads ({size} bytes): {ids}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

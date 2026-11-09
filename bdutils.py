@@ -173,6 +173,38 @@ def run(cmd: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedP
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
 
 
+def run_bd_json(project_path: Path, cmd: list[str]):
+    """Run a 'bd <subcommand> ... --json' and return the parsed reply.
+
+    Shared so the failure handling of every bd query cannot drift apart --
+    it already did once inside bd-log, whose blocked_ids shipped without
+    the non-zero-exit and missing-binary tests run_bd_list had, which a
+    review caught only by noticing the asymmetry. It lived in bd-log until
+    bd-find-live needed the same thing (beads-utils-3bf.1). The subcommand
+    (cmd[1]) names itself in both error messages.
+
+    bd's own stderr is passed through before exiting, so the cause is
+    visible rather than replaced by a one-line summary. Empty output is
+    not an error: "no matching issues" is a valid answer from every bd
+    query that uses this.
+    """
+    label = cmd[1]
+    try:
+        result = subprocess.run(
+            cmd, cwd=project_path, capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        error("'bd' not found on PATH")
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+        error(f"bd {label} failed (exit {exc.returncode})")
+    try:
+        return json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as exc:
+        error(f"could not parse bd {label} JSON output: {exc}")
+
+
 @functools.cache
 def have_dolt() -> bool:
     """True if the `dolt` CLI is on PATH."""

@@ -294,6 +294,28 @@ _beads_claude_traffic_monitor() {
   # no positional args.
 }
 
+_beads_bd_find_live() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  if [[ $cur == -* ]]; then
+    __beads_flags "--lean --version -h --help"
+  else
+    __beads_dirs
+  fi
+}
+
+_beads_claude_memory_check() {
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
+  COMPREPLY=()
+  __beads_split_eq
+  if [[ $cur == -* ]]; then
+    __beads_flags "--version -h --help"
+  else
+    __beads_dirs
+  fi
+}
+
 _beads_claude_session_rename() {
   local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]}
   COMPREPLY=()
@@ -318,3 +340,5 @@ complete -F _beads_bd_verify_backup bd-verify-backup
 complete -F _beads_claude_session_find claude-session-find
 complete -F _beads_claude_session_rename claude-session-rename
 complete -F _beads_claude_traffic_monitor claude-traffic-monitor
+complete -F _beads_bd_find_live bd-find-live
+complete -F _beads_claude_memory_check claude-memory-check

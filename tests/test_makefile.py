@@ -41,7 +41,7 @@ pytestmark = [
     pytest.mark.skipif(not HAVE_MAKE, reason="make not installed"),
 ]
 
-SCRIPT_COUNT = 13
+SCRIPT_COUNT = 15
 
 
 def run_make(*args: str, expect_ok: bool = True) -> subprocess.CompletedProcess:

@@ -29,7 +29,7 @@ SCRIPTS = [
     "bd-complete", "bd-dolt-check", "bd-dolt-diff", "bd-export-csv",
     "bd-log", "bd-verify-backup", "bd-view", "claude-session-find", "claude-session-list",
     "claude-session-rename", "claude-session-report", "claude-sessions-review",
-    "claude-traffic-monitor",
+    "claude-traffic-monitor", "bd-find-live", "claude-memory-check",
 ]
 
 

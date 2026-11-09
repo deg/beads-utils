@@ -45,6 +45,8 @@ COMMANDS = [
     "claude-traffic-monitor",
     "claude-session-report",
     "claude-sessions-review",
+    "bd-find-live",
+    "claude-memory-check",
 ]
 
 ZSH_FILE = ROOT / "completions" / "beads-utils.zsh"

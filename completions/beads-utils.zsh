@@ -1,4 +1,4 @@
-#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup claude-session-find claude-session-list claude-session-rename claude-session-report claude-sessions-review claude-traffic-monitor
+#compdef bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup bd-find-live claude-session-find claude-session-list claude-session-rename claude-session-report claude-sessions-review claude-traffic-monitor claude-memory-check
 #
 # zsh tab completion for beads-utils.
 #
@@ -262,10 +262,24 @@ _beads_dispatch() {
       '1:session:__beads_sessions' \
       '2:title:'
     ;;
+  bd-find-live)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '--lean[drop the notes log of each bead and add notes_len in its place]' \
+      '1:project:_files -/'
+    ;;
+  claude-memory-check)
+    _arguments -s -S \
+      '(- *)--version[show version and exit]' \
+      '(- *)'{-h,--help}'[show help and exit]' \
+      '*:memory-dir:_files -/'
+    ;;
   esac
 }
 
 compdef _beads_dispatch \
   bd-view bd-log bd-export-csv bd-dolt-check bd-dolt-diff bd-verify-backup \
-  claude-session-find claude-session-list claude-session-rename \
-  claude-session-report claude-sessions-review claude-traffic-monitor
+  bd-find-live claude-session-find claude-session-list claude-session-rename \
+  claude-session-report claude-sessions-review claude-traffic-monitor \
+  claude-memory-check

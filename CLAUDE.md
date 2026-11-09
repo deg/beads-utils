@@ -76,6 +76,10 @@ Current scripts:
 - `bd-view` — Pretty-prints a single bead with rendered Markdown via `rich`,
   resolved through a `uv run --script` shebang; falls back to plain text
   without it. Takes an issue id.
+- `bd-find-live` — The beads that are live work, as JSON: open or in progress,
+  minus those parked behind a deferred bead (a chain of blockers that reaches
+  one). `--lean` swaps each notes log for `notes_len`. Names what it left out
+  on stderr. Feeds the `/close-shop` bead audit.
 - `claude-session-find` — Finds an old Claude Code session's UUID by grepping
   transcripts; current project by default, `-g` for all.
 - `claude-session-list` — Git-log-style listing of recent Claude Code
@@ -95,13 +99,18 @@ Current scripts:
   context size, images in context and the estimated upload of the next
   request, plus the busiest non-Claude processes. `top`-style keys (`?`
   lists them). macOS only (`nettop`). Needs a terminal.
+- `claude-memory-check` — Lints Claude Code memory directories (every
+  project's by default): broken `[[links]]` that were meant to resolve, bad or
+  duplicate `name:` slugs, and a `MEMORY.md` out of step with its directory are
+  errors (exit 1); links to memories not written yet are listed as pending.
 - `bd-complete` — Emits `value<TAB>description` completion candidates (`ids`,
   `sessions`); the single front door behind `completions/`.
 
 Shared helpers, both stdlib-only:
 
 - `bdutils.py` — `error()`, `warn()`, `resolve_project_path()`,
-  `format_ts()`, `format_priority()`, `paged_output()`, and color
+  `format_ts()`, `format_priority()`, `paged_output()`, `run_bd_json()` (the
+  `bd ... --json` runner `bd-log` and `bd-find-live` share), and color
   (`add_color_arg()`, `want_color()`, `paint()`), plus the git/Dolt plumbing
   (`dolt_sync_state()` and the `dolt_*` readers) that `bd-dolt-check`,
   `bd-dolt-diff` and `bd-verify-backup` share.
@@ -119,7 +128,8 @@ Claude session UUID, title substring, or `.jsonl` path; `claude-session-list`
 and `claude-sessions-review` take no positional args (current project
 unless `-g/--global`);
 `claude-session-rename` takes a session and a title; `claude-traffic-monitor`
-takes none (it watches the whole machine); `bd-complete`
+takes none (it watches the whole machine); `claude-memory-check` takes memory
+directories (default: every project's); `bd-complete`
 takes a candidate kind (`ids` or `sessions`).
 
 ## Design notes live in `.claude/rules/`
@@ -132,7 +142,8 @@ tests and costs nothing otherwise:
 
 | Rule file | Loads for |
 |---|---|
-| `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md` | that script and its test file |
+| `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md`, `bd-find-live.md` | that script and its test file |
+| `claude-memory.md` | `claude-memory-check` and its test file |
 | `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
@@ -211,12 +222,12 @@ renders in full, and nothing is said unless `--about` asked for memories.
 is `#!/usr/bin/env -S uv run --script` and PEP 723 inline metadata declares the
 `rich` + `markdown-it-py` deps, which uv resolves into a per-script cached venv
 (no global Python install touched). All other scripts are Python 3 stdlib only.
-`bd` itself is needed only by `bd-export-csv`, `bd-log`, `bd-view` and
-`bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt and
+`bd` itself is needed only by `bd-export-csv`, `bd-log`, `bd-find-live`, `bd-view`
+and `bd-complete`'s `ids`. `bd-dolt-check` and `bd-verify-backup` read git, Dolt and
 `.beads/` files directly. `bd-verify-backup` never runs `bd` and does need `dolt`:
 without it the beads check is `UNVERIFIABLE`, which fails there, though
-`bd-dolt-check` exits 0 on it. The `claude-session-*` scripts and
-`claude-sessions-review` need neither.
+`bd-dolt-check` exits 0 on it. The `claude-session-*` scripts,
+`claude-sessions-review` and `claude-memory-check` need neither.
 `claude-traffic-monitor` is macOS-only: it reads macOS's `nettop` and draws with
 `curses`, so it needs a terminal.
 

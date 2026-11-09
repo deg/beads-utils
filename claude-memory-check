@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Check the [[wikilinks]] and the index of Claude Code memory directories.
+
+Memories are markdown files carrying a frontmatter `name:` slug, and they
+cross-reference each other as [[name]]. Those links are the store's only
+adjacency -- nothing else would ever tell you that two memories cover one
+topic, or that one points at a memory that has been retired -- and nothing
+checked them, so they rotted silently: this was written after a link to a
+memory that never existed was found sitting in a store for months.
+
+With no argument, checks every ~/.claude/projects/*/memory/ directory.
+
+ERRORS (exit 1) are links that were MEANT to resolve and silently do not:
+the target exists under a different spelling, almost always hyphens vs
+underscores. Plus structural problems: a `name:` that is not kebab-case, two
+memories claiming one slug, and MEMORY.md disagreeing with the directory in
+either direction.
+
+PENDING (exit 0) are links matching nothing at all. Those are legitimate: the
+memory format says a [[name]] with no memory behind it yet "marks something
+worth writing later, not an error". They are listed so they stay visible, and
+never fail the run -- a checker that flags intended behavior is one nobody
+runs twice.
+
+KNOWN LIMITATION, stated so nobody trusts this further than it goes: it
+catches a link resolving to NOTHING. It cannot catch a link resolving to the
+WRONG memory.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import claudeutils
+from bdutils import add_version_arg, error
+
+KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+LINK = re.compile(r"\[\[([^\]]+)\]\]")
+INDEX_TARGET = re.compile(r"\]\(([^)]+\.md)\)")
+FRONTMATTER = re.compile(r"\A---\n(.*?)\n---", re.S)
+NAME = re.compile(r"^name: *(.+?)\s*$", re.M)
+
+
+def read(path: Path) -> str:
+    """The file's text; a byte that is not UTF-8 becomes U+FFFD, not a traceback."""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def frontmatter_name(text: str) -> str | None:
+    """The `name:` slug from the leading `---` block, or None.
+
+    Only the frontmatter counts: a `name:` in the body (a code sample, a
+    quoted file) is not this memory's slug. Surrounding quotes are dropped,
+    since `name: "a-b"` names the same memory as `name: a-b`.
+    """
+    block = FRONTMATTER.match(text)
+    if not block:
+        return None
+    m = NAME.search(block.group(1))
+    return m.group(1).strip("\"'") if m else None
+
+
+def variants(link: str) -> set[str]:
+    """Spellings a link may have been written as when it was meant to resolve."""
+    return {link, link.replace("_", "-"), link.replace("-", "_")}
+
+
+def check(mem_dir: Path) -> tuple[list[str], list[str]]:
+    """The (errors, pending) findings for one memory directory.
+
+    There is no early exit for a directory without memory files: MEMORY.md
+    can still list files that are gone, and that is exactly the state a
+    store is left in when its last memory is deleted but not unindexed.
+    """
+    files = [f for f in sorted(mem_dir.glob("*.md")) if f.name != "MEMORY.md"]
+    texts = {f: read(f) for f in files}
+
+    errors: list[str] = []
+    pending: list[str] = []
+    file_by_slug: dict[str, Path] = {}
+    slug_by_stem: dict[str, str] = {}
+
+    for f in files:
+        slug = frontmatter_name(texts[f])
+        if slug is None:
+            errors.append(f"{f.name}: no `name:` in frontmatter")
+            continue
+        if not KEBAB.match(slug):
+            errors.append(f"{f.name}: name `{slug}` is not kebab-case")
+        if slug in file_by_slug:
+            errors.append(f"{f.name}: name `{slug}` duplicates {file_by_slug[slug].name}")
+        file_by_slug[slug] = f
+        slug_by_stem[f.stem] = slug
+        slug_by_stem[f.stem.replace("_", "-")] = slug
+
+    # A link is "meant to resolve" if any spelling of it hits a real slug, or
+    # a filename stem (the file was renamed inside but not on disk, or the
+    # other way round). The suggestion is always a slug a file carries now;
+    # a slug hit outranks a stem hit, since the stem may be stale.
+    for f in files:
+        for link in LINK.findall(texts[f]):
+            if link in file_by_slug:
+                continue
+            spellings = variants(link)
+            near = sorted(spellings & set(file_by_slug)) or sorted(
+                slug_by_stem[s] for s in spellings if s in slug_by_stem
+            )
+            if near:
+                errors.append(f"{f.name}: [[{link}]] is broken -- did you mean [[{near[0]}]]?")
+            else:
+                pending.append(f"{f.name}: [[{link}]] has no memory yet")
+
+    index = mem_dir / "MEMORY.md"
+    if index.exists():
+        listed = set(INDEX_TARGET.findall(read(index)))
+        for target in sorted(listed):
+            if not (mem_dir / target).exists():
+                errors.append(f"MEMORY.md: links to {target}, which does not exist")
+        for f in files:
+            if f.name not in listed:
+                errors.append(f"MEMORY.md: no index line for {f.name}")
+    return errors, pending
+
+
+def default_dirs() -> list[Path]:
+    """Every project's memory directory, read through claudeutils' one binding."""
+    return sorted(claudeutils.CLAUDE_PROJECTS.glob("*/memory"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Check the [[wikilinks]] and MEMORY.md index of Claude Code memory directories.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  claude-memory-check                       Every ~/.claude/projects/*/memory/\n"
+            "  claude-memory-check <memory-dir>          One store, as /close-shop runs it\n"
+            "\n"
+            "ERROR lines (exit 1) are links meant to resolve that do not, bad or duplicate\n"
+            "name: slugs, and MEMORY.md out of step with the directory. pending lines\n"
+            "(exit 0) are links to memories not written yet, which the memory format\n"
+            "permits.\n"
+        ),
+    )
+    parser.add_argument(
+        "dirs", nargs="*", metavar="memory-dir",
+        help="memory directories to check (default: every project's)",
+    )
+    add_version_arg(parser)
+    args = parser.parse_args()
+
+    if args.dirs:
+        dirs = [Path(d).expanduser() for d in args.dirs]
+        for d in dirs:
+            if not d.is_dir():
+                error(f"no such directory: {d}")
+    else:
+        dirs = default_dirs()
+
+    total_errors = 0
+    for d in dirs:
+        errors, pending = check(d)
+        total_errors += len(errors)
+        if errors or pending:
+            print(f"\n{d}")
+        for e in errors:
+            print(f"  ERROR    {e}")
+        for p in pending:
+            print(f"  pending  {p}")
+
+    if total_errors:
+        print(f"\n{total_errors} broken link(s) or index problem(s).")
+        return 1
+    print("\nNo broken memory links.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

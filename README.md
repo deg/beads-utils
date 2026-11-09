@@ -37,12 +37,14 @@ the clone itself on `PATH`; the scripts run in place either way.
 | [`bd-verify-backup`](bd-verify-backup) | Check a repo is fully backed up — nothing uncommitted, every branch pushed, beads pushed; `-g` checks every beads repo on the machine |
 | [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state |
 | [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended (color-coded, auto-paged) |
+| [`bd-find-live`](bd-find-live) | List the beads that are live work — open or in progress, minus those parked behind a deferred bead — as JSON |
 | [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions |
 | [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) |
 | [`claude-session-rename`](claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session |
 | [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown |
 | [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript |
 | [`claude-sessions-review`](claude-sessions-review) | Find tool calls that fail the same way across many Claude Code sessions, ranked by how many sessions hit them |
+| [`claude-memory-check`](claude-memory-check) | Find broken `[[links]]`, bad slugs and a stale `MEMORY.md` index in Claude Code's memory directories |
 | [`claude-traffic-monitor`](claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) |
 | [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion |
 
@@ -101,6 +103,16 @@ whether it happened to a bead or to a memory — and both default to
 everything, so a plain `bd-log` now answers "what happened here" for
 both. This one part needs the `dolt` CLI; without it the bead half still
 works exactly as before.
+
+An end-of-session audit wants the beads that are still *live*, and status
+alone can't say which those are: a group parked behind a deferred gate
+bead keeps every member `open`. `bd-find-live` lists the open and
+in-progress beads minus the ones whose chain of blockers reaches a
+deferred bead, as the same JSON `bd list --json` gives, and names what it
+left out on stderr so the exclusion is never silent. `--lean` swaps each
+bead's notes log for its length, which is the listing to hand a reviewer,
+and `bd-find-live | wc -c` is the size of what is open: a number worth
+watching from one session to the next.
 
 Sometimes the right reading tool is a spreadsheet — sorting issues for a
 triage meeting, or sharing the list with someone who doesn't live in a
@@ -175,6 +187,14 @@ between actually stopped it, plus the values that recur (the same missing
 directory, the same unquoted glob) and recent examples with the failing command. That is the raw material for a new
 `CLAUDE.md` rule or memory. `--kind denied` shows what you or the auto-mode
 classifier keep refusing instead, and `--json` hands all of it to a script.
+
+Claude Code also keeps memory files per project, cross-referenced as
+`[[name]]` links and indexed by a `MEMORY.md`, and nothing checks them.
+`claude-memory-check` does: a link that was meant to resolve and doesn't
+(usually a hyphen where an underscore was), a slug that isn't kebab-case
+or is claimed twice, and an index that disagrees with its directory are
+errors; a link to a memory not written yet is listed but allowed, because
+the memory format uses those as markers for what to write next.
 
 The last one watches sessions that are running right now. On a metered or slow
 link, the question becomes what Claude is costing you in bytes.

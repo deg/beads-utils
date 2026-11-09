@@ -15,6 +15,8 @@
 * [feature] Add `claude-sessions-review`, which finds tool calls that fail the same way across many Claude Code sessions: raw material for new rules and memories
   * Ranked by how many sessions hit a pattern, not raw hits, with first and last dates seen and the values that recur
   * `--kind denied` shows what gets rejected or denied instead; `--json` carries every kind for scripts
+* [feature] Add `bd-find-live`, which lists the beads that are live work: open or in progress, minus those parked behind a deferred bead, naming what it left out
+* [feature] Add `claude-memory-check`, which finds broken `[[links]]`, bad or duplicate slugs and a stale `MEMORY.md` index in Claude Code memory directories
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`
@@ -22,6 +24,7 @@
 * [fix] `bd-dolt-check` looks for pushed beads on the repo's Dolt remote rather than its git origin, so a project whose beads live in a separate repository no longer reads as never pushed
 * [fix] `bd-dolt-check` says it could not check the remote when `git ls-remote` fails (offline, refused), instead of reporting the beads as never pushed
 * [fix] Stop telling server-mode users that `bd dolt commit` commits nothing — bd 1.3.0 fixed that, so `bd-dolt-check` now gives both modes the same remedy and keeps the `bd dolt stop` workaround as a note for older bd
+* [refactor] Move `bd-log`'s `bd ... --json` runner into `bdutils`, where `bd-find-live` shares it
 * [cleanup] Bring the README, `CLAUDE.md` and the PR template up to date with the scripts added since v0.4.0
 
 ## v0.4.0 (22Sep26)
