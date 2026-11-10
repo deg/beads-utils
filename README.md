@@ -4,10 +4,11 @@
 
 A small collection of Python CLI scripts that augment
 [`bd`](https://github.com/gastownhall/beads) (the beads issue
-tracker) and its Dolt-backed storage. No package, no build step —
-each script lives at the repo root alongside a shared `bdutils.py`
-helper and runs with `python3` (or `uv` for the one script that
-needs `rich`).
+tracker) and its Dolt-backed storage, plus the Claude Code skills and
+hooks that carry a beads way of working into the agent itself. No
+package, no build step — each script lives at the repo root alongside a
+shared `bdutils.py` helper and runs with `python3` (or `uv` for the one
+script that needs `rich`).
 
 ## Install
 
@@ -21,7 +22,9 @@ make install PREFIX=~/bin         # ...or wherever you keep them
 
 The symlinks point back at the clone, so the scripts still run from it — edit
 one and the change takes effect immediately, with no reinstall. Keep the clone
-around; `make uninstall` removes the links again.
+around; `make uninstall` removes the links again. Moving the clone leaves every
+link dangling and neither uninstall target can find them afterwards, so
+uninstall first if you relocate.
 
 Two things `make install` deliberately doesn't do: it won't put `PREFIX` on
 your `PATH` (it says so if it isn't), and it won't set up tab completion —
@@ -221,7 +224,9 @@ on macOS only.
 
 Six Claude Code skills carry a way of working with beads that an agent
 otherwise has to be told every session. Once `make install-claude` has linked
-them into `~/.claude/skills`, they answer to their bare names:
+them into `~/.claude/skills`, they answer to their bare names. They call
+`bd-find-live` and `claude-memory-check` from this repo by name, so run
+`make install` as well:
 
 | Skill | Scope | When |
 |---|---|---|
@@ -244,7 +249,11 @@ an **extension** file and follow it, from two places in order: your own
 permissions that hold in every project, then the project's
 `.claude/skill-extensions/<name>.md`, for its own steps (regenerate API types,
 always check a particular document). The skills themselves grant nothing:
-`/close-shop` asks before pushing unless your extension says it may.
+`/close-shop` asks before `git push` and `bd dolt push` unless your extension
+says it may. The one push it does not ask about is the memories repo's, made
+through the SessionEnd hook, which pushes whenever you have given that repo
+an upstream: the same push happens at the end of every session, and the
+upstream you configured is the consent for it.
 
 ### Guarding the beads workflow
 
@@ -304,12 +313,15 @@ commit and records why, because it pushes, and a transcript pushed is a
 transcript published. It also refuses to commit more than twenty deletions at
 once. `check-memories-pushed.sh` is the backstop at session start: it shows a
 recorded refusal, a missing upstream, or commits that have sat unpushed for a
-day, as a message to you rather than context for the agent. Recover a deleted
-memory with `git -C ~/.claude/projects --git-dir=$HOME/claude-memories.git log
--- <project>/memory/<file>.md`.
+day, as a message to you rather than context for the agent. To recover a deleted
+memory, find the deleting commit and take the file from its parent:
+`git -C ~/.claude/projects --git-dir=$HOME/claude-memories.git log
+--diff-filter=D -1 --format=%h -- <project>/memory/<file>.md`, then
+`checkout <that>^ -- <project>/memory/<file>.md` with the same prefix.
 
-The hooks need `jq`, and `claude-memory-setup` refuses to run without it. One
-machine writes at a time: the hooks push but never fetch or merge, so if two
+Make the remote **private**: memories routinely hold client names, paths and
+whatever else a session learned about your work. The hooks need `jq`, and
+`claude-memory-setup` refuses to run without it. One machine writes at a time: the hooks push but never fetch or merge, so if two
 machines commit before pulling, every push from the second is rejected. The
 SessionStart hook says so as soon as it happens, and the fix is by hand:
 `git -C ~/.claude/projects --git-dir=$HOME/claude-memories.git pull --rebase`.

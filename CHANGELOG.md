@@ -23,10 +23,12 @@
 * [feature] Version Claude Code's memory files in a git repo of their own: `claude-memory-setup` creates one or clones it onto a new machine, and two hooks commit at every session end and warn when commits are not reaching the remote
   * An allowlist `.gitignore` exposes only the memory files, and the commit hook refuses to commit if anything else becomes visible or more than twenty memories vanish at once
   * `make install-claude` / `uninstall-claude` link the hooks into `~/.claude/hooks`, separately from `make install`
+* [feature] `bd-verify-backup -g` reads extra repos to check from `$BD_VERIFY_EXTRA_REPOS` (colon-separated) instead of a built-in list
 * [feature] Cover the `Makefile` itself in the test suite, which nothing previously exercised
 * [feature] Put the scripts on your `PATH` with `make install`, which symlinks them into `PREFIX` (default `~/.local/bin`); `make uninstall` removes them again
 * [feature] Show what the tools actually print — the README now carries terminal screenshots, regenerated with `make screenshots`
   * `bd-verify-backup -g` and `claude-traffic-monitor` are shown on sample data, so the README shows nobody's real repos or sessions
+* [fix] `claude-memory-setup` refuses its first commit when a `.gitignore` already in place would expose a transcript, instead of committing and, on an empty remote, pushing it
 * [fix] `bd-dolt-check` looks for pushed beads on the repo's Dolt remote rather than its git origin, so a project whose beads live in a separate repository no longer reads as never pushed
 * [fix] `bd-dolt-check` says it could not check the remote when `git ls-remote` fails (offline, refused), instead of reporting the beads as never pushed
 * [fix] Stop telling server-mode users that `bd dolt commit` commits nothing — bd 1.3.0 fixed that, so `bd-dolt-check` now gives both modes the same remedy and keeps the `bd dolt stop` workaround as a note for older bd

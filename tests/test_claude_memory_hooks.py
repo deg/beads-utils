@@ -281,9 +281,17 @@ def test_a_clean_push_log_is_not_a_rejection(store):
     silent_ok(store.hook(CHECK))
 
 
-def test_no_upstream_is_reported(store):
+def test_an_origin_without_an_upstream_is_reported(store):
     store.git("branch", "--unset-upstream", "main")
-    assert "no upstream" in message(store.hook(CHECK))
+    m = message(store.hook(CHECK))
+    assert "no upstream" in m and "claude-memory-setup --remote" in m
+
+
+def test_a_local_only_repo_is_not_nagged(store):
+    """No origin at all is the local-only shape the setup tool offers; its summary said so once."""
+    store.git("branch", "--unset-upstream", "main")
+    store.git("remote", "remove", "origin")
+    silent_ok(store.hook(CHECK))
 
 
 def test_a_young_unpushed_commit_is_not_worth_a_warning(store):

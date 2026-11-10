@@ -88,7 +88,7 @@ with `.beads/metadata.json`:
 2. A scan of `~/Documents/*/*/` (`SCAN_GLOBS`). Added after the first
    inventory missed `degel-ai-server`, which has beads but had never had a
    Claude session started in it.
-3. `~/.emacs.d`, `~/bin`, `~/core-personal-files` (`EXTRA_REPOS`), the three
+3. `$BD_VERIFY_EXTRA_REPOS`, colon-separated, else `~/.emacs.d` and `~/bin` (`EXTRA_REPOS`), the
    the bd-upgrade inventory found outside `~/Documents`.
 
 No exclusion list, by the owner's choice: a dead or legacy store fails every

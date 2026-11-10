@@ -213,14 +213,17 @@ check-claude-home:
 	    "~"*) echo "error: cannot expand '$(CLAUDE_HOME)' — pass an absolute path"; exit 1;; \
 	esac
 
-# The hooks need jq, and claim-guard needs GNU timeout (gtimeout from Homebrew's
-# coreutils will do). Refuse to install hooks that could not run, as
-# claude-memory-setup refuses without jq; nothing is installed here, only checked.
+# The hooks need jq: refuse to install hooks that could not run, as
+# claude-memory-setup refuses without jq. GNU timeout (gtimeout from Homebrew's
+# coreutils will do) only lets claim-guard name the beads in progress, and the
+# hook degrades without it, so its absence is a note. Nothing is installed here.
 install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HOME (default ~/.claude)
 	@command -v jq >/dev/null 2>&1 || { \
 	    echo "error: the hooks need jq; install it first (brew install jq)"; exit 1; }
-	@{ command -v timeout || command -v gtimeout; } >/dev/null 2>&1 || { \
-	    echo "error: the hooks need timeout (GNU coreutils); install it first (brew install coreutils)"; exit 1; }
+	@{ command -v timeout || command -v gtimeout; } >/dev/null 2>&1 || \
+	    echo "note: GNU timeout not found (brew install coreutils); claim-guard will not name the beads in progress"
+	@command -v bd-find-live >/dev/null 2>&1 || \
+	    echo "note: bd-find-live is not on PATH; /close-shop needs it, so run 'make install' too"
 	@for h in $(HOOKS) $(SKILLS); do \
 	    target="$(CLAUDE_HOME)/$$h"; \
 	    if [ -e "$$target" ] && [ ! -L "$$target" ]; then \

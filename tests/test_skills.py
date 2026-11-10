@@ -111,5 +111,8 @@ def test_nothing_personal_is_in_the_public_text(path):
     scanned too; the first review found the private path quoted in one.
     """
     text = path.read_text()
-    for marker in ("core-personal-files", "/Users/", "~/CLAUDE.md", "David"):
-        assert marker not in text, f"{path.name}: {marker}"
+    # A home-relative repo path with a claude/ directory is the shape the
+    # private dotfiles had; the name itself is deliberately not written here.
+    for marker in (r"~/[A-Za-z0-9._-]+/claude/", r"/Users/", r"~/CLAUDE\.md", r"\bDavid\b"):
+        m = re.search(marker, text)
+        assert not m, f"{path.name}: {m.group(0)}"

@@ -27,9 +27,19 @@ from bdutils import (
 from claudeutils import claude_project_paths
 
 # Beads repos outside anything Claude Code has recorded or the scan below
-# reaches. Listed in the bd-upgrade inventory (2026-09-22) as the three that
-# a `find ~/Documents` missed.
-EXTRA_REPOS = ("~/.emacs.d", "~/bin", "~/core-personal-files")
+# reaches: the ones a `find ~/Documents` misses. The owner's private dotfiles
+# repo was in the built-in list until 2026-11; a public script should not
+# name it, so the list is now the colon-separated $BD_VERIFY_EXTRA_REPOS when
+# set (shell-style `~` allowed), else these two.
+DEFAULT_EXTRA_REPOS = "~/.emacs.d:~/bin"
+
+
+def extra_repos(value: str | None) -> tuple[str, ...]:
+    """The repos named in $BD_VERIFY_EXTRA_REPOS; unset means the default, empty means none."""
+    return tuple(p for p in (DEFAULT_EXTRA_REPOS if value is None else value).split(":") if p)
+
+
+EXTRA_REPOS = extra_repos(os.environ.get("BD_VERIFY_EXTRA_REPOS"))
 
 # Projects live one level down (`degel/<repo>`, `hba/<repo>`). The scan is
 # what catches a repo no Claude session has run in: degel-ai-server, when
@@ -334,8 +344,9 @@ def main() -> int:
             "  bd-verify-backup -g          Check every beads repo on this machine\n"
             "\n"
             "--global finds repos in ~/.claude.json's projects, in ~/Documents/*/*/,\n"
-            "and in ~/.emacs.d, ~/bin and ~/core-personal-files: any that has\n"
-            ".beads/metadata.json. Exit status is 1 if anything is not backed up.\n"
+            "and in $BD_VERIFY_EXTRA_REPOS (colon-separated; default ~/.emacs.d:~/bin):\n"
+            "any that has .beads/metadata.json. Exit status is 1 if anything is not\n"
+            "backed up.\n"
             "\n"
             "A branch whose upstream is gone but whose commits are all on a remote\n"
             "(a merged PR's leftover) passes, and the detailed view lists it as\n"

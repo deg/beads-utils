@@ -349,3 +349,15 @@ def test_branches_cell_summarizes_long_lists():
         ("c", "5 commits not pushed"), ("d", "no upstream"), ("e", "no upstream"),
         ("f", "upstream origin/f is gone, 2 commits on no remote")])
     assert bvb.branches_cell(rep) == "a +1, b +2, 1 more ahead, 2 no upstream, 1 gone"
+
+
+def test_extra_repos_come_from_the_environment():
+    """A public script must not carry a built-in list of one person's repos.
+
+    Unset means the generic default; set means exactly what is named; empty
+    means none, for someone with no repos outside the scanned places.
+    """
+    assert bvb.extra_repos(None) == ("~/.emacs.d", "~/bin")
+    assert bvb.extra_repos("~/x:~/y") == ("~/x", "~/y")
+    assert bvb.extra_repos("") == ()
+    assert bvb.extra_repos("~/x::~/y:") == ("~/x", "~/y")

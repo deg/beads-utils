@@ -50,7 +50,11 @@ carried the owner's standing permission to push beads data and memory
 commits without asking. A public skill cannot grant that, so it now says
 "pushing is the user's call" and defers to the user's extension, where the
 owner's carve-out lives. `tests/test_skills.py` holds the line: the public
-`/close-shop` contains no "carve-out" and no "need no approval".
+`/close-shop` grants itself nothing. The one push it makes without asking is
+the memories repo's, through `commit-memories.sh`: that is the push the
+SessionEnd hook makes anyway whenever the repo has an upstream, so the
+upstream the user configured is the consent, and the skill says so rather
+than pretending it never pushes.
 
 ## What was scrubbed, and what deliberately was not
 

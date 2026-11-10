@@ -182,8 +182,9 @@ To recover a deleted Claude Code memory from the memories repo:
 
 ```sh
 G=${CLAUDE_MEMORIES_GIT:-$HOME/claude-memories.git}
-git -C ~/.claude/projects --git-dir=$G log --oneline -- <slug>/memory/<file>.md   # last commit holding it
-git -C ~/.claude/projects --git-dir=$G checkout <commit> -- <slug>/memory/<file>.md
+P=<slug>/memory/<file>.md
+d=$(git -C ~/.claude/projects --git-dir=$G log --diff-filter=D -1 --format=%h -- "$P")   # the deleting commit
+git -C ~/.claude/projects --git-dir=$G checkout "$d^" -- "$P"                         # the file as of its parent
 ```
 
 To recover a forgotten beads memory, read the `config` table at the commit before the
@@ -335,8 +336,10 @@ beads explicitly; "the fix we discussed" means nothing to your successor.
   (`~/.claude/hooks/commit-memories.sh`) would snapshot them anyway, but its message is
   generic; this is the one commit that can say *why* a memory changed. Call the hook script
   with the message, so the commit goes through the same fail-closed guard as the automatic
-  one (a bare `git add` would bypass it). It commits to the memories repo, and pushes only
-  if the user has given the branch an upstream; report whether it did:
+  one (a bare `git add` would bypass it). It commits to the memories repo and, if the
+  branch has an upstream, pushes: the same push the SessionEnd hook makes at the end of
+  every session, so the upstream the user configured is the consent for it. Report whether
+  it pushed:
 
   ```sh
   bash ~/.claude/hooks/commit-memories.sh \

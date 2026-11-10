@@ -7,8 +7,9 @@
 # push rejected because another machine pushed first. This is the backstop. It checks
 # only local state, so it costs nothing offline. It reports the first of, in order: no
 # repo, a guard refusal (repeated at every session end until fixed, so shown at once), a
-# rejected push (same: it repeats until someone pulls), no upstream (so nothing is ever
-# pushed), and commits unpushed for over a day. A younger commit is not worth a warning,
+# rejected push (same: it repeats until someone pulls), an origin with no upstream (so
+# nothing is ever pushed; no origin at all is the local-only shape and stays quiet), and
+# commits unpushed for over a day. A younger commit is not worth a warning,
 # since the next session end retries it; @{upstream} moves only when a push succeeds.
 #
 # Output is a systemMessage, shown to the user, not context for the agent. Needs jq,
@@ -25,8 +26,12 @@ INSPECT="git -C $WORKTREE --git-dir=$GITDIR"
   say "the SessionEnd hook refused to commit: $(cat "$GITDIR/last-refusal"). Inspect: $INSPECT status -uall"
 [ -f "$GITDIR/last-push.log" ] && grep -q -E 'rejected|non-fast-forward|fetch first' "$GITDIR/last-push.log" &&
   say "the last push was rejected: another machine pushed first. Fix by hand: $INSPECT pull --rebase, then $INSPECT push. Log: $GITDIR/last-push.log"
+# A repo with no origin at all is the local-only shape claude-memory-setup offers, and its
+# summary already said nothing will be pushed; nagging every session would only teach the
+# user to ignore this hook. An origin without an upstream is a half-finished setup.
+git remote get-url origin >/dev/null 2>&1 || exit 0
 git rev-parse -q --verify '@{upstream}' >/dev/null 2>&1 ||
-  say "main has no upstream, so nothing is pushed. Fix: $INSPECT branch -u origin/main main"
+  say "main has no upstream, so nothing is pushed. Fix: $INSPECT branch -u origin/main main, or rerun claude-memory-setup --remote <url>"
 
 OLDEST=$(git log --reverse --format=%ct '@{upstream}..HEAD' 2>/dev/null | head -1)
 [ -n "$OLDEST" ] || exit 0

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -201,10 +202,34 @@ def pin_head(repo: Repo) -> None:
     repo.run("symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
 
 
+MEMORY_FILE = re.compile(r"^[^/]+/memory/[^/]+\.md$")
+
+
+def exposed_paths(repo: Repo) -> list[str]:
+    """Visible paths that are not memory files (nor the allowlist itself).
+
+    The same rule commit-memories.sh enforces at every session end. Here it
+    guards the first commit, which is the one the hook never sees: a
+    permissive .gitignore already in place (even an empty one) would
+    otherwise put every transcript into it, and the empty-remote path
+    pushes that commit at once.
+    """
+    out = repo.out("status", "--porcelain", "-z", "-uall")
+    paths = [entry[3:] for entry in out.split("\0") if len(entry) > 3]
+    return [p for p in paths if p != ".gitignore" and not MEMORY_FILE.match(p)]
+
+
 def first_commit(repo: Repo) -> None:
     """Commit the allowlist and whatever memories already exist, once."""
     if repo.has("rev-parse", "-q", "--verify", "HEAD"):
         return
+    exposed = exposed_paths(repo)
+    if exposed:
+        shown = ", ".join(exposed[:3]) + (", ..." if len(exposed) > 3 else "")
+        error(
+            f"refusing the first commit: {len(exposed)} path(s) visible to git are not memory "
+            f"files ({shown}); the allowlist {repo.work_tree / '.gitignore'} is not hiding them"
+        )
     repo.run("add", "-A")
     repo.run("commit", "-q", "-m", "Start versioning Claude Code memories")
     print("Made the first commit")
@@ -269,6 +294,8 @@ def main() -> int:
             "Rerunnable. Then `make install-claude` and wire hooks/commit-memories.sh\n"
             "(SessionEnd) and hooks/check-memories-pushed.sh (SessionStart) into\n"
             "settings.json; the README has the snippet. Needs git and jq.\n"
+            "\n"
+            "Make the remote PRIVATE: memories routinely hold client names and paths.\n"
         ),
     )
     parser.add_argument(

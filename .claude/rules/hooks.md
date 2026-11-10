@@ -16,8 +16,7 @@ Both hooks are bash under `hooks/`, installed by `make install-claude`,
 wired into `settings.json` by hand (the README has the snippet), and built
 to be **silent almost always**: a hook that fires on ordinary commands or
 ordinary English costs context in every session. Both need `jq`. They moved
-here from the owner's dotfiles (beads-utils-3bf.3; their last change
-there was 9af4744).
+here from the owner's private dotfiles (beads-utils-3bf.3).
 
 ## claim-guard.sh (PreToolUse, matcher Bash)
 

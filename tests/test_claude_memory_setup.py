@@ -248,6 +248,40 @@ def test_an_empty_remote_receives_the_first_commit(tmp_path, env):
     assert git(git_dir, "ls-files", cwd=projects, env=env).splitlines() == [".gitignore", "p1/memory/a.md"]
 
 
+def test_the_first_commit_refuses_when_the_allowlist_exposes_a_transcript(tmp_path, env):
+    """A permissive .gitignore already in place must not put transcripts in the first commit.
+
+    The hook guards every later commit; this is the one commit it never sees,
+    and on the empty-remote path it would be pushed at once.
+    """
+    projects, git_dir, bare = tmp_path / "projects", tmp_path / "mem.git", tmp_path / "empty.git"
+    subprocess.check_call(["git", "init", "-q", "--bare", str(bare)], env=env)
+    projects.mkdir()
+    (projects / ".gitignore").write_text("")  # hides nothing
+    memory(projects, "p1", "a")
+    # Under a memory directory on purpose: a loose "contains /memory/" rule would pass it.
+    (projects / "p1" / "memory" / "sub").mkdir()
+    (projects / "p1" / "memory" / "sub" / "t.jsonl").write_text("everything ever pasted\n")
+    done = setup(env, "--remote", str(bare), "--git-dir", str(git_dir), "--projects", str(projects),
+                 expect_ok=False)
+    assert done.returncode != 0
+    assert "refusing the first commit" in done.stderr and "p1/memory/sub/t.jsonl" in done.stderr
+    assert subprocess.run(["git", f"--git-dir={git_dir}", "rev-parse", "-q", "--verify", "HEAD"],
+                          capture_output=True, env=env).returncode != 0  # no commit
+    assert subprocess.run(["git", f"--git-dir={bare}", "rev-parse", "-q", "--verify", "main"],
+                          capture_output=True, env=env).returncode != 0  # nothing pushed
+
+
+def test_the_first_commit_accepts_an_allowlist_edit_and_memories_only(tmp_path, env):
+    projects, git_dir = tmp_path / "projects", tmp_path / "mem.git"
+    projects.mkdir()
+    (projects / ".gitignore").write_text("# mine\n*\n!*/\n!/*/memory/*.md\n!/.gitignore\n")
+    memory(projects, "p1", "a")
+    (projects / "p1" / "t.jsonl").write_text("hidden by the allowlist\n")
+    setup(env, "--git-dir", str(git_dir), "--projects", str(projects))
+    assert git(git_dir, "ls-files", cwd=projects, env=env).splitlines() == [".gitignore", "p1/memory/a.md"]
+
+
 def test_an_unreachable_remote_is_an_error_not_a_traceback(tmp_path, env):
     done = setup(
         env, "--remote", str(tmp_path / "nowhere.git"),
