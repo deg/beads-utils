@@ -22,6 +22,6 @@
 - [ ] Followed the conventions in [`CLAUDE.md`](../CLAUDE.md) (shebang,
       stdlib-only `bdutils`, argparse, `bdutils.error`/`warn`, `--version` via
       `add_version_arg`)
-- [ ] Updated `README.md`, `CLAUDE.md` and the script's `.claude/rules/` file
+- [ ] Updated the script's `docs/` page, the README table, `CLAUDE.md` and the script's `.claude/rules/` file
       if behavior or flags changed, plus both `completions/` files for a flag
 - [ ] Added a bullet under `## Unreleased` in `CHANGELOG.md`

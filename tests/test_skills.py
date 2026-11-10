@@ -100,6 +100,7 @@ PUBLIC_TEXT = sorted(
     [p for p in SKILLS_DIR.glob("*/SKILL.md")]
     + [ROOT / ".claude" / "rules" / r for r in PORTED_RULES]
     + [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / "CONTRIBUTING.md"]
+    + list((ROOT / "docs").glob("*.md"))
 )
 
 

@@ -192,7 +192,7 @@ session needs. Each script's rule file ends with its manual checks.
 ## Shell completion
 
 `completions/beads-utils.zsh` and `completions/beads-utils.bash` provide tab
-completion (sourced from the user's rc file; see `README.md`). They are pure
+completion (sourced from the user's rc file; see `docs/development.md`). They are pure
 glue — `compdef`/`complete` wiring plus per-command flag lists transcribed
 from each script's `argparse` — and route every *dynamic* lookup through
 `bd-complete`, so enumeration logic is never duplicated across the two shells.
@@ -221,7 +221,7 @@ make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
 make install-claude / uninstall-claude        # symlink skills/ and hooks/ into ~/.claude (CLAUDE_HOME=)
-make screenshots                              # regenerate the README's terminal images
+make screenshots                              # regenerate the docs pages' terminal images
 make completions                              # the rc-file line for tab completion
 make outdated                                 # newer releases of the pinned tools
 ```

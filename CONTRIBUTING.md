@@ -106,9 +106,11 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
   pick the skill by. Nothing personal: no home paths, no names, no client
   projects. `tests/test_skills.py` checks the shape and the generic markers.
 
-If you add behavior or flags, update `README.md`, `CLAUDE.md` and the script's
-design notes under `.claude/rules/` to match, plus both files in
-`completions/` for a flag (`tests/test_completions.py` fails if they drift).
+If you add behavior or flags, update the script's page under `docs/` (and the
+README's table row), `CLAUDE.md` and the script's design notes under
+`.claude/rules/` to match, plus both files in `completions/` for a flag
+(`tests/test_completions.py` fails if they drift; `tests/test_docs_links.py`
+fails if a link or anchor does).
 
 ## Releases
 

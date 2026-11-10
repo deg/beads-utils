@@ -34,6 +34,7 @@
 * [fix] Stop telling server-mode users that `bd dolt commit` commits nothing — bd 1.3.0 fixed that, so `bd-dolt-check` now gives both modes the same remedy and keeps the `bd dolt stop` workaround as a note for older bd
 * [refactor] Move `bd-log`'s `bd ... --json` runner into `bdutils`, where `bd-find-live` shares it
 * [cleanup] Bring the README, `CLAUDE.md` and the PR template up to date with the scripts added since v0.4.0
+* [cleanup] Make the README a front page (why, install, an index of scripts and skills) and move the prose to `docs/` pages; a test checks every link and anchor
 
 ## v0.4.0 (22Sep26)
 
