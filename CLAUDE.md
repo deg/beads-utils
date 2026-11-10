@@ -212,9 +212,9 @@ every routine command, so neither a returning maintainer nor CI has to recall
 an invocation. `make help` lists all of it; `make` alone shows that help.
 
 ```bash
-make test                                     # the suite (rich installed, nothing skips)
+make test                                     # the suite (rich installed; nothing skips if jq and GNU timeout are present)
 make test PYTEST_ARGS='tests/test_bd_log.py -k SelectSubtreesBranches'
-make test-minimal                             # without rich: 3 skips, no failures
+make test-minimal                             # without rich: 3 more skips, no failures
 make check                                    # ruff + a --version smoke test of each script
 make ci                                       # exactly what CI runs
 make coverage                                 # suite + htmlcov/
