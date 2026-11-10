@@ -202,6 +202,9 @@ screenshots: ## Regenerate the README's terminal screenshots into docs/img/
 ## settings.json by hand; the README has the snippet.
 
 CLAUDE_HOME ?= $(HOME)/.claude
+# Set DOCTOR_RUN=echo to see the install commands the doctor would run, without running them.
+DOCTOR_RUN ?=
+DOCTOR_ARGS = $(if $(DOCTOR_RUN),--run "$(DOCTOR_RUN)",)
 HOOKS := $(wildcard hooks/*.sh)
 # Each skill is a directory holding SKILL.md; the directory is what gets linked,
 # as ~/.claude/skills/<name>, so the skill answers to /<name> with no prefix.
@@ -213,15 +216,12 @@ check-claude-home:
 	    "~"*) echo "error: cannot expand '$(CLAUDE_HOME)' — pass an absolute path"; exit 1;; \
 	esac
 
-# The hooks need jq: refuse to install hooks that could not run, as
-# claude-memory-setup refuses without jq. GNU timeout (gtimeout from Homebrew's
-# coreutils will do) only lets claim-guard name the beads in progress, and the
-# hook degrades without it, so its absence is a note. Nothing is installed here.
+# The hooks need jq and claim-guard likes GNU timeout: tools/doctor.py reports
+# both and, on a terminal, offers to install them. jq declined means the hooks
+# could not run, so the doctor exits 1 and nothing is linked. The check comes
+# first so a refusal is not a half-install.
 install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HOME (default ~/.claude)
-	@command -v jq >/dev/null 2>&1 || { \
-	    echo "error: the hooks need jq; install it first (brew install jq)"; exit 1; }
-	@{ command -v timeout || command -v gtimeout; } >/dev/null 2>&1 || \
-	    echo "note: GNU timeout not found (brew install coreutils); claim-guard will not name the beads in progress"
+	@python3 tools/doctor.py --for install-claude --offer $(DOCTOR_ARGS)
 	@command -v bd-find-live >/dev/null 2>&1 || \
 	    echo "note: bd-find-live is not on PATH; /close-shop needs it, so run 'make install' too"
 	@for h in $(HOOKS) $(SKILLS); do \
@@ -274,6 +274,9 @@ uninstall-claude: check-claude-home ## Remove the links that 'make install-claud
 ##
 ## This does NOT put PREFIX on your PATH, and it does not install shell
 ## completion. Both remain your shell's business; see `make completions`.
+## It does check for the tools the scripts need (tools/doctor.py) and, on a
+## terminal, offers to install each missing one; nothing in the global
+## environment changes without a yes at that prompt.
 
 # `~user`, `~+` and `~-` are deliberately refused rather than expanded: make
 # has no way to look up another user's home, and guessing would recreate the
@@ -300,6 +303,7 @@ install: check-prefix ## Symlink every script into PREFIX (default ~/.local/bin)
 	    *":$(PREFIX):"*) ;; \
 	    *) echo "note: $(PREFIX) is not on your PATH";; \
 	esac
+	@python3 tools/doctor.py --for install --offer $(DOCTOR_ARGS)
 
 # Scans PREFIX for links back into this clone rather than iterating SCRIPTS,
 # which is only the scripts that exist *now*: a script renamed or dropped
@@ -351,6 +355,13 @@ outdated: ## Report newer releases of the pinned tools
 	@echo "❗ pytest: pinned $(PYTEST_VERSION), latest $$($(UV_RUN) --with pytest \
 		python -c 'import pytest; print(pytest.__version__)' 2>/dev/null)"
 
+# tools/doctor.py reports the tools the scripts and hooks need and, on a terminal,
+# offers to install each missing one; nothing is installed without a yes, and a
+# pipe or CI gets the report alone. DOCTOR_RUN=echo makes it print the install
+# commands instead of running them, which is how the tests exercise the offers.
+doctor: ## Report which tools the scripts and hooks need are present, and offer to install the rest
+	@python3 tools/doctor.py --offer $(DOCTOR_ARGS)
+
 tags: ## Build an etags TAGS file over the scripts and modules
 	@command -v etags >/dev/null || { echo "❌ etags not found"; exit 1; }
 	@etags $(SCRIPTS) *.py tests/*.py
@@ -363,4 +374,4 @@ clean: ## Remove caches and generated reports
 	@find . -name '*.pyc' -delete 2>/dev/null || true
 	@echo "🧹 Clean complete."
 
-.PHONY: version completions outdated tags clean
+.PHONY: version completions doctor outdated tags clean

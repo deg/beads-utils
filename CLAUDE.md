@@ -221,6 +221,7 @@ make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
 make install-claude / uninstall-claude        # symlink skills/ and hooks/ into ~/.claude (CLAUDE_HOME=)
+make doctor                                   # which tools are present; offers to install the missing ones
 make screenshots                              # regenerate the docs pages' terminal images
 make completions                              # the rc-file line for tab completion
 make outdated                                 # newer releases of the pinned tools
@@ -304,7 +305,9 @@ and the hooks under `hooks/` need `git` and `jq` (the setup refuses to run witho
   for calls that must succeed; tolerate empty/missing output where it's a valid state.
 - **No config files, no state** beyond what `bd` / Dolt already manage under `.beads/`.
   The one exception is the memories repo `claude-memory-setup` creates at the user's
-  explicit request, outside any project.
+  explicit request, outside any project. Nothing changes in the global environment
+  without a yes: `tools/doctor.py` reports missing tools and offers to install them
+  on a terminal, and never installs from a pipe.
 
 ## Releases
 

@@ -33,4 +33,9 @@ invoke `make test` or `make ci` (that recurses), and always pass an explicit
 `~/.local/bin`. The same goes for `CLAUDE_HOME` and the `install-claude` tests,
 which would otherwise link into the real `~/.claude/hooks`. `uninstall-claude`
 removes with `unlink` rather than `rm -f`: one path, no recursion, which is all a
-symlink needs.
+symlink needs. `make doctor`, `install` and `install-claude` run `tools/doctor.py`, which reports
+the tools and, on a terminal, offers to install each missing one; it never prompts
+a pipe, so CI and the tests get the report alone, and `DOCTOR_RUN=echo` makes it
+print an install command instead of running it. `--for install-claude` exits 1 when
+jq is still missing, and that target runs it before linking so a refusal is not a
+half-install. The tests put only `python3` on `PATH` to make every other tool missing.

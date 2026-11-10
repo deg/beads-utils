@@ -13,6 +13,7 @@ make dolt-check  # verify this repo's own beads data is pushed
 make screenshots # regenerate the terminal images in docs/img
 make install     # symlink the scripts onto your PATH
 make install-claude  # symlink the skills and hooks into ~/.claude
+make doctor      # which tools are present; offers to install the missing ones
 ```
 
 Dependencies resolve through `uv` into a throwaway environment, so nothing is

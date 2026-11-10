@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -339,10 +340,20 @@ def test_install_claude_refuses_a_tilde_home(tmp_path):
 
 
 def test_install_claude_refuses_without_jq(tmp_path):
-    """Hooks that cannot run are not installed; nothing is installed to fix that."""
-    empty = tmp_path / "bin"
-    empty.mkdir()
-    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", f"PATH={empty}", expect_ok=False)
+    """Hooks that cannot run are not installed; from a pipe nothing is offered either."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python3").symlink_to(sys.executable)   # the doctor itself needs python3
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", f"PATH={bin_dir}", "DOCTOR_RUN=echo",
+                    expect_ok=False)
     assert done.returncode != 0
-    assert "need jq" in done.stdout
+    assert "the hooks need jq; nothing was linked" in done.stdout
+    assert "Install " not in done.stdout   # a pipe is never prompted
     assert not (tmp_path / "hooks").exists()
+
+
+def test_install_runs_the_doctor_for_the_scripts_tools(tmp_path):
+    done = run_make("install", f"PREFIX={tmp_path}", "DOCTOR_RUN=echo")
+    assert "Required:" in done.stdout and "python3" in done.stdout
+    assert "jq" not in done.stdout   # jq is the hooks' concern, not the scripts'
+

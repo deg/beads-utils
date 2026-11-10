@@ -53,14 +53,22 @@ The hooks still have to be wired into `settings.json` by hand:
 [docs/workflow.md](docs/workflow.md#the-hooks) and
 [docs/memories.md](docs/memories.md#the-hooks) have the snippets.
 
-What you need besides Python 3: `git` and `make`; `bd` for the scripts that
-read beads through it (`bd-log`, `bd-view`, `bd-find-live`, `bd-export-csv`)
-and for the skills; `jq` for the hooks (`make install-claude` and
-`claude-memory-setup` refuse without it); `uv` for `bd-view`. Optional:
-`dolt` gives `bd-dolt-check`, `bd-dolt-diff` and `bd-verify-backup` their
-full answers and `bd-log` its memory history, and GNU `timeout` (`coreutils`
-on macOS) lets `claim-guard` name the beads in progress. The session tools
-need none of these.
+`make install` and `make install-claude` check for the tools below and, on a
+terminal, offer to install each missing one (`?` at the prompt explains what
+it is for); nothing is installed without your yes, and `make doctor` runs the
+same check on its own. Besides Python 3, `git` and `make`:
+
+- `bd` — the scripts that read beads through it (`bd-log`, `bd-view`,
+  `bd-find-live`, `bd-export-csv`) and the skills.
+- `jq` — the hooks; `make install-claude` and `claude-memory-setup` refuse
+  without it.
+- `uv` — `bd-view`, which renders Markdown with `rich`.
+- `dolt` (optional) — the full answers from `bd-dolt-check`, `bd-dolt-diff`
+  and `bd-verify-backup`, and `bd-log`'s memory history.
+- GNU `timeout` (optional; `coreutils` on macOS) — lets `claim-guard` name
+  the beads in progress.
+
+The `claude-session-*` tools need none of these.
 
 ## Scripts
 

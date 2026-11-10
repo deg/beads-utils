@@ -4,7 +4,7 @@ Thanks for your interest! This is a small collection of Python CLI scripts that
 augment the [`bd`](https://github.com/gastownhall/beads) issue tracker.
 
 The current setup is deliberately minimal — no package and no build step;
-`make install` only symlinks — but that's a starting point, not a principle. Contributions are
+`make install` only symlinks, and offers (never forces) the tools the scripts need — but that's a starting point, not a principle. Contributions are
 welcome, including:
 
 - **New scripts** that fit the collection — something else useful built on top
