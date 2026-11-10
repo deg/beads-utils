@@ -24,11 +24,9 @@ Then call `advisor()` for a transcript-aware second opinion — it sees your ful
 ## 2. Refactor Session Code
 - Review all code changes made in the current session
 - Eliminate code duplication (DRY principle)
-- Improve code clarity and maintainability
 - Ensure callers appear before callees in each file (top-down organization)
 - Fill in missing docstrings/comments -- focus on **"why"**, not "what"; audience is senior devs
 - Ensure consistent patterns with the existing codebase
-- Apply best practices from the project's coding standards
 - **Do NOT make functional changes** -- refactoring only
 
 ## 3. Add Tests

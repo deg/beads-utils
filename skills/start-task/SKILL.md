@@ -3,7 +3,7 @@ name: start-task
 description: Start a task — load the beads context, interview the user before any code is touched, create and claim a bead, read the affected files, propose a plan, and wait for an explicit go-ahead. Use for /start-task, or when the user wants to begin a new piece of work and no bead is claimed yet.
 ---
 
-**MANDATORY: Under NO circumstances should any code changes be made during this phase.**
+This skill changes no code. It ends with a plan, and implementation waits for the user's go-ahead.
 
 ## 1. Load Context
 - Run `bd prime` to load complete workflow context
@@ -23,8 +23,6 @@ Ask about:
 - Which parts of the system are affected
 - Specific requirements and constraints
 - Any related issues or dependencies
-
-**Crucial**: Even if you think you understand the task, you MUST wait for "go ahead" / "implement" / explicit permission before touching any code.
 
 ## 4. User- and Project-Specific Context
 Extensions are read from two places, user first, then project, and both are followed:
@@ -49,9 +47,8 @@ If neither exists, skip this step.
 - Ask any remaining questions
 - Propose your implementation plan
 - **Suggest a session name**: end the summary by proposing a short, meaningful name (a few words) that captures this task, and remind the user to apply it with `/rename <name>`. Renaming is a user-only action — no agent tool can do it — so the user must run the command themselves.
-- **Wait for explicit permission before starting implementation**
 
-Implementation begins ONLY after the user says "go ahead", "implement", "do it", or equivalent.
+Implementation begins only after the user says "go ahead", "implement", "do it", or equivalent.
 
 ## 8. Record Design Decisions
 Once discussion is complete and the user has given permission to implement:
