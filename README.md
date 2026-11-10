@@ -112,6 +112,24 @@ tree; `defer-hint` points the agent at `/defer`), and two more keep the memory
 files in a git repo of their own. All of it is in
 [docs/workflow.md](docs/workflow.md) and [docs/memories.md](docs/memories.md).
 
+## Essays
+
+Some of the thinking behind these tools, written up at
+[degel.com/writing](https://degel.com/writing/):
+
+- [The Slash Command That Knew Too Much](https://degel.com/writing/slash-command-that-knew-too-much/)
+  — workflows as programs written in English: the idea behind `/start-task`,
+  `/finalize` and their extension files.
+- [The Persistence of Memory](https://degel.com/writing/persistence-of-memory/)
+  — agent memory files are configuration, not notes, and the configuration now
+  writes itself: why the memories get a git repo and a linter.
+- [Scheme in a Weekend, or, LLM: The Ultimate Intern](https://degel.com/writing/scheme-in-a-weekend/)
+  — a weekend Rust project run on beads, and managing an agent that keeps
+  declaring "done".
+- [The Comment That Lied](https://degel.com/writing/comment-that-lied/) — four
+  of sixteen memories gone stale after the fixes that invalidated them: the
+  case for `/close-shop`'s memory audit.
+
 ## Documentation
 
 - [docs/beads.md](docs/beads.md) — the tools for looking at beads, with screenshots
