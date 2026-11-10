@@ -69,6 +69,13 @@ fire on ordinary turns. Known edge, kept in the tests as such: "the parking
 lot issue" does fire; the regex has no notion of a noun phrase, and one
 stray hint costs a line, where a missed park costs a bead.
 
+The hook sees a slash command **as typed**: since Claude Code 2.1.299,
+UserPromptSubmit runs before the command expands (UserPromptExpansion comes
+after it). Keep it that way. The expanded `/close-shop` and `/finalize` text
+holds both a park verb and a task noun, so before 2.1.299 every run of those
+two drew a stray hint; typed, `/close-shop`, `/finalize <id>` and
+`/defer <id>` are silent, and a test holds that.
+
 ## Manual checks
 
 ```bash

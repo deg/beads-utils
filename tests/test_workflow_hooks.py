@@ -244,6 +244,20 @@ def test_ordinary_english_is_silent(prompt):
     assert done.stdout == "", done.stdout
 
 
+@pytest.mark.parametrize("prompt", ["/close-shop", "/finalize x-1", "/defer x-1"])
+def test_a_typed_slash_command_is_silent(prompt):
+    """The hook sees a slash command as typed, not its expanded skill text.
+
+    Claude Code runs UserPromptSubmit before a slash command expands (since
+    2.1.299). The expanded /close-shop and /finalize text says "defer" and
+    "bead" often enough to fire, so matching on it would put a stray hint on
+    every run; /defer itself needs no pointer to /defer.
+    """
+    done = hint(prompt)
+    assert done.returncode == 0
+    assert done.stdout == "", done.stdout
+
+
 def test_known_edge_parking_lot_fires():
     """Documented limitation: `parking` + `issue` fires.
 
