@@ -99,7 +99,7 @@ PORTED_RULES = ["skills.md", "hooks.md", "claude-memory.md", "bd-find-live.md"]
 PUBLIC_TEXT = sorted(
     [p for p in SKILLS_DIR.glob("*/SKILL.md")]
     + [ROOT / ".claude" / "rules" / r for r in PORTED_RULES]
-    + [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / "CONTRIBUTING.md"]
+    + [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / ".github" / "CONTRIBUTING.md"]
     + list((ROOT / "docs").glob("*.md"))
 )
 

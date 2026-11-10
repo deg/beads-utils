@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-dolt-diff"
+  - "bin/bd-dolt-diff"
   - "tests/test_bd_dolt_diff.py"
 ---
 
@@ -27,6 +27,6 @@ disables. Requires the `dolt` CLI.
 ## Manual checks
 
 ```bash
-./bd-dolt-diff .                              # Preview what a push would send
-./bd-dolt-diff . --base <branch-or-hash>      # Diff vs an arbitrary revision
+./bin/bd-dolt-diff .                          # Preview what a push would send
+./bin/bd-dolt-diff . --base <branch-or-hash>  # Diff vs an arbitrary revision
 ```

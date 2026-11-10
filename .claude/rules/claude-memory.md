@@ -1,7 +1,7 @@
 ---
 paths:
-  - "claude-memory-check"
-  - "claude-memory-setup"
+  - "bin/claude-memory-check"
+  - "bin/claude-memory-setup"
   - "hooks/commit-memories.sh"
   - "hooks/check-memories-pushed.sh"
   - "tests/test_claude_memory_check.py"
@@ -144,9 +144,9 @@ only for a staged rename and the hook never stages one before reading status.
 ## Manual checks
 
 ```bash
-./claude-memory-check                                  # Every store on this machine
-./claude-memory-check ~/.claude/projects/<slug>/memory  # One store
-./claude-memory-setup --remote <url> --git-dir /tmp/x.git --projects /tmp/x  # Clone path, harmlessly
+./bin/claude-memory-check                              # Every store on this machine
+./bin/claude-memory-check ~/.claude/projects/<slug>/memory  # One store
+./bin/claude-memory-setup --remote <url> --git-dir /tmp/x.git --projects /tmp/x  # Clone path, harmlessly
 bash hooks/check-memories-pushed.sh </dev/null          # Read-only against the live repo
 make install-claude CLAUDE_HOME=/tmp/claude-home        # Links without touching ~/.claude
 ```

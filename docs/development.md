@@ -63,4 +63,4 @@ into your `bash-completion.d`.
 
 Conventions live in [`CLAUDE.md`](../CLAUDE.md) and per-script design
 notes in [`.claude/rules/`](../.claude/rules); see
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) to contribute.
+[`CONTRIBUTING.md`](../.github/CONTRIBUTING.md) to contribute.

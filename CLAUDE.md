@@ -40,9 +40,9 @@ Pushing (`git push` / `bd dolt push`) is the user's call, not the agent's. Commi
 
 A small collection of Python utility scripts that augment the **beads** (`bd`) issue
 tracker and its Dolt-backed storage, plus the Claude Code skills under `skills/` and
-hooks under `hooks/` that plug into the agent itself. Each script sits at the repo root alongside a
+hooks under `hooks/` that plug into the agent itself. Each script sits in `bin/` alongside a
 shared `bdutils.py` helper module — no package, no build step. Scripts run from the
-repo directory (Python's default `sys.path[0]` resolves the sibling `bdutils`
+clone as `bin/<script>` (Python's default `sys.path[0]` resolves the sibling `bdutils`
 import), or from anywhere via the symlinks `make install` puts in `PREFIX`, since
 `sys.path[0]` is the *resolved* directory and the sibling import survives the link.
 
@@ -132,7 +132,7 @@ then the project's `.claude/skill-extensions/<name>.md`. Why skills and not a
 plugin, and what was scrubbed from the dotfiles originals, is in
 `.claude/rules/skills.md`.
 
-Claude Code hooks, bash, under `hooks/` (a subdirectory, so shebang discovery
+Claude Code hooks, bash, under `hooks/` (not `bin/`, so shebang discovery
 does not sweep them into ruff and the `--version` smoke test), installed by
 `make install-claude` into `~/.claude/hooks` and wired into `settings.json` by
 hand:
@@ -244,8 +244,8 @@ one). Each rule file lists its script's commands; `bd-export-csv` has no
 rule file, so its are here:
 
 ```bash
-./bd-export-csv .                             # Export this repo to CSV in cwd
-./bd-export-csv . --sort=-priority,created_at
+./bin/bd-export-csv .                         # Export this repo to CSV in cwd
+./bin/bd-export-csv . --sort=-priority,created_at
 ```
 
 `bd-dolt-check` assumes the `dolt` CLI is installed for its richest output but

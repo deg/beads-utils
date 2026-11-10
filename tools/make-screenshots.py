@@ -98,13 +98,13 @@ SHOTS = [
     Shot(
         "bd-log",
         "bd-log --oneline -n 10",
-        "./bd-log --oneline --legend=always --color=always -n 10 --no-pager",
+        "./bin/bd-log --oneline --legend=always --color=always -n 10 --no-pager",
     ),
     Shot(
         "bd-log-live",
         "bd-log --oneline --open --about=beads --no-deferred --no-blocked"
         " --legend=never -n 8",
-        "./bd-log --oneline --open --about=beads --no-deferred --no-blocked"
+        "./bin/bd-log --oneline --open --about=beads --no-deferred --no-blocked"
         " --color=always --legend=never -n 8 --no-pager",
     ),
     Shot(
@@ -114,12 +114,12 @@ SHOTS = [
         # monotonic: the default sort is last-activity, so further down the
         # list STARTED legitimately goes out of order and reads as a bug in
         # a static image.
-        "./claude-session-list --oneline -n 8 --no-pager",
+        "./bin/claude-session-list --oneline -n 8 --no-pager",
     ),
     Shot(
         "bd-dolt-check",
         "bd-dolt-check",
-        "./bd-dolt-check .",
+        "./bin/bd-dolt-check .",
     ),
     Shot(
         # A bead whose notes are actually Markdown, so the image shows the
@@ -128,13 +128,13 @@ SHOTS = [
         # renders as a wall of text and demonstrates nothing.
         "bd-view",
         "bd-view beads-utils-5lw",
-        "./bd-view beads-utils-5lw --no-pager",
+        "./bin/bd-view beads-utils-5lw --no-pager",
     ),
     Shot(
         # Staged repos: the real -g table would list every repo on the machine.
         "bd-verify-backup",
         "bd-verify-backup -g",
-        "./bd-verify-backup -g --color=always",
+        "./bin/bd-verify-backup -g --color=always",
         stage=staging.stage_backup_repos,
     ),
     Shot(

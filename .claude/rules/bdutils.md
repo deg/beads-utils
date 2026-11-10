@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bdutils.py"
+  - "bin/bdutils.py"
   - "tests/test_bdutils.py"
 ---
 

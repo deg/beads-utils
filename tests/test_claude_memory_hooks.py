@@ -17,11 +17,11 @@ import time
 
 import pytest
 
-from conftest import ROOT
+from conftest import BIN, ROOT
 
 COMMIT = ROOT / "hooks" / "commit-memories.sh"
 CHECK = ROOT / "hooks" / "check-memories-pushed.sh"
-SETUP = ROOT / "claude-memory-setup"
+SETUP = BIN / "claude-memory-setup"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="the hooks need jq")
 

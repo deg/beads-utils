@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-log"
+  - "bin/bd-log"
   - "tests/test_bd_log.py"
 ---
 
@@ -315,25 +315,25 @@ fixture passing with the filter moved to the wrong side.
 Run against this repo, which is itself a beads project:
 
 ```bash
-./bd-log                                       # All events, beads and memories
-./bd-log --about=memories                      # Memory history alone
-./bd-log --about=memories --only=end           # Memories that were forgotten
-./bd-log --about=beads                         # Beads only (the pre-grid view)
-./bd-log --only=create                         # Beads created + memories added
-./bd-log --open                                # Events for beads still open
-./bd-log --open --no-deferred                  # ...minus the currently deferred ones
-./bd-log --open --no-blocked                   # ...minus the ones waiting on a blocker
-./bd-log --open --no-deferred --no-blocked     # ...minus both
-./bd-log --only=start --status=in_progress     # What's actively being worked
-./bd-log --id beads-utils-s4s                  # One bead's whole history
-./bd-log --id beads-utils-v9o --children       # That bead and its whole subtree
-./bd-log -n 25 --since 2026-04-01              # 25 events on/after date
-./bd-log --color=always | cat                  # Keep color through a pipe
-./bd-log --color=never                         # Force plain (also: NO_COLOR=1)
-./bd-log --oneline                             # One row per event
-./bd-log --oneline -n 20                       # ...and columns sized to those 20
-./bd-log --legend=always | cat                 # Keep the symbol key through a pipe
-./bd-log --legend=never                        # Suppress it at a terminal
-./bd-log --open --count-beads                  # ...and how many beads that is
-./bd-log --count-events --count-memories       # One line per count, after the log
+./bin/bd-log                                   # All events, beads and memories
+./bin/bd-log --about=memories                  # Memory history alone
+./bin/bd-log --about=memories --only=end       # Memories that were forgotten
+./bin/bd-log --about=beads                     # Beads only (the pre-grid view)
+./bin/bd-log --only=create                     # Beads created + memories added
+./bin/bd-log --open                            # Events for beads still open
+./bin/bd-log --open --no-deferred              # ...minus the currently deferred ones
+./bin/bd-log --open --no-blocked               # ...minus the ones waiting on a blocker
+./bin/bd-log --open --no-deferred --no-blocked # ...minus both
+./bin/bd-log --only=start --status=in_progress # What's actively being worked
+./bin/bd-log --id beads-utils-s4s              # One bead's whole history
+./bin/bd-log --id beads-utils-v9o --children   # That bead and its whole subtree
+./bin/bd-log -n 25 --since 2026-04-01          # 25 events on/after date
+./bin/bd-log --color=always | cat              # Keep color through a pipe
+./bin/bd-log --color=never                     # Force plain (also: NO_COLOR=1)
+./bin/bd-log --oneline                         # One row per event
+./bin/bd-log --oneline -n 20                   # ...and columns sized to those 20
+./bin/bd-log --legend=always | cat             # Keep the symbol key through a pipe
+./bin/bd-log --legend=never                    # Suppress it at a terminal
+./bin/bd-log --open --count-beads              # ...and how many beads that is
+./bin/bd-log --count-events --count-memories   # One line per count, after the log
 ```

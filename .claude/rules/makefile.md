@@ -15,13 +15,16 @@ Two Makefile details worth knowing before editing it:
 - `SCRIPTS` is discovered by shebang, via `HASH := \#` indirection. An inline
   `'^#!'` inside `$(shell ...)` does not work: make strips `#` and everything
   after it *before* parsing the function call, truncating it mid-expression.
-- `LINT_TARGETS` names `*.py` and `tests/` explicitly alongside `$(SCRIPTS)`.
-  Shebang discovery finds neither the helper modules (no shebang — which is
-  how `claudeutils.py` went unlinted until the Makefile landed) nor anything
-  in a subdirectory.
-- `tests/` is named explicitly in CI's ruff arguments. Shebang discovery uses
-  `grep -lE -d skip '^#!' *`, which only looks at the repo root and skips
-  subdirectories, so the tests would otherwise never be linted.
+- `SCRIPTS` runs the grep inside `bin/`, so the names come out bare
+  (`bd-log`): `install` links each into `PREFIX` under that name, and the
+  recipes that run a script spell out `$(BIN)/`. Scripts lived at the repo
+  root until beads-utils-b9k (Move scripts into bin/); `uninstall` still
+  recognises links to a file directly at the root, which an older install made.
+- `LINT_TARGETS` names each script as `bin/<script>`, plus `bin/`, `tests/` and
+  `tools/`. Ruff given a directory lints only its `*.py` files, so the
+  extension-less scripts must be named one by one, and `bin/` is what covers the
+  helper modules, which have no shebang (which is how `claudeutils.py` went
+  unlinted until the Makefile landed).
 
 `tests/test_makefile.py` is the one file that invokes `make` itself, marked
 `makefile` and skipped when make is absent. Its cheap tier reads `make -n`

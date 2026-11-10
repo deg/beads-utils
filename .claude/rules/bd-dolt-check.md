@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-dolt-check"
+  - "bin/bd-dolt-check"
   - "tests/test_bd_dolt_check.py"
 ---
 
@@ -179,7 +179,7 @@ tracked-and-ignored case above, which nothing on this machine is in.
 ## Manual checks
 
 ```bash
-./bd-dolt-check .                             # Check Dolt sync state
+./bin/bd-dolt-check .                         # Check Dolt sync state
 ```
 
 `make dolt-check` runs the same thing.

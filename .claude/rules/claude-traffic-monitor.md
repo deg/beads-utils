@@ -1,6 +1,6 @@
 ---
 paths:
-  - "claude-traffic-monitor"
+  - "bin/claude-traffic-monitor"
   - "tests/test_claude_traffic_monitor.py"
 ---
 
@@ -315,7 +315,7 @@ deferred:
 ## Manual checks
 
 ```bash
-./claude-traffic-monitor                 # live screen; ? lists the keys, q quits
-./claude-traffic-monitor -s 2 --top 15   # slower sampling, more processes
+./bin/claude-traffic-monitor             # live screen; ? lists the keys, q quits
+./bin/claude-traffic-monitor -s 2 --top 15   # slower sampling, more processes
 pgrep -fl 'nettop -L 0'                  # after quitting: must print nothing
 ```

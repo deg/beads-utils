@@ -21,7 +21,7 @@ import pytest
 
 import bdutils
 
-from conftest import ROOT, write_session
+from conftest import BIN, write_session
 
 pytestmark = pytest.mark.e2e
 
@@ -64,7 +64,7 @@ def test_every_script_has_working_help(script, run_script):
 def test_the_script_list_matches_what_the_repo_ships():
     """A new script must be added here, the way CI discovers them by shebang."""
     shipped = {
-        p.name for p in ROOT.iterdir()
+        p.name for p in BIN.iterdir()
         if p.is_file() and p.stat().st_mode & 0o111
         and p.read_bytes()[:2] == b"#!"
     }

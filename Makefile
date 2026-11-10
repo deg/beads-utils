@@ -73,20 +73,23 @@ override PREFIX := $(patsubst ~,$(HOME),$(patsubst ~/%,$(HOME)/%,$(PREFIX)))
 # an input that was never meaningful.)
 override PREFIX := $(patsubst %/,%,$(PREFIX))
 
-# Every executable script, found by shebang, so a new script is picked up with
-# no edit here. `-d skip` makes grep ignore subdirectories rather than exiting
-# 2 on them (which would silently abort the recipe); see .claude/rules/makefile.md.
+# Every executable script in bin/, found by shebang, so a new script is picked
+# up with no edit here. The names are bare (`bd-log`, not `bin/bd-log`): they are
+# what `install` links into PREFIX. `-d skip` makes grep ignore subdirectories
+# rather than exiting 2 on them (which would silently abort the recipe); see
+# .claude/rules/makefile.md.
 #
 # HASH exists because make strips `#` and everything after it *before* parsing
 # a function call — an inline '^#!' would truncate the $(shell ...) mid-call.
 HASH := \#
-SCRIPTS := $(shell grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
+BIN := bin
+SCRIPTS := $(shell cd $(BIN) && grep -lE -d skip '^$(HASH)!' * 2>/dev/null)
 
 # Everything ruff should see: the extension-less scripts, the shared helper
-# modules, the test suite and the maintenance tools. Named explicitly
-# because shebang discovery finds neither the helpers (no shebang) nor
-# tests/ and tools/ (subdirectories).
-LINT_TARGETS := $(SCRIPTS) *.py tests/ tools/
+# modules, the test suite and the maintenance tools. The scripts are named one
+# by one because ruff, given a directory, lints only its *.py files; `bin/`
+# itself is what covers the helper modules, which have no shebang.
+LINT_TARGETS := $(addprefix $(BIN)/,$(SCRIPTS)) $(BIN)/ tests/ tools/
 
 
 # Show this help message
@@ -150,7 +153,7 @@ format: ## Apply ruff's automatic fixes in place
 smoke: ## Invoke every script's --version (catches import/argparse breakage)
 	@for s in $(SCRIPTS); do \
 		echo "== $$s --version =="; \
-		"./$$s" --version || exit 1; \
+		"./$(BIN)/$$s" --version || exit 1; \
 	done
 
 ci: check test ## Run everything CI runs, in CI's order
@@ -166,19 +169,19 @@ ci: check test ## Run everything CI runs, in CI's order
 ## exactly why these checks exist.
 
 dolt-check: ## Verify this repo's Dolt data has been pushed (exits 1 if not)
-	@./bd-dolt-check .
+	@./$(BIN)/bd-dolt-check .
 
 dolt-diff: ## Preview the issue-level changes a 'bd dolt push' would send
-	@./bd-dolt-diff .
+	@./$(BIN)/bd-dolt-diff .
 
 export-csv: ## Export this repo's beads to a CSV in the current directory
-	@./bd-export-csv .
+	@./$(BIN)/bd-export-csv .
 
 .PHONY: dolt-check dolt-diff export-csv
 
-# The render script deliberately lives under tools/ rather than at the repo
-# root: SCRIPTS is shebang-discovered, so a root-level script would be swept
-# into `make smoke`, which runs `--version` on everything it finds.
+# The render script deliberately lives under tools/ rather than in bin/:
+# SCRIPTS is shebang-discovered, so a script in bin/ would be swept into
+# `make smoke`, which runs `--version` on everything it finds.
 #
 # Not idempotent — the images capture live bead data and timestamps, so every
 # run produces a diff even when nothing about the tools changed. That is not
@@ -296,7 +299,7 @@ install: check-prefix ## Symlink every script into PREFIX (default ~/.local/bin)
 	done
 	@mkdir -p "$(PREFIX)"
 	@for s in $(SCRIPTS); do \
-	    ln -sfn "$(CURDIR)/$$s" "$(PREFIX)/$$s" || exit 1; \
+	    ln -sfn "$(CURDIR)/$(BIN)/$$s" "$(PREFIX)/$$s" || exit 1; \
 	done
 	@echo "Linked $(words $(SCRIPTS)) scripts into $(PREFIX)"
 	@case ":$$PATH:" in \
@@ -308,13 +311,17 @@ install: check-prefix ## Symlink every script into PREFIX (default ~/.local/bin)
 # Scans PREFIX for links back into this clone rather than iterating SCRIPTS,
 # which is only the scripts that exist *now*: a script renamed or dropped
 # since you installed would otherwise be left behind as a dangling link while
-# the count claimed a complete uninstall. Nested targets are skipped so a
-# hand-made link to something else inside the clone is not collateral.
+# the count claimed a complete uninstall. Only links to a file directly in
+# bin/ count, so a hand-made link to something else inside the clone is not
+# collateral -- plus links to a file directly at the root, which is where the
+# scripts lived before bin/ and where an older `make install` pointed.
 uninstall: check-prefix ## Remove the symlinks that 'make install' created
 	@removed=0; failed=0; \
 	for target in "$(PREFIX)"/*; do \
 	    [ -L "$$target" ] || continue; \
 	    case "$$(readlink "$$target")" in \
+	        "$(CURDIR)/$(BIN)/"*/*) continue;; \
+	        "$(CURDIR)/$(BIN)/"*) ;; \
 	        "$(CURDIR)/"*/*) continue;; \
 	        "$(CURDIR)/"*) ;; \
 	        *) continue;; \
@@ -337,7 +344,7 @@ uninstall: check-prefix ## Remove the symlinks that 'make install' created
 ## Housekeeping
 
 version: ## Print the version string shared by every script
-	@python3 -c "import bdutils; print(bdutils.__version__)"
+	@cd $(BIN) && python3 -c "import bdutils; print(bdutils.__version__)"
 
 # The scripts must be on $PATH for completion to work, since the completion
 # functions shell out to bd-complete by name.
@@ -348,7 +355,7 @@ completions: ## Print the line to add to your shell rc file for tab completion
 	@echo "Add to ~/.bashrc:"
 	@echo "    source $(CURDIR)/completions/beads-utils.bash"
 	@echo ""
-	@echo "Also put $(CURDIR) on your \$$PATH — the completions call bd-complete by name."
+	@echo "Also put $(CURDIR)/$(BIN) on your \$$PATH — the completions call bd-complete by name."
 
 outdated: ## Report newer releases of the pinned tools
 	@echo "❗ ruff:   pinned $(RUFF_VERSION), latest $$(uvx ruff@latest --version | awk '{print $$2}')"
@@ -364,7 +371,7 @@ doctor: ## Report which tools the scripts and hooks need are present, and offer 
 
 tags: ## Build an etags TAGS file over the scripts and modules
 	@command -v etags >/dev/null || { echo "❌ etags not found"; exit 1; }
-	@etags $(SCRIPTS) *.py tests/*.py
+	@etags $(addprefix $(BIN)/,$(SCRIPTS)) $(BIN)/*.py tests/*.py
 	@echo "✅ Wrote TAGS"
 
 clean: ## Remove caches and generated reports

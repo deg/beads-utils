@@ -1,6 +1,6 @@
 """Shared fixtures and the script loader for the beads-utils test suite.
 
-The scripts under test are executables at the repo root with no `.py`
+The scripts under test are executables in bin/ with no `.py`
 extension and hyphens in their names (`bd-log`, `claude-session-list`, ...),
 so `import bd_log` cannot find them. `load_script()` below imports them by
 path; test modules do `from conftest import load_script` (pytest puts this
@@ -20,11 +20,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+BIN = ROOT / "bin"
 
-# The repo root must precede everything so `import bdutils` inside a loaded
-# script resolves to the checkout under test rather than to anything installed.
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# bin/ must precede everything so `import bdutils` inside a loaded script
+# resolves to the checkout under test rather than to anything installed.
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
 
 # Imported after the sys.path insert above -- these are the checkout's own
 # modules, and without it they would resolve to whatever else is installed.
@@ -33,7 +34,7 @@ import claudeutils  # noqa: E402
 
 
 def load_script(filename: str):
-    """Import a repo-root script that has no importable filename.
+    """Import a bin/ script that has no importable filename.
 
     `bd-log` becomes module `bd_log`. Modules are cached in sys.modules under
     that name, so repeated calls (and monkeypatching of module attributes)
@@ -43,7 +44,7 @@ def load_script(filename: str):
     cached = sys.modules.get(module_name)
     if cached is not None:
         return cached
-    path = ROOT / filename
+    path = BIN / filename
     if not path.is_file():
         raise FileNotFoundError(f"no such script: {path}")
     loader = SourceFileLoader(module_name, str(path))
@@ -261,13 +262,13 @@ def project(tmp_path) -> Path:
 
 @pytest.fixture
 def run_script(project):
-    """Run a repo-root script as a real subprocess and capture the result.
+    """Run a bin/ script as a real subprocess and capture the result.
 
-    Invoked as `sys.executable <root>/<script>` rather than `./<script>`: that
+    Invoked as `sys.executable bin/<script>` rather than `./bin/<script>`: that
     keeps bd-view off its `uv run --script` shebang, which would re-resolve
     `rich` per call (slow on a cold cache) and test a different interpreter
-    than the rest of the suite. Passing the script path still puts the repo
-    root on sys.path[0], so the `from bdutils import ...` sibling import
+    than the rest of the suite. Passing the script path still puts bin/ on
+    sys.path[0], so the `from bdutils import ...` sibling import
     resolves exactly as it does in real use.
     """
 
@@ -279,7 +280,7 @@ def run_script(project):
         if env:
             full_env.update(env)
         return subprocess.run(
-            [sys.executable, str(ROOT / script), *args],
+            [sys.executable, str(BIN / script), *args],
             cwd=str(cwd or project),
             capture_output=True,
             text=True,

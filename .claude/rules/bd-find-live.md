@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-find-live"
+  - "bin/bd-find-live"
   - "tests/test_bd_find_live.py"
 ---
 
@@ -46,7 +46,7 @@ rather than computed from `bd list`'s dependency fields for the reason
 ## Manual checks
 
 ```bash
-./bd-find-live .                              # Live beads of this repo, as JSON
-./bd-find-live --lean . | head -20            # Without the notes logs
-./bd-find-live . | wc -c                      # The open payload
+./bin/bd-find-live .                          # Live beads of this repo, as JSON
+./bin/bd-find-live --lean . | head -20        # Without the notes logs
+./bin/bd-find-live . | wc -c                  # The open payload
 ```

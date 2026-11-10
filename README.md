@@ -74,22 +74,22 @@ The `claude-session-*` tools need none of these.
 
 | Script | What it does | Docs |
 |---|---|---|
-| [`bd-log`](bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended | [§](docs/beads.md#bd-log) |
-| [`bd-view`](bd-view) | Pretty-print a single bead with rendered Markdown | [§](docs/beads.md#bd-view) |
-| [`bd-find-live`](bd-find-live) | List the beads that are live work — open or in progress, minus those parked behind a deferred bead — as JSON | [§](docs/beads.md#bd-find-live) |
-| [`bd-export-csv`](bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review | [§](docs/beads.md#bd-export-csv) |
-| [`bd-dolt-check`](bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually committed and pushed to its git remote | [§](docs/beads.md#bd-dolt-check-and-bd-dolt-diff) |
-| [`bd-dolt-diff`](bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state | [§](docs/beads.md#bd-dolt-check-and-bd-dolt-diff) |
-| [`bd-verify-backup`](bd-verify-backup) | Check a repo is fully backed up — nothing uncommitted, every branch pushed, beads pushed; `-g` checks every beads repo on the machine | [§](docs/beads.md#bd-verify-backup) |
-| [`claude-session-list`](claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) | [§](docs/claude-sessions.md#claude-session-list) |
-| [`claude-session-find`](claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions | [§](docs/claude-sessions.md#claude-session-find) |
-| [`claude-session-report`](claude-session-report) | Render a Claude Code session as a Markdown discussion transcript | [§](docs/claude-sessions.md#claude-session-report) |
-| [`claude-session-rename`](claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session | [§](docs/claude-sessions.md#claude-session-rename) |
-| [`claude-sessions-review`](claude-sessions-review) | Find tool calls that fail the same way across many Claude Code sessions, ranked by how many sessions hit them | [§](docs/claude-sessions.md#claude-sessions-review) |
-| [`claude-memory-check`](claude-memory-check) | Find broken `[[links]]`, bad slugs and a stale `MEMORY.md` index in Claude Code's memory directories | [§](docs/claude-sessions.md#claude-memory-check) |
-| [`claude-memory-setup`](claude-memory-setup) | Give Claude Code's memory files a git repo of their own, fresh or cloned from another machine | [§](docs/memories.md#claude-memory-setup) |
-| [`claude-traffic-monitor`](claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) | [§](docs/claude-sessions.md#claude-traffic-monitor) |
-| [`bd-complete`](bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion | [§](docs/development.md#shell-completion) |
+| [`bd-log`](bin/bd-log) | Git-log-style timeline of bead *and* memory lifecycle events — created, changed, ended | [§](docs/beads.md#bd-log) |
+| [`bd-view`](bin/bd-view) | Pretty-print a single bead with rendered Markdown | [§](docs/beads.md#bd-view) |
+| [`bd-find-live`](bin/bd-find-live) | List the beads that are live work — open or in progress, minus those parked behind a deferred bead — as JSON | [§](docs/beads.md#bd-find-live) |
+| [`bd-export-csv`](bin/bd-export-csv) | Export the bead database to a flat CSV for spreadsheet review | [§](docs/beads.md#bd-export-csv) |
+| [`bd-dolt-check`](bin/bd-dolt-check) | Verify the Dolt data behind a `bd` repo is actually committed and pushed to its git remote | [§](docs/beads.md#bd-dolt-check-and-bd-dolt-diff) |
+| [`bd-dolt-diff`](bin/bd-dolt-diff) | Preview what a `bd dolt push` would send: issue-level diff between local and remote Dolt state | [§](docs/beads.md#bd-dolt-check-and-bd-dolt-diff) |
+| [`bd-verify-backup`](bin/bd-verify-backup) | Check a repo is fully backed up — nothing uncommitted, every branch pushed, beads pushed; `-g` checks every beads repo on the machine | [§](docs/beads.md#bd-verify-backup) |
+| [`claude-session-list`](bin/claude-session-list) | Git-log-style listing of Claude Code sessions (default: current project; `-g` for all) | [§](docs/claude-sessions.md#claude-session-list) |
+| [`claude-session-find`](bin/claude-session-find) | Substring search across `~/.claude/projects/*.jsonl` to find old Claude Code sessions | [§](docs/claude-sessions.md#claude-session-find) |
+| [`claude-session-report`](bin/claude-session-report) | Render a Claude Code session as a Markdown discussion transcript | [§](docs/claude-sessions.md#claude-session-report) |
+| [`claude-session-rename`](bin/claude-session-rename) | Set a Claude Code session's title from the shell, like `/rename`, without starting the session | [§](docs/claude-sessions.md#claude-session-rename) |
+| [`claude-sessions-review`](bin/claude-sessions-review) | Find tool calls that fail the same way across many Claude Code sessions, ranked by how many sessions hit them | [§](docs/claude-sessions.md#claude-sessions-review) |
+| [`claude-memory-check`](bin/claude-memory-check) | Find broken `[[links]]`, bad slugs and a stale `MEMORY.md` index in Claude Code's memory directories | [§](docs/claude-sessions.md#claude-memory-check) |
+| [`claude-memory-setup`](bin/claude-memory-setup) | Give Claude Code's memory files a git repo of their own, fresh or cloned from another machine | [§](docs/memories.md#claude-memory-setup) |
+| [`claude-traffic-monitor`](bin/claude-traffic-monitor) | Live `top`-like view of the internet traffic of every running Claude Code session, plus the busiest other processes (macOS) | [§](docs/claude-sessions.md#claude-traffic-monitor) |
+| [`bd-complete`](bin/bd-complete) | Emit completion candidates (bead ids, session uuids) — the helper behind shell tab completion | [§](docs/development.md#shell-completion) |
 
 Run any script with `--help` for full usage.
 
@@ -137,7 +137,7 @@ Some of the thinking behind these tools, written up at
 - [docs/workflow.md](docs/workflow.md) — the skills, their extensions, and the two guard hooks
 - [docs/memories.md](docs/memories.md) — the memories repo, its hooks, recovery and caveats
 - [docs/development.md](docs/development.md) — make targets, the test suite, shell completion, conventions
-- [CONTRIBUTING.md](CONTRIBUTING.md), [CLAUDE.md](CLAUDE.md) and the design notes in [.claude/rules/](.claude/rules)
+- [CONTRIBUTING.md](.github/CONTRIBUTING.md), [CLAUDE.md](CLAUDE.md) and the design notes in [.claude/rules/](.claude/rules)
 
 ## License
 

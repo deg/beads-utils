@@ -12,28 +12,20 @@ a known-good point: a CHANGELOG heading, a version string, and a git tag.
 - `git status --short` — the tree must be clean. If it isn't, stop and ask the
   user whether to commit or stash first.
 - Confirm the branch is `main` (`git branch --show-current`). If not, stop and ask.
-- `./bd-dolt-check .` — the beads data must be pushed. If it reports OUT OF SYNC,
+- `./bin/bd-dolt-check .` — the beads data must be pushed. If it reports OUT OF SYNC,
   stop and tell the user; `bd dolt push` is their call, not yours.
 
 ## 2. Run the quality gates
 
-These mirror `.github/workflows/lint.yml`, so a release never ships something CI
-would reject:
+`make ci` runs exactly what `.github/workflows/lint.yml` runs (ruff, the
+`--version` smoke test of every script, the suite), so a release never ships
+something CI would reject:
 
 ```bash
-scripts="$(grep -lE -d skip '^#!' * 2>/dev/null)" || true
-[ -n "$scripts" ] || { echo "shebang discovery found no scripts"; exit 1; }
-printf '%s\n' "$scripts" | xargs uvx ruff@0.15.14 check bdutils.py
-printf '%s\n' "$scripts" | while IFS= read -r s; do "./$s" --version; done
+make ci
 ```
 
-Keep the guards — they are the same ones CI carries, for the same reason. `-d
-skip` makes `grep` ignore subdirectories like `completions/` instead of exiting
-2 on them, `|| true` keeps a no-match (`grep` exit 1) from killing the step
-before the explicit empty-check runs, and that check is what stops a silent
-collapse to "ruff checked `bdutils.py` alone, all passed".
-
-Both must pass. Fix anything that fails — or stop and report — before continuing.
+It must pass. Fix anything that fails — or stop and report — before continuing.
 
 ## 3. Determine the change range
 
@@ -85,23 +77,23 @@ CONTRIBUTING.md — so after this release the tag and `__version__` stay in step
 
 ## 7. Set the version
 
-Update `__version__` in `bdutils.py` to `X.Y.Z` if it isn't already. It is the
+Update `__version__` in `bin/bdutils.py` to `X.Y.Z` if it isn't already. It is the
 single source of truth — every script's `--version` reads it, and nothing else
 in the repo hardcodes a version.
 
 ## 8. Verify
 
 ```bash
-grep -lE -d skip '^#!' * | while IFS= read -r s; do "./$s" --version; done
+make smoke
 ```
 
 Every script must report the new number. Then `git diff` and confirm the only
-changes are `CHANGELOG.md` and `bdutils.py`.
+changes are `CHANGELOG.md` and `bin/bdutils.py`.
 
 ## 9. Commit and tag
 
 ```bash
-git add CHANGELOG.md bdutils.py
+git add CHANGELOG.md bin/bdutils.py
 git commit -m "Release vX.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z"
 ```

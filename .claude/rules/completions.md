@@ -1,7 +1,7 @@
 ---
 paths:
   - "completions/**"
-  - "bd-complete"
+  - "bin/bd-complete"
   - "tests/test_completions.py"
   - "tests/test_bd_complete.py"
 ---
@@ -76,6 +76,6 @@ read as five choices.
 ## Manual checks
 
 ```bash
-./bd-complete ids                                      # Completion feed: short ids + titles
-./bd-complete sessions                                 # Completion feed: session uuids + titles
+./bin/bd-complete ids                                  # Completion feed: short ids + titles
+./bin/bd-complete sessions                             # Completion feed: session uuids + titles
 ```

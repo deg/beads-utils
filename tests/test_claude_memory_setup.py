@@ -16,9 +16,9 @@ import sys
 
 import pytest
 
-from conftest import ROOT
+from conftest import BIN
 
-SETUP = ROOT / "claude-memory-setup"
+SETUP = BIN / "claude-memory-setup"
 
 
 @pytest.fixture

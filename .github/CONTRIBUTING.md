@@ -19,12 +19,12 @@ The one standing preference is to stay reasonably dependency-light (see
 
 ## How the repo works
 
-There is **no package and no build step**. Each script lives at the repo root
+There is **no package and no build step**. Each script lives in `bin/`
 next to a shared `bdutils.py` helper and runs directly:
 
 ```bash
-./bd-log -n 5            # run any script from the repo directory
-./bd-view --help         # every script supports --help and --version
+./bin/bd-log -n 5        # run any script from the repo directory
+./bin/bd-view --help     # every script supports --help and --version
 ```
 
 That works because Python puts the script's own directory on `sys.path[0]`,
@@ -37,7 +37,7 @@ only, except `bd-view`, whose `#!/usr/bin/env -S uv run --script` shebang pulls
 
 ## Testing
 
-There is a pytest suite in [`tests/`](tests). Everything runs through the
+There is a pytest suite in [`tests/`](../tests). Everything runs through the
 `Makefile` — `make help` lists every target:
 
 ```bash
@@ -55,7 +55,7 @@ How it's put together, if you're adding to it:
 
 - **Loading the scripts.** They're executables with no `.py` extension, so
   `tests/conftest.py` provides `load_script("bd-log")` (a `SourceFileLoader`
-  import). `pytest.ini` puts the repo root on `sys.path` so the scripts'
+  import). `pytest.ini` puts `bin/` on `sys.path` so the scripts'
   `from bdutils import ...` resolves the way it does in real use.
 - **No real external state.** `bd` and `dolt` are replaced by programmable
   fakes on `PATH` (the `fake_bd` / `fake_dolt` fixtures); Claude session
@@ -80,7 +80,7 @@ make export-csv                   # exercise against this repo
 
 ## Conventions
 
-The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
+The authoritative list lives in [`CLAUDE.md`](../CLAUDE.md). The essentials:
 
 - **Shebang**: `#!/usr/bin/env python3` (no hardcoded paths). Use the `uv`
   shebang only when a third-party dependency is genuinely load-bearing.
@@ -91,12 +91,12 @@ The authoritative list lives in [`CLAUDE.md`](CLAUDE.md). The essentials:
 - **Versioning**: scripts share `bdutils.__version__`; add `--version` via
   `bdutils.add_version_arg(parser)`. Paging scripts accept `--no-pager`.
   Don't bump the version in a PR — add a bullet under `## Unreleased` in
-  [`CHANGELOG.md`](CHANGELOG.md) instead; the number moves only at release time.
+  [`CHANGELOG.md`](../CHANGELOG.md) instead; the number moves only at release time.
 - **Errors / warnings**: `bdutils.error(msg)` (exits non-zero with a lowercase
   `error: …`) and `bdutils.warn(msg)`. Never surface a raw traceback.
 - **Project path**: `bdutils.resolve_project_path(arg)` for the
   expanduser/resolve/`.beads/`-validation dance.
-- **Claude Code hooks**: bash, under `hooks/` rather than the repo root (shebang
+- **Claude Code hooks**: bash, under `hooks/` rather than `bin/` (shebang
   discovery would otherwise put them through ruff and the `--version` smoke
   test), installed by `make install-claude`, and tested as subprocesses with the
   hook JSON on stdin against repos built under `tmp_path`. They may depend on
@@ -115,9 +115,9 @@ fails if a link or anchor does).
 ## Releases
 
 Maintainer-only, and nothing to do on your side beyond the `## Unreleased` note
-described above. The conventions live in [`CLAUDE.md`](CLAUDE.md); the procedure
+described above. The conventions live in [`CLAUDE.md`](../CLAUDE.md); the procedure
 is scripted as the `/release` Claude Code slash command
-([`.claude/commands/release.md`](.claude/commands/release.md)).
+([`.claude/commands/release.md`](../.claude/commands/release.md)).
 
 ## Issue tracking
 
@@ -135,4 +135,4 @@ there too.
    a test; a bug fix wants the test that would have caught it.
 4. Open a pull request and fill out the template.
 
-Contributions are accepted under the project's [MIT License](LICENSE).
+Contributions are accepted under the project's [MIT License](../LICENSE).

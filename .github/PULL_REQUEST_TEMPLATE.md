@@ -12,7 +12,7 @@
 
 <!-- `make ci` runs the pytest suite, but it runs against fakes. Also describe
      a manual run against a real beads project and what you observed, e.g.
-     `./bd-log -n 5` against this repo, before/after output. -->
+     `./bin/bd-log -n 5` against this repo, before/after output. -->
 
 ## Checklist
 

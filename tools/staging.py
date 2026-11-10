@@ -244,9 +244,9 @@ def _blocks():
 def load_monitor():
     """claude-traffic-monitor as a module (it has no .py, so import by path)."""
     if "ctm" not in sys.modules:
-        if str(REPO) not in sys.path:
-            sys.path.insert(0, str(REPO))  # its own `import claudeutils`
-        loader = SourceFileLoader("ctm", str(REPO / "claude-traffic-monitor"))
+        if str(REPO / "bin") not in sys.path:
+            sys.path.insert(0, str(REPO / "bin"))  # its own `import claudeutils`
+        loader = SourceFileLoader("ctm", str(REPO / "bin" / "claude-traffic-monitor"))
         mod = module_from_spec(spec_from_loader("ctm", loader))
         sys.modules["ctm"] = mod  # before exec: @dataclass looks itself up there
         loader.exec_module(mod)

@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-view"
+  - "bin/bd-view"
   - "tests/test_bd_view.py"
 ---
 
@@ -40,5 +40,5 @@ Requires `uv` on `PATH`.
 ## Manual checks
 
 ```bash
-./bd-view beads-utils-s4s                      # Pretty-print a single bead
+./bin/bd-view beads-utils-s4s                  # Pretty-print a single bead
 ```

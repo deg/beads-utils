@@ -1,8 +1,8 @@
 ---
 paths:
-  - "claude-session-*"
-  - "claude-sessions-*"
-  - "claudeutils.py"
+  - "bin/claude-session-*"
+  - "bin/claude-sessions-*"
+  - "bin/claudeutils.py"
   - "tests/test_claude*.py"
 ---
 
@@ -237,22 +237,22 @@ folded them in. Also stdlib-only.
 ## Manual checks
 
 ```bash
-./claude-session-find 'bd-log'                 # Sessions in this project matching
-./claude-session-find -g 'paged_output'        # All projects
-./claude-session-find -a 'dolt push'           # Include assistant/tool content
-./claude-session-find --oneline 'bd-log'       # One row per session, no snippets
-./claude-session-find -q foo | head -1         # UUID only (for `claude --resume`)
-./claude-session-report <uuid>                 # Default discussion-only render
-./claude-session-report 'bd-view'              # Substring-match a session title
-./claude-session-report <uuid> --thinking --tools     # Add agent thinking + tool I/O
-./claude-session-report <uuid> --all > session.md     # Everything, to a file
-./claude-session-list                                  # Recent sessions for cwd's project
-./claude-session-list -g --oneline                     # Every project, one row each
-./claude-session-list -q | head -1                     # Newest UUID (for `claude --resume`)
-./claude-session-rename <uuid> 'Pager design'          # /rename without starting the session
-./claude-session-rename 'old title' 'new title'        # Resolve by title substring
-./claude-sessions-review                               # Recurring failures, this project
-./claude-sessions-review -g --since 2w                 # Every project, last two weeks
-./claude-sessions-review -g --kind denied              # What gets rejected or denied
-./claude-sessions-review -g --json | head -40          # What /dream would read
+./bin/claude-session-find 'bd-log'             # Sessions in this project matching
+./bin/claude-session-find -g 'paged_output'    # All projects
+./bin/claude-session-find -a 'dolt push'       # Include assistant/tool content
+./bin/claude-session-find --oneline 'bd-log'   # One row per session, no snippets
+./bin/claude-session-find -q foo | head -1     # UUID only (for `claude --resume`)
+./bin/claude-session-report <uuid>             # Default discussion-only render
+./bin/claude-session-report 'bd-view'          # Substring-match a session title
+./bin/claude-session-report <uuid> --thinking --tools # Add agent thinking + tool I/O
+./bin/claude-session-report <uuid> --all > session.md # Everything, to a file
+./bin/claude-session-list                              # Recent sessions for cwd's project
+./bin/claude-session-list -g --oneline                 # Every project, one row each
+./bin/claude-session-list -q | head -1                 # Newest UUID (for `claude --resume`)
+./bin/claude-session-rename <uuid> 'Pager design'      # /rename without starting the session
+./bin/claude-session-rename 'old title' 'new title'    # Resolve by title substring
+./bin/claude-sessions-review                           # Recurring failures, this project
+./bin/claude-sessions-review -g --since 2w             # Every project, last two weeks
+./bin/claude-sessions-review -g --kind denied          # What gets rejected or denied
+./bin/claude-sessions-review -g --json | head -40      # What /dream would read
 ```

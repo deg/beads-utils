@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT
+from conftest import BIN, ROOT
 
 # make is a new test-time dependency for a suite that otherwise needs only
 # python and uv. It is there in CI and on any dev machine, but skipping beats
@@ -128,7 +128,7 @@ def test_install_links_every_script(tmp_path):
     run_make("install", f"PREFIX={tmp_path}")
     links = sorted(p for p in tmp_path.iterdir() if p.is_symlink())
     assert len(links) == SCRIPT_COUNT
-    assert all(Path(os.readlink(p)).parent == ROOT for p in links)
+    assert all(Path(os.readlink(p)).parent == BIN for p in links)
 
 
 def test_installed_script_runs_from_outside_the_repo(tmp_path):
@@ -195,11 +195,26 @@ def test_uninstall_removes_a_link_whose_script_is_gone(tmp_path):
     behind while the count claims a complete removal.
     """
     run_make("install", f"PREFIX={tmp_path}")
-    (tmp_path / "bd-departed").symlink_to(ROOT / "bd-departed")
+    (tmp_path / "bd-departed").symlink_to(BIN / "bd-departed")
 
     done = run_make("uninstall", f"PREFIX={tmp_path}")
     assert f"Removed {SCRIPT_COUNT + 1} symlink(s)" in done.stdout
     assert list(tmp_path.iterdir()) == []
+
+
+def test_uninstall_removes_links_from_before_bin(tmp_path):
+    """The scripts lived at the repo root until they moved into bin/.
+
+    An install made then links to `<clone>/bd-log`, which now dangles; an
+    uninstall that recognised only bin/ targets would leave every one behind.
+    A link to something deeper in the clone is still not ours.
+    """
+    (tmp_path / "bd-log").symlink_to(ROOT / "bd-log")
+    (tmp_path / "a-doc").symlink_to(ROOT / "docs" / "beads.md")
+
+    done = run_make("uninstall", f"PREFIX={tmp_path}")
+    assert "Removed 1 symlink(s)" in done.stdout
+    assert [p.name for p in tmp_path.iterdir()] == ["a-doc"]
 
 
 def test_uninstall_on_a_clean_directory_reports_zero(tmp_path):
@@ -236,22 +251,32 @@ def make_variable(name: str) -> str:
     pytest.fail(f"{name} not found in make's database")
 
 
-def test_scripts_finds_exactly_the_root_executables():
-    """Shebang discovery is what `smoke`, `install` and lint all iterate.
-
-    It must find every root script and nothing in a subdirectory -- a
-    root-level helper would be dragged into `make smoke`, which runs
-    `--version` on whatever it finds.
-    """
-    found = set(make_variable("SCRIPTS").split())
-    expected = {
-        p.name for p in ROOT.iterdir()
+def executables(directory: Path) -> set[str]:
+    return {
+        p.name for p in directory.iterdir()
         if p.is_file() and os.access(p, os.X_OK)
         and p.read_bytes()[:2] == b"#!"
     }
-    assert found == expected
+
+
+def test_scripts_finds_exactly_the_bin_executables():
+    """Shebang discovery is what `smoke`, `install` and lint all iterate.
+
+    It must find every script in bin/ and nothing in a subdirectory -- a
+    helper there would be dragged into `make smoke`, which runs `--version`
+    on whatever it finds. The names are bare, because `install` links each
+    one into PREFIX under that name.
+    """
+    found = set(make_variable("SCRIPTS").split())
+    assert found == executables(BIN)
     assert len(found) == SCRIPT_COUNT
     assert not any("/" in name for name in found)
+
+
+def test_no_script_is_left_at_the_root():
+    """Discovery reads only bin/, so a script added at the root by habit
+    would be silently left out of lint, the smoke test and the install."""
+    assert executables(ROOT) == set()
 
 
 def test_lint_targets_cover_every_python_file():
@@ -264,20 +289,14 @@ def test_lint_targets_cover_every_python_file():
     targets = make_variable("LINT_TARGETS").split()
     covered_dirs = {t.rstrip("/") for t in targets if t.endswith("/")}
     named = set(targets)
-    # make does not glob in a simple assignment, so `*.py` arrives literally
-    # and the shell expands it in the repo root when ruff runs -- meaning it
-    # covers root-level files only. Testing `"*.py" in named` without that
-    # depth condition makes the whole assertion a constant True, which is how
-    # the first cut of this test passed while tools/ was missing from the list.
+    # A directory target covers everything under it; a file must be named.
+    # (An earlier cut also accepted a literal `*.py` target for root-level
+    # files, without the depth condition, and so passed with tools/ missing.)
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT)
         if any(part.startswith(".") for part in rel.parts):
             continue
-        covered = (
-            (len(rel.parts) == 1 and "*.py" in named)
-            or rel.parts[0] in covered_dirs
-            or str(rel) in named
-        )
+        covered = rel.parts[0] in covered_dirs or str(rel) in named
         assert covered, f"{rel} is not covered by LINT_TARGETS"
 
 

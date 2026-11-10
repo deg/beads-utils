@@ -1,6 +1,6 @@
 ---
 paths:
-  - "bd-verify-backup"
+  - "bin/bd-verify-backup"
   - "tests/test_bd_verify_backup.py"
 ---
 
@@ -106,7 +106,7 @@ remote-tracking ref, and the `gone` state would never arise.
 ## Manual checks
 
 ```bash
-./bd-verify-backup                 # this repo, detailed
-./bd-verify-backup -g              # every beads repo, one line each
-./bd-verify-backup -g --no-fetch   # same, offline and fast
+./bin/bd-verify-backup             # this repo, detailed
+./bin/bd-verify-backup -g          # every beads repo, one line each
+./bin/bd-verify-backup -g --no-fetch   # same, offline and fast
 ```

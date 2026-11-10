@@ -1,5 +1,6 @@
 ## Unreleased
 
+* [breaking] The scripts moved into `bin/` (and `CONTRIBUTING.md` into `.github/`), so the README shows near the top of the repo page; re-run `make install` to repoint your links, and run a script from the clone as `bin/<script>`
 * [feature] Add `bd-verify-backup`, which says whether a repo would lose anything if this machine died: uncommitted files or stashes, branches not pushed, or beads not pushed
   * `-g/--global` checks every beads repo on the machine at once, one line each, failures first
   * Fetches first so the answer is current; `--no-fetch` skips it
