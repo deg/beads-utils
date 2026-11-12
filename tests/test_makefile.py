@@ -305,7 +305,7 @@ def test_lint_targets_cover_every_python_file():
 # --------------------------------------------------------------------------
 
 HOOK_COUNT = 4
-SKILL_COUNT = 6
+SKILL_COUNT = 7
 
 
 def test_install_claude_links_every_hook_and_skill(tmp_path):

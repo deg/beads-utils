@@ -127,10 +127,11 @@ Shared helpers, both stdlib-only:
 Claude Code skills, one directory each under `skills/<name>/SKILL.md`, linked
 by `make install-claude` into `~/.claude/skills/<name>` so each answers to
 `/<name>`: `start-task`, `finalize`, `close-shop`, `defer`, `status`,
-`changelog`. The first four read `~/.claude/skill-extensions/<name>.md` and
-then the project's `.claude/skill-extensions/<name>.md`. Why skills and not a
-plugin, and what was scrubbed from the dotfiles originals, is in
-`.claude/rules/skills.md`.
+`changelog`, `review-titles`. All but `status` and `changelog` read
+`~/.claude/skill-extensions/<name>.md` and then the project's
+`.claude/skill-extensions/<name>.md`. Why skills and not a plugin, what was
+scrubbed from the dotfiles originals, and why the title rules ship as a file
+of their own, is in `.claude/rules/skills.md`.
 
 Claude Code hooks, bash, under `hooks/` (not `bin/`, so shebang discovery
 does not sweep them into ruff and the `--version` smoke test), installed by

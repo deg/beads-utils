@@ -18,7 +18,7 @@ from conftest import ROOT
 
 SKILLS_DIR = ROOT / "skills"
 SKILLS = sorted(p.name for p in SKILLS_DIR.iterdir() if (p / "SKILL.md").is_file())
-WITH_EXTENSIONS = ["start-task", "finalize", "defer", "close-shop"]
+WITH_EXTENSIONS = ["start-task", "finalize", "defer", "close-shop", "review-titles"]
 
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
@@ -39,7 +39,9 @@ def body(name: str) -> str:
 
 
 def test_the_expected_skills_are_shipped():
-    assert SKILLS == ["changelog", "close-shop", "defer", "finalize", "start-task", "status"]
+    assert SKILLS == [
+        "changelog", "close-shop", "defer", "finalize", "review-titles", "start-task", "status",
+    ]
 
 
 @pytest.mark.parametrize("name", SKILLS)
@@ -97,7 +99,9 @@ def test_close_shop_grants_no_standing_permission_of_its_own():
 # own machine (bd-verify-backup.md names their repos) and are not in scope.
 PORTED_RULES = ["skills.md", "hooks.md", "claude-memory.md", "bd-find-live.md"]
 PUBLIC_TEXT = sorted(
-    [p for p in SKILLS_DIR.glob("*/SKILL.md")]
+    # Every file a skill ships, not just SKILL.md: review-titles keeps its rules
+    # in a sibling file that a user's CLAUDE.md may import.
+    [p for p in SKILLS_DIR.glob("*/*") if p.is_file()]
     + [ROOT / ".claude" / "rules" / r for r in PORTED_RULES]
     + [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / ".github" / "CONTRIBUTING.md"]
     + list((ROOT / "docs").glob("*.md"))

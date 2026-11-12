@@ -1,6 +1,6 @@
 # The beads workflow
 
-Six Claude Code skills and two hooks carry a way of working with beads that
+Seven Claude Code skills and two hooks carry a way of working with beads that
 an agent otherwise has to be told every session: a bead is claimed before
 code is written, finished with a review and a commit, parked rather than
 closed when it has to wait, and the session ends with an audit of what
@@ -20,6 +20,7 @@ well:
 | `/finalize` | one task | When a bead's work is done: self-review, tests, lint and test until clean, a senior review, a commit you approve, then `bd close`. Once per bead |
 | `/close-shop` | the session | Once, at the end: audit every standing memory and every open bead against what the session changed, correct what rotted, and only then record what was learned |
 | `/defer` | one bead | Park a bead without closing it, recording the gate for revisiting; never `bd close` to park |
+| `/review-titles` | the open beads | Check every title against the title rules and the code, say which are kept, then show the rest one at a time for a one-word answer |
 | `/status` | the project | A twenty-line orientation |
 | `/changelog` | the repo | A changelog entry for everything since the last tag, in the file's own style |
 
@@ -31,7 +32,7 @@ them. Its audit uses `claude-memory-check` and `bd-find-live` from this repo.
 
 ## Extensions
 
-Four of the skills (`/start-task`, `/finalize`, `/defer`, `/close-shop`) read
+Five of the skills (`/start-task`, `/finalize`, `/defer`, `/close-shop`, `/review-titles`) read
 an **extension** file and follow it, from two places in order: your own
 `~/.claude/skill-extensions/<name>.md`, for conventions and standing
 permissions that hold in every project, then the project's

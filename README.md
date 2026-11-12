@@ -95,7 +95,7 @@ Run any script with `--help` for full usage.
 
 ## The beads workflow
 
-Six Claude Code skills, installed by `make install-claude`, answer to their
+Seven Claude Code skills, installed by `make install-claude`, answer to their
 bare names and read an optional extension file of yours before the project's:
 
 | Skill | Scope | When |
@@ -104,6 +104,7 @@ bare names and read an optional extension file of yours before the project's:
 | `/finalize` | one task | When a bead's work is done: review, tests, gates, a commit you approve, then `bd close` |
 | `/close-shop` | the session | Once, at the end: audit every memory and open bead against what changed, then record what was learned |
 | `/defer` | one bead | Park without closing, recording the gate for revisiting |
+| `/review-titles` | the open beads | Check each title against the title rules and retitle them one at a time, each answered in a word |
 | `/status` | the project | A twenty-line orientation |
 | `/changelog` | the repo | A changelog entry since the last tag, in the file's own style |
 
