@@ -33,6 +33,25 @@ sees it even in a mode that auto-approves asks.
   another agent's work. The user decides, the agent cannot.
 - **`.beads/` is not dirt.** bd's own export goes dirty from closing or
   filing beads and rides along in the next work commit by house rule.
+- **A prerequisite is not the next bead** (beads-utils-n5w). When finalize's
+  review of a bead turns up a fix that must land first, the dirty tree is
+  the in-progress bead's work and cannot be committed before the fix, so
+  the ask's advice would be wrong. The relation is recorded in beads as a
+  `blocks` dependency (`bd dep add <in-progress> <new>`). If any id that
+  blocks a non-epic in-progress bead (`bd show <those> --json`, the
+  `dependencies` of type `blocks`) is a whole word of the command, the
+  claim passes silently. Words are split on blanks, quotes and shell
+  separators, so the check needs no command parsing, and `x-1` never
+  matches `x-1.2`. Parent-child links do not count, and neither does
+  blocking an epic, which is always in progress. The ask's text ends by
+  naming the `bd dep add` step, so an agent claiming a needed fix knows how
+  to say so. Both `bd` calls share the `timeout 3`; if either fails, the
+  claim asks as before.
+- **Known gap: the root is the session's, not the claim's.** A claim run as
+  `cd <other-repo> && bd update … --claim` is checked against
+  `$CLAUDE_PROJECT_DIR`, so another repo's dirty tree can draw an ask.
+  Seen 2026-11-17 (noted in beads-utils-n5w); left alone, because fixing it
+  means parsing `cd` out of the command.
 - **In-progress beads are named as candidates, never as owners**: every
   agent claims under one assignee, so a match cannot be proven. Epics are
   dropped (always in progress), the list is capped at four, and `bd list`

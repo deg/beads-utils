@@ -14,6 +14,11 @@
 # additionalContext, so the same text is sent there too, or the agent would only see
 # that its command needs permission and not what to do about it.
 #
+# A prerequisite is not "the next bead": when the bead being claimed BLOCKS a bead that is
+# in progress (`bd dep add <in-progress> <new>`), the uncommitted work cannot be committed
+# first, so the claim passes silently. That is how finalize's review of a bead files a fix
+# that must land before it (beads-utils-n5w).
+#
 # Prints nothing (no decision, normal flow) unless a claim meets a dirty tree, so it costs
 # zero context in ordinary sessions. Needs jq.
 
@@ -43,19 +48,39 @@ N=$(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ')
 LIST=$(printf '%s\n' "$DIRTY" | head -6 | sed 's/^...//' | paste -sd ' ' -)
 [ "$N" -gt 6 ] && LIST="$LIST ..."
 
-# Name the beads in progress as candidates, never as the files' owner: every agent claims
-# under the same assignee, so a match cannot be proven. Epics are dropped (always in
-# progress). Bounded by a timeout so a Dolt lock cannot stall every claim; any failure or
-# missing tool just omits the clause.
-WIP=""
+# The beads in progress, epics dropped (always in progress). Bounded by a timeout so a
+# Dolt lock cannot stall every claim; any failure or missing tool leaves this empty, which
+# omits the clause below and skips the prerequisite check (so the claim asks).
+INPROG=""
 TO=$(command -v timeout || command -v gtimeout)
 if [ -n "$TO" ] && command -v bd >/dev/null 2>&1; then
-  IDS=$(cd "$ROOT" && "$TO" 3 bd list --status in_progress --json 2>/dev/null |
-    jq -r '[.[] | select(.issue_type != "epic") | .id] | (.[:4] | join(", ")) + (if length > 4 then " and more" else "" end)' 2>/dev/null)
-  [ -n "$IDS" ] && WIP=" In progress right now: $IDS."
+  INPROG=$(cd "$ROOT" && "$TO" 3 bd list --status in_progress --json 2>/dev/null |
+    jq -r '.[] | select(.issue_type != "epic") | .id' 2>/dev/null)
 fi
 
-REASON="claim-guard: claiming a new bead while $N path(s) are uncommitted ($LIST).$WIP Rule: one bead, one commit, at the boundary. If these are the previous bead's work, present its commit for approval first and do not claim yet. If another agent owns them, tell the user so."
+# Is the claimed bead a prerequisite of one in progress? Collect what blocks the beads in
+# progress, then look for any of those ids as a whole word of the command. Splitting the
+# command on blanks, quotes and shell separators avoids parsing where the id sits, and an
+# id such as x-1 cannot match x-1.2.
+if [ -n "$INPROG" ]; then
+  # shellcheck disable=SC2086  # one argument per id, on purpose
+  BLOCKERS=$(cd "$ROOT" && "$TO" 3 bd show $INPROG --json 2>/dev/null |
+    jq -r '.[] | .dependencies[]? | select(.dependency_type == "blocks") | .id' 2>/dev/null)
+  WORDS=$(printf '%s' "$CMD" | tr -s " \t;&|()'\"" '\n')
+  for B in $BLOCKERS; do
+    printf '%s\n' "$WORDS" | grep -Fxq -- "$B" && exit 0
+  done
+fi
+
+# Name the beads in progress as candidates, never as the files' owner: every agent claims
+# under the same assignee, so a match cannot be proven.
+WIP=""
+if [ -n "$INPROG" ]; then
+  IDS=$(printf '%s\n' "$INPROG" | jq -Rrs 'split("\n") | map(select(length > 0)) | (.[:4] | join(", ")) + (if length > 4 then " and more" else "" end)')
+  WIP=" In progress right now: $IDS."
+fi
+
+REASON="claim-guard: claiming a new bead while $N path(s) are uncommitted ($LIST).$WIP Rule: one bead, one commit, at the boundary. If these are the previous bead's work, present its commit for approval first and do not claim yet. If another agent owns them, tell the user so. If the new bead must land before one in progress, record that (bd dep add <in-progress-id> <new-id>) and claim again: a prerequisite passes without asking."
 
 jq -n --arg r "$REASON" '{
   hookSpecificOutput: {

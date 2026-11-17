@@ -181,6 +181,57 @@ def test_in_progress_beads_are_named_as_candidates(fake_bd, repo):
     assert "x-9" not in m
 
 
+def _in_progress(fake_bd, *beads):
+    """Program the fake: `bd list` returns `beads` (id, type); `bd show` returns each
+    with its dependencies, given as (id, dependency_type) pairs."""
+    fake_bd.json_rule("show", payload=[
+        {"id": i, "dependencies": [{"id": d, "dependency_type": t} for d, t in deps]}
+        for i, _, deps in beads
+    ])
+    fake_bd.issues([{"id": i, "issue_type": kind} for i, kind, _ in beads])
+
+
+@needs_timeout
+def test_a_prerequisite_of_the_bead_in_progress_passes_silently(fake_bd, repo):
+    """Finalize's review of x-2 files x-1, a fix that must land before x-2.
+
+    The dirty tree is x-2's work, which cannot be committed first, so the ask's
+    advice ("present its commit first") would be wrong (beads-utils-n5w). The
+    prerequisite is recorded as x-2 depends on x-1 (`blocks`).
+    """
+    root, env = repo
+    (root / "work.py").write_text("x\n")
+    _in_progress(fake_bd, ("x-2", "feature", [("x-0", "parent-child"), ("x-1", "blocks")]))
+    silent(guard(env, "bd update x-1 --claim"))
+    silent(guard(env, "cd sub && bd update --claim x-1; bd show x-1"))
+
+
+@needs_timeout
+@pytest.mark.parametrize("beads, command", [
+    # Only `blocks` records a prerequisite; a parent is not one.
+    ([("x-2", "feature", [("x-1", "parent-child")])], "bd update x-1 --claim"),
+    # An id that merely starts with the blocker's id is another bead.
+    ([("x-2", "feature", [("x-1", "blocks")])], "bd update x-1.2 --claim"),
+    ([("x-2", "feature", [("x-1.2", "blocks")])], "bd update x-1 --claim"),
+    # Epics are always in progress, so blocking one says nothing.
+    ([("x-9", "epic", [("x-1", "blocks")])], "bd update x-1 --claim"),
+])
+def test_other_claims_on_a_dirty_tree_still_ask(fake_bd, repo, beads, command):
+    root, env = repo
+    (root / "work.py").write_text("x\n")
+    _in_progress(fake_bd, *beads)
+    decision(guard(env, command))
+
+
+def test_the_ask_says_how_to_mark_a_prerequisite(repo):
+    """Without the hint, an agent claiming a needed fix has no way to say so."""
+    root, env = repo
+    (root / "work.py").write_text("x\n")
+    m = decision(guard(env, "bd update x-1 --claim"))
+    assert m.endswith("record that (bd dep add <in-progress-id> <new-id>) and claim again: "
+                      "a prerequisite passes without asking.")
+
+
 @needs_timeout
 def test_a_failing_bd_just_omits_the_clause(fake_bd, repo):
     root, env = repo

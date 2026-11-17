@@ -140,7 +140,8 @@ hand:
 
 - `claim-guard.sh` (PreToolUse, matcher Bash) — a `bd update <id> --claim` on
   a dirty git tree becomes a permission ask: one bead, one commit, at the
-  boundary. `.beads/` does not count as dirt.
+  boundary. `.beads/` does not count as dirt, and a bead that blocks one in
+  progress (a prerequisite) is claimed without asking.
 - `defer-hint.sh` (UserPromptSubmit) — one injected line pointing at `/defer`
   when the prompt has both a park-ish verb and a task-ish noun.
 - `commit-memories.sh` (SessionEnd) — commits the memories repo, pushes if it
