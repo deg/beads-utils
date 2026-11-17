@@ -46,9 +46,13 @@ SCRIPT_COUNT = 16
 
 
 def run_make(*args: str, expect_ok: bool = True) -> subprocess.CompletedProcess:
-    """Run make at the repo root and return the finished process."""
+    """Run make at the repo root and return the finished process.
+
+    stdin is closed off so that no prompt (the doctor's, the title rules') ever
+    sees the developer's terminal: run from one, a test would sit waiting.
+    """
     done = subprocess.run(
-        ["make", *args], cwd=ROOT, text=True,
+        ["make", *args], cwd=ROOT, text=True, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     if expect_ok:
@@ -351,6 +355,80 @@ def test_uninstall_claude_removes_only_our_links(tmp_path):
     assert f"Removed {HOOK_COUNT + SKILL_COUNT} symlink(s)" in done.stdout
     assert sorted(p.name for p in (tmp_path / "hooks").iterdir()) == ["foreign-link", "theirs.sh"]
     assert sorted(p.name for p in (tmp_path / "skills").iterdir()) == ["theirs"]
+
+
+TITLE_RULES = ROOT / "skills" / "review-titles" / "title-rules.md"
+
+
+def rules_link(home: Path) -> Path:
+    return home / "rules" / "bead-titles.md"
+
+
+def test_install_claude_does_not_link_the_title_rules_from_a_pipe(tmp_path):
+    """They change every session, so without a terminal to ask on they wait for a yes."""
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
+    assert "Title rules not linked: no terminal to ask on" in done.stdout
+    assert "TITLE_RULES=yes" in done.stdout
+    assert not (tmp_path / "rules").exists()
+
+
+def test_install_claude_links_the_title_rules_on_yes(tmp_path):
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=yes")
+    link = rules_link(tmp_path)
+    assert Path(os.readlink(link)) == TITLE_RULES
+    assert link.read_text() == TITLE_RULES.read_text()   # the link resolves
+
+
+def test_install_claude_leaves_linked_title_rules_alone(tmp_path):
+    """A rerun neither asks again nor says they are missing."""
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=yes")
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}")
+    assert "Title rules already linked" in done.stdout
+    assert Path(os.readlink(rules_link(tmp_path))) == TITLE_RULES
+
+
+def test_install_claude_skips_the_title_rules_on_no(tmp_path):
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=no")
+    assert "Title rules not linked (TITLE_RULES=no)" in done.stdout
+    assert not (tmp_path / "rules").exists()
+
+
+def test_install_claude_refuses_a_bad_title_rules_answer(tmp_path):
+    """Refused before anything is linked, not after the skills are in."""
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=maybe", expect_ok=False)
+    assert done.returncode != 0
+    assert "TITLE_RULES must be ask, yes or no" in done.stdout
+    assert not (tmp_path / "hooks").exists()
+
+
+def test_install_claude_refuses_to_replace_a_real_rules_file(tmp_path):
+    """A hand-written bead-titles.md is the user's; nothing else is linked either."""
+    link = rules_link(tmp_path)
+    link.parent.mkdir()
+    link.write_text("precious\n")
+    done = run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=yes", expect_ok=False)
+    assert done.returncode != 0
+    assert "refusing to replace non-symlink" in done.stdout
+    assert link.read_text() == "precious\n"
+    assert not (tmp_path / "hooks").exists()
+
+
+def test_install_claude_with_no_title_rules_ignores_a_real_rules_file(tmp_path):
+    """Declining the rules must not block the skills over a file the user wrote."""
+    link = rules_link(tmp_path)
+    link.parent.mkdir()
+    link.write_text("precious\n")
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=no")
+    assert link.read_text() == "precious\n"
+    assert len([p for p in (tmp_path / "hooks").iterdir() if p.is_symlink()]) == HOOK_COUNT
+
+
+def test_uninstall_claude_removes_the_title_rules_link(tmp_path):
+    run_make("install-claude", f"CLAUDE_HOME={tmp_path}", "TITLE_RULES=yes")
+    (tmp_path / "rules" / "theirs.md").write_text("mine\n")
+    done = run_make("uninstall-claude", f"CLAUDE_HOME={tmp_path}")
+    assert f"Removed {HOOK_COUNT + SKILL_COUNT + 1} symlink(s)" in done.stdout
+    assert sorted(p.name for p in (tmp_path / "rules").iterdir()) == ["theirs.md"]
 
 
 def test_install_claude_refuses_a_tilde_home(tmp_path):

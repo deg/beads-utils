@@ -53,6 +53,12 @@ The hooks still have to be wired into `settings.json` by hand:
 [docs/workflow.md](docs/workflow.md#the-hooks) and
 [docs/memories.md](docs/memories.md#the-hooks) have the snippets.
 
+`make install-claude` also offers to link the bead-title rules into
+`~/.claude/rules`, which Claude Code loads into every session, so they apply
+whenever an agent writes a title. That changes every session, not just the
+ones that call a skill, so it shows what it does and asks first. From a pipe
+it links them only with `make install-claude TITLE_RULES=yes`.
+
 `make install` and `make install-claude` check for the tools below and, on a
 terminal, offer to install each missing one (`?` at the prompt explains what
 it is for); nothing is installed without your yes, and `make doctor` runs the

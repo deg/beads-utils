@@ -177,7 +177,7 @@ tests and costs nothing otherwise:
 | `bd-log.md`, `bd-dolt-check.md`, `bd-dolt-diff.md`, `bd-verify-backup.md`, `bd-view.md`, `bd-find-live.md` | that script and its test file |
 | `claude-memory.md` | `claude-memory-check`, `claude-memory-setup`, the two memory hooks, their tests |
 | `hooks.md` | `hooks/claim-guard.sh`, `hooks/defer-hint.sh`, `tests/test_workflow_hooks.py` |
-| `skills.md` | `skills/`, `tests/test_skills.py` |
+| `skills.md` | `skills/`, `tests/test_skills.py`, `tools/title_rules.py` and its tests |
 | `claude-sessions.md` | `claude-session-*`, `claude-sessions-review`, `claudeutils.py`, their tests |
 | `claude-traffic-monitor.md` | `claude-traffic-monitor` and its test file |
 | `completions.md` | `completions/`, `bd-complete`, their tests |
@@ -222,7 +222,7 @@ make ci                                       # exactly what CI runs
 make coverage                                 # suite + htmlcov/
 make dolt-check / dolt-diff / export-csv      # this repo's own beads data
 make install / uninstall                      # symlink the scripts onto PATH (PREFIX=)
-make install-claude / uninstall-claude        # symlink skills/ and hooks/ into ~/.claude (CLAUDE_HOME=)
+make install-claude / uninstall-claude        # symlink skills/ and hooks/ into ~/.claude (CLAUDE_HOME=); asks before linking the title rules (TITLE_RULES=yes|no)
 make doctor                                   # which tools are present; offers to install the missing ones
 make screenshots                              # regenerate the docs pages' terminal images
 make completions                              # the rc-file line for tab completion

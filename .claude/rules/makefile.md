@@ -42,3 +42,13 @@ a pipe, so CI and the tests get the report alone, and `DOCTOR_RUN=echo` makes it
 print an install command instead of running it. `--for install-claude` exits 1 when
 jq is still missing, and that target runs it before linking so a refusal is not a
 half-install. The tests put only `python3` on `PATH` to make every other tool missing.
+
+`install-claude` ends by running `tools/title_rules.py`, which asks before
+linking the bead-title rules into `CLAUDE_HOME/rules` (why, in `skills.md`).
+Its two refusals, a bad `TITLE_RULES` value and a real file at the link's
+path, are checked in the recipe before anything is linked, for the same
+no-half-install reason. The second is skipped under `TITLE_RULES=no`: a
+rules file of the user's own at that name is no obstacle when the rules are
+not wanted, and must not block the skills and hooks. `run_make` in the tests closes stdin: a prompt that
+asks only on a terminal would otherwise find the developer's, when `make
+test` is run from one, and the suite would sit waiting for an answer.

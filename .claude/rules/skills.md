@@ -2,6 +2,8 @@
 paths:
   - "skills/**"
   - "tests/test_skills.py"
+  - "tools/title_rules.py"
+  - "tests/test_title_rules.py"
 ---
 
 # Beads-workflow skills design notes
@@ -64,16 +66,32 @@ than pretending it never pushes.
 The rules a title is judged by live in `skills/review-titles/title-rules.md`,
 not in `SKILL.md`, because they are needed at two moments. `/review-titles`
 reads them when it runs. But a title is written far more often than it is
-reviewed, at every `bd create`, and a skill is not in context then. So a
-user's global `CLAUDE.md` imports the file
-(`@~/.claude/skills/review-titles/title-rules.md`), through the same link
-`make install-claude` makes, and the rules apply in every session.
+reviewed, at every `bd create`, and a skill is not in context then. So
+`make install-claude` offers to link the file as
+`~/.claude/rules/bead-titles.md`. Claude Code loads every file in that
+directory into every session, in every project, and it follows the symlink
+(checked 2026-11-17 on Claude Code 2.1.326: a canary in a symlinked rules
+file reached a `claude -p` run started outside `~`).
+
+The first version had the user's global `CLAUDE.md` import the file
+(`@~/.claude/skills/review-titles/title-rules.md`). Claude Code treats an
+import from outside the project as an external include and asks once per
+project before loading it, and a global `CLAUDE.md` is read in every project,
+so every project asked (beads-utils-bn6, the title rules moved to
+~/.claude/rules). A rules file has no import, so nothing is asked.
+
+The cost is that the install now changes every session by itself, which a
+skill (run on demand) and a hook (inert until wired into `settings.json`) do
+not. So `tools/title_rules.py` asks first: on a terminal it says what linking
+does and how to undo it, `?` prints the rules, and only `y` links. A pipe is
+never asked; there it links only with `TITLE_RULES=yes`, the same never-prompt-
+a-pipe rule `tools/doctor.py` follows.
 
 The rules first stood in the owner's global `CLAUDE.md`, and the bead asked
 the skill to point there. That is the pointer this port scrubbed once already
 (below), and `test_nothing_personal_is_in_the_public_text` refuses one. Two
 copies were rejected because they drift. Keeping the rules in the user's
-extension file would leave the public skill with none. With the import there is
+extension file would leave the public skill with none. With the link there is
 one copy, and it is public. The leak check covers every file under `skills/`,
 not just `SKILL.md`, for this file's sake.
 

@@ -212,6 +212,13 @@ HOOKS := $(wildcard hooks/*.sh)
 # Each skill is a directory holding SKILL.md; the directory is what gets linked,
 # as ~/.claude/skills/<name>, so the skill answers to /<name> with no prefix.
 SKILLS := $(patsubst %/SKILL.md,%,$(wildcard skills/*/SKILL.md))
+# The bead-title rules, linked into Claude Code's user rules directory so they
+# load in every session. That changes every session at once, so
+# tools/title_rules.py asks first on a terminal. TITLE_RULES=yes links without
+# asking (from a pipe it is the only way), TITLE_RULES=no skips the question.
+TITLE_RULES ?= ask
+TITLE_RULES_SRC := $(CURDIR)/skills/review-titles/title-rules.md
+TITLE_RULES_LINK = $(CLAUDE_HOME)/rules/bead-titles.md
 
 check-claude-home:
 	@case "$(CLAUDE_HOME)" in \
@@ -223,7 +230,11 @@ check-claude-home:
 # both and, on a terminal, offers to install them. jq declined means the hooks
 # could not run, so the doctor exits 1 and nothing is linked. The check comes
 # first so a refusal is not a half-install.
-install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HOME (default ~/.claude)
+install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HOME (default ~/.claude), and offer the title rules
+	@case "$(TITLE_RULES)" in \
+	    ask|yes|no) ;; \
+	    *) echo "error: TITLE_RULES must be ask, yes or no, not '$(TITLE_RULES)'"; exit 1;; \
+	esac
 	@python3 tools/doctor.py --for install-claude --offer $(DOCTOR_ARGS)
 	@command -v bd-find-live >/dev/null 2>&1 || \
 	    echo "note: bd-find-live is not on PATH; /close-shop needs it, so run 'make install' too"
@@ -233,6 +244,9 @@ install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HO
 	        echo "refusing to replace non-symlink: $$target"; exit 1; \
 	    fi; \
 	done
+	@if [ "$(TITLE_RULES)" != no ] && [ -e "$(TITLE_RULES_LINK)" ] && [ ! -L "$(TITLE_RULES_LINK)" ]; then \
+	    echo "refusing to replace non-symlink: $(TITLE_RULES_LINK)"; exit 1; \
+	fi
 	@mkdir -p "$(CLAUDE_HOME)/hooks" "$(CLAUDE_HOME)/skills"
 	@for h in $(HOOKS) $(SKILLS); do \
 	    ln -sfn "$(CURDIR)/$$h" "$(CLAUDE_HOME)/$$h" || exit 1; \
@@ -240,12 +254,14 @@ install-claude: check-claude-home ## Symlink the skills and hooks into CLAUDE_HO
 	@echo "Linked $(words $(SKILLS)) skills and $(words $(HOOKS)) hooks into $(CLAUDE_HOME)"
 	@echo "note: hooks run only once wired into settings.json; see the README sections"
 	@echo "      'Guarding the beads workflow' and 'Keeping Claude Code memories'"
+	@python3 tools/title_rules.py --source "$(TITLE_RULES_SRC)" --link "$(TITLE_RULES_LINK)" \
+	    --answer $(TITLE_RULES)
 
 # unlink, not rm: it takes exactly one path and cannot recurse, which is all
 # removing a symlink needs.
 uninstall-claude: check-claude-home ## Remove the links that 'make install-claude' created
 	@removed=0; failed=0; \
-	for target in "$(CLAUDE_HOME)"/hooks/* "$(CLAUDE_HOME)"/skills/*; do \
+	for target in "$(CLAUDE_HOME)"/hooks/* "$(CLAUDE_HOME)"/skills/* "$(CLAUDE_HOME)"/rules/*; do \
 	    [ -L "$$target" ] || continue; \
 	    case "$$(readlink "$$target")" in \
 	        "$(CURDIR)/hooks/"*|"$(CURDIR)/skills/"*) ;; \

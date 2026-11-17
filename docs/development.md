@@ -12,7 +12,7 @@ make ci          # everything CI runs
 make dolt-check  # verify this repo's own beads data is pushed
 make screenshots # regenerate the terminal images in docs/img
 make install     # symlink the scripts onto your PATH
-make install-claude  # symlink the skills and hooks into ~/.claude
+make install-claude  # symlink the skills and hooks into ~/.claude; asks before linking the title rules
 make doctor      # which tools are present; offers to install the missing ones
 ```
 

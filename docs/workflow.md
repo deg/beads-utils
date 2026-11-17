@@ -30,6 +30,16 @@ skip is `/close-shop`. Memories
 go false when your own work invalidates them, and nothing else ever re-reads
 them. Its audit uses `claude-memory-check` and `bd-find-live` from this repo.
 
+## The title rules
+
+`/review-titles` judges titles by `skills/review-titles/title-rules.md`, but
+a title is written far more often than it is reviewed, at every `bd create`,
+when no skill is running. So `make install-claude` offers to link the rules as
+`~/.claude/rules/bead-titles.md`, a directory Claude Code loads into every
+session in every project. It asks first, saying what that does, and links
+them only on a `y`; from a pipe, only with `TITLE_RULES=yes`.
+`make uninstall-claude` removes the link.
+
 ## Extensions
 
 Five of the skills (`/start-task`, `/finalize`, `/defer`, `/close-shop`, `/review-titles`) read
